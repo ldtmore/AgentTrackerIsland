@@ -1,17 +1,18 @@
 /**
- * 展开面板（2026-09-18 展示改造 P1-P11）：
+ * 展开面板（2026-09-18 展示改造 P1-P11；M1-10 收口）：
  * 今日汇总条（活跃/今日消耗/调用次数 + 报表入口）
- * → 会话列表（活跃区全展示；历史区默认折叠为一行摘要，点击展开）
+ * → 会话列表（活跃区/历史展开区各设条数上限，溢出显示「查看更多会话」
+ *   链接直达会话窗口；历史区默认折叠为一行摘要，点击展开）
  * → GLM 额度区（双窗口进度条+倒计时）。
- * 卡片改两行：第一行 = 状态·相对时间 + 会话标题（主文案）；
+ * 状态文案/标题回退/排序口径抽至 shared/sessionDisplay（与会话窗口同源）。
+ * 卡片两行：第一行 = 状态·相对时间 + 会话标题（主文案）；
  * 第二行 = 模型/项目徽章 + token（悬浮展示四项拆解）。
- * 点击会话卡片的跳转行为由 T10 接入（onClick 预留）
+ * 点击会话卡片的跳转行为由 T10 接入
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { IslandSnapshot, SessionView, Thresholds } from "../shared/types";
 import {
-  SESSION_META,
   agentColor,
   errorReason,
   fmtCountdownCN,
@@ -19,69 +20,38 @@ import {
   fmtTokens,
   quotaLevel,
 } from "../shared/types";
+import { AGENT_BADGE, cardTitle, displayState, sortSessions } from "../shared/sessionDisplay";
 import Tip from "../shared/Tip";
 import { ChipIcon, FolderIcon, ReportIcon } from "../shared/icons";
 
-/** Agent 徽标文字 */
-const AGENT_BADGE: Record<string, string> = {
-  "claude-code": "CC",
-  zcode: "ZC",
-};
+/** 活跃区卡片上限（宽松：会话少时保持一眼全览；超出部分走会话窗口） */
+const ACTIVE_LIMIT = 12;
 
-/** 排序：活跃状态（working/waiting/error）优先，其次按最近活动降序 */
-const ACTIVE_FIRST: Record<string, number> = {
-  error: 0,
-  waiting: 1,
-  working: 2,
-  idle: 3,
-  offline: 4,
-};
+/** 历史区展开后的卡片上限（同样溢出直达会话窗口） */
+const HISTORY_LIMIT = 20;
 
-/** 空闲超过该时长即按"已结束"展示（P5：历史会话≠空闲，进程级存活信号套在
- *  每个历史会话头上导致满屏假"空闲"——前端按时长近似修正，根治需会话级归属） */
-const ENDED_AFTER_MS = 2 * 3_600_000;
-
-/** 卡片展示态：真实状态 + 前端修正后的标签/状态灯 */
-interface DisplayState {
-  label: string;
-  dot: string;
-  ended: boolean;
+/** 打开会话窗口（溢出链接与标题行入口共用） */
+function openSessions() {
+  invoke("show_sessions_window").catch(() => {});
 }
 
-function displayState(s: SessionView): DisplayState {
-  // 活跃三态原样展示（working/waiting/error 不修正）
-  if (s.state !== "idle" && s.state !== "offline") {
-    return { ...SESSION_META[s.state], ended: false };
-  }
-  // offline = 进程已退出 → 会话已结束
-  if (s.state === "offline") {
-    return { label: "已结束", dot: "dot-gray", ended: true };
-  }
-  // idle：进程还开着；但超过 2 小时无活动按"已结束"展示（保留状态机真实值，仅改文案）
-  const stale = s.last_activity_at != null && Date.now() - s.last_activity_at > ENDED_AFTER_MS;
-  return stale
-    ? { label: "已结束", dot: "dot-gray", ended: true }
-    : { label: "空闲", dot: "dot-green", ended: false };
-}
-
-function sortSessions(list: SessionView[]): SessionView[] {
-  return [...list].sort((a, b) => {
-    const ra = ACTIVE_FIRST[a.state] ?? 9;
-    const rb = ACTIVE_FIRST[b.state] ?? 9;
-    if (ra !== rb) return ra - rb;
-    return (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0);
-  });
-}
-
-/** 卡片主文案：标题优先，缺失回退项目名，再回退 id（P3/P9） */
-function cardTitle(s: SessionView): string {
-  return s.title ?? s.project_dir?.split(/[\\/]/).filter(Boolean).pop() ?? s.id;
+/** 「查看更多会话」溢出链接（所有者拍板文案；hover 提示完整语义） */
+function MoreLink({ hidden }: { hidden: number }) {
+  return (
+    <Tip content="点击查看更多会话数据">
+      <button className="more-link" onClick={openSessions}>
+        查看更多会话
+        {hidden > 0 && <span className="history-latest">还有 {hidden} 个 → 会话窗口</span>}
+      </button>
+    </Tip>
+  );
 }
 
 function SessionCard({ s }: { s: SessionView }) {
-  const disp = displayState(s);
+  const disp = displayState(s.state, s.last_activity_at);
   const project = s.project_dir?.split(/[\\/]/).filter(Boolean).pop() ?? "";
   const model = s.model;
+  const title = cardTitle(s.title, s.project_dir, s.id);
   // 状态 + 相对时间（P4）：时间量感是"空闲/已结束"可读的关键
   const timeText = fmtRelative(s.last_activity_at);
   const stateText = timeText && !disp.ended ? `${disp.label} · ${timeText}` : disp.label;
@@ -101,8 +71,8 @@ function SessionCard({ s }: { s: SessionView }) {
       <div className="card-main">
         <div className="card-line1">
           {/* 悬浮展示完整标题（截断有省略号暗示，气泡只作补充——G2 规则③） */}
-          <Tip content={cardTitle(s)}>
-            <span className="card-title">{cardTitle(s)}</span>
+          <Tip content={title}>
+            <span className="card-title">{title}</span>
           </Tip>
           <span className={`card-state${s.state === "error" ? " text-error" : ""}`}>{stateFinal}</span>
         </div>
@@ -140,11 +110,14 @@ function SessionCard({ s }: { s: SessionView }) {
   );
 }
 
-/** 历史区（P2）：默认折叠一行摘要，点击展开全部历史卡片 */
+/** 历史区（P2）：默认折叠一行摘要，点击展开历史卡片（展开后设上限，
+ *  超出显示「查看更多会话」直达会话窗口——M1-10 收口） */
 function HistorySection({ list }: { list: SessionView[] }) {
   const [open, setOpen] = useState(false); // 默认折叠（用户拍板）
   const latest = list[0];
-  const latestText = latest ? `${cardTitle(latest)} · ${fmtRelative(latest.last_activity_at)}` : "";
+  const latestText = latest
+    ? `${cardTitle(latest.title, latest.project_dir, latest.id)} · ${fmtRelative(latest.last_activity_at)}`
+    : "";
   return (
     <>
       <Tip
@@ -163,9 +136,10 @@ function HistorySection({ list }: { list: SessionView[] }) {
       </Tip>
       {open && (
         <>
-          {list.map((s) => (
+          {list.slice(0, HISTORY_LIMIT).map((s) => (
             <SessionCard key={s.id} s={s} />
           ))}
+          {list.length > HISTORY_LIMIT && <MoreLink hidden={list.length - HISTORY_LIMIT} />}
         </>
       )}
     </>
@@ -301,11 +275,13 @@ export default function Panel({
     return () => ro.disconnect();
   }, [reportHeight]);
 
-  // 活跃/历史分层（P2）：活跃区全展示，历史区折叠。
+  // 活跃/历史分层（P2）：活跃区全展示，历史区折叠。M1-10 收口：
+  // 活跃区渲染前 ACTIVE_LIMIT 张，历史展开区渲染前 HISTORY_LIMIT 张，
+  // 溢出走「查看更多会话」直达会话窗口（轻面板扫一眼，重管理进窗口）。
   // 每次渲染现算（几十个会话开销可忽略），保证 30s 定时刷新时"空闲→已结束"即时翻转
   const sorted = sortSessions(snap.sessions);
-  const active = sorted.filter((s) => !displayState(s).ended);
-  const history = sorted.filter((s) => displayState(s).ended);
+  const active = sorted.filter((s) => !displayState(s.state, s.last_activity_at).ended);
+  const history = sorted.filter((s) => displayState(s.state, s.last_activity_at).ended);
 
   const q5h = snap.quotas.find(
     (q) => q.provider === "glm" && q.window_kind === "5h",
@@ -317,20 +293,22 @@ export default function Panel({
     <div className="panel" ref={panelRef}>
       <SummaryBar snap={snap} />
       <div className="panel-title">
-        {/* 活跃数/总数：活跃区卡片数与历史区「已结束 N 个」之和恰为总数，悬浮对账 */}
+        {/* 活跃数/总数：活跃区卡片数与历史区「已结束 N 个」之和恰为总数，悬浮对账；
+            标题行可点击直达会话窗口（M1-10 入口） */}
         <Tip
-          content={`进行中 ${active.length} 个 · 共 ${snap.sessions.length} 个（含已结束 ${history.length} 个）`}
+          content={`进行中 ${active.length} 个 · 共 ${snap.sessions.length} 个（含已结束 ${history.length} 个）。点击打开会话窗口`}
         >
-          <span>
+          <button className="panel-title-link" onClick={openSessions}>
             会话 · {active.length} / {snap.sessions.length}
-          </span>
+          </button>
         </Tip>
         <span className="panel-hint">点击卡片跳转对应窗口</span>
       </div>
       <div className="panel-sessions" ref={sessionsRef}>
-        {active.map((s) => (
+        {active.slice(0, ACTIVE_LIMIT).map((s) => (
           <SessionCard key={s.id} s={s} />
         ))}
+        {active.length > ACTIVE_LIMIT && <MoreLink hidden={active.length - ACTIVE_LIMIT} />}
         {history.length > 0 && <HistorySection list={history} />}
         {snap.sessions.length === 0 && (
           <div className="panel-empty">暂无会话记录</div>

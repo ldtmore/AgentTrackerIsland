@@ -648,6 +648,43 @@ body,
   text-overflow: ellipsis;
 }
 
+/* 「查看更多会话」溢出链接（M1-10 收口）：活跃区/历史区超出上限时出现，
+   点击直达会话窗口；强调色文字以区别于普通折叠头 */
+.more-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 5px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: left;
+}
+
+.more-link:hover {
+  background: var(--surface-hover);
+}
+
+/* 面板标题行的「会话 · N / M」入口（M1-10）：可点击打开会话窗口，
+   hover 时提亮并出下划线暗示可点 */
+.panel-title-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.panel-title-link:hover {
+  color: var(--text-1);
+  text-decoration: underline;
+}
+
 /* 自绘悬浮提示（G2，常规窗口内用）：portal 挂 body，深色玻璃风。
    定位坐标由 Tip 组件按真实尺寸计算；触发元素经 cloneElement 注入事件，
    不产生包裹层（布局零侵入） */

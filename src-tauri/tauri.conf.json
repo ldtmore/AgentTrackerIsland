@@ -63,6 +63,18 @@
         "center": true
       },
       {
+        "label": "sessions",
+        "title": "会话 · 去你的岛",
+        "url": "index.html#sessions",
+        "width": 960,
+        "height": 700,
+        "minWidth": 760,
+        "minHeight": 520,
+        "visible": false,
+        "resizable": true,
+        "center": true
+      },
+      {
         "label": "about",
         "title": "关于 · 去你的岛",
         "url": "index.html#about",

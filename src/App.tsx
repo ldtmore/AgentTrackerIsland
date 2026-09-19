@@ -24,6 +24,9 @@ import "./App.css";
 
 // 报表页 lazy 分割：echarts 只在报表窗口加载，岛窗口 bundle 不受影响（01-RESEARCH §9）
 const Report = lazy(() => import("./report/Report"));
+// 会话窗口 lazy 分割（M1-10）：与报表页同款——独立窗口独立加载，
+// 不含 echarts；岛窗口 bundle 不受影响
+const Sessions = lazy(() => import("./sessions/Sessions"));
 // 关于页 lazy 分割：与报表页同款——独立窗口独立加载，岛窗口 bundle 不受影响
 const About = lazy(() => import("./about/About"));
 // 托盘菜单页 lazy 分割：托盘右键弹出的自绘菜单（M1-9），独立窗口独立加载
@@ -70,7 +73,9 @@ function IslandApp() {
   const [panelPhase, setPanelPhase] = useState<"in" | "out" | null>(null);
   // 面板内容自然高度（Panel 上报）：展开高度自适应的依据，null = 未测得
   const [panelH, setPanelH] = useState<number | null>(null);
-  // 胶囊"由远及近"入场：隐藏态滑回显示的瞬间置为贴边边（决定动画 origin 与位移方向）
+  // 胶囊"由远及近"入场：隐藏态滑回显示的瞬间置为贴边边（决定动画 origin 与位移方向）。
+  // 仅悬停路径消费（标签→胶囊翻转可见）；托盘召唤走物理滑入，无翻转不触发——
+  // 召唤时若重播动画会出现"胶囊先出现又闪回动画起点"的跳变（2026-09-20 实测）
   const [peekEnter, setPeekEnter] = useState<string | null>(null);
   const prevHiddenRef = useRef(false);
   // 上次实际下发的窗口高度（防循环护栏：观察器→setSize→resize→观察器）
@@ -228,6 +233,8 @@ function IslandApp() {
   // 移出滑出逻辑接管），期间被托盘隐藏或拖走也不动作
   useEffect(() => {
     const un = listen("island-summon", () => {
+      // 召唤的入场由 Rust 物理滑入承担（island_transition Pill），此处只负责
+      // 3s 自动收回计时；不重播 CSS 入场动画（避免胶囊已亮出又闪回动画起点）
       window.clearTimeout(summonTimer.current);
       summonTimer.current = window.setTimeout(() => {
         if (
@@ -372,7 +379,7 @@ function filterSnap(
   return { ...snap, sessions: snap.sessions.filter((s) => agents.includes(s.agent)) };
 }
 
-/** 按 URL hash 分流：设置窗口 / 报表窗口 / 关于窗口 / 托盘菜单窗口 / 灵动岛窗口 */
+/** 按 URL hash 分流：设置窗口 / 报表窗口 / 会话窗口 / 关于窗口 / 托盘菜单窗口 / 灵动岛窗口 */
 function App() {
   if (window.location.hash === "#settings") {
     return <Settings />;
@@ -388,6 +395,13 @@ function App() {
     return (
       <Suspense fallback={null}>
         <Report />
+      </Suspense>
+    );
+  }
+  if (window.location.hash === "#sessions") {
+    return (
+      <Suspense fallback={null}>
+        <Sessions />
       </Suspense>
     );
   }

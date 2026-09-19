@@ -245,11 +245,11 @@ fn open_repository() -> Result<(), String> {
     }
 }
 
-// ===== 报表 commands（M1-R1：整页快照 + 会话分页） =====
-// 报表聚合是重查询（审查 2.2.1：Tauri 同步 command 在主线程执行，"全部"范围
+// ===== 报表/会话窗口 commands（报表 M1-R1：整页快照；会话 M1-10：分页＋导出） =====
+// 聚合查询是重查询（审查 2.2.1：Tauri 同步 command 在主线程执行，"全部"范围
 // 大数据量时会冻结包括岛在内的全部窗口）——统一走 spawn_blocking 挪到线程池
 
-/// 报表查询公共壳：State 不能跨线程移动，先克隆 Arc 再进阻塞线程池。
+/// 报表/会话查询公共壳：State 不能跨线程移动，先克隆 Arc 再进阻塞线程池。
 /// 内层 Result 展平（查询失败与任务失败统一走 Err 通道）
 async fn run_report<T>(
     store: tauri::State<'_, Arc<Store>>,
@@ -284,32 +284,61 @@ async fn report_snapshot(
     .await
 }
 
-/// 报表：会话明细分页（翻页只拉本表，不重刷整页快照）
+/// 会话中心：筛选下拉选项（轻查询，只随范围变化；维度筛选不叠加）
 #[tauri::command]
-async fn report_sessions(
+async fn session_options(
     range: String,
-    agent: Option<String>,
-    project: Option<String>,
-    model: Option<String>,
-    offset: i64,
     store: tauri::State<'_, Arc<Store>>,
-) -> Result<store::SessionPage, String> {
+) -> Result<store::FilterOptions, String> {
     run_report(store, move |s| {
-        s.report_sessions(&range, agent.as_deref(), project.as_deref(), model.as_deref(), offset)
-            .ok_or_else(|| format!("未知范围档：{range}"))
+        s.session_options(&range).ok_or_else(|| format!("未知范围档：{range}"))
     })
     .await
 }
 
-/// 报表：导出当前范围＋筛选的会话明细 CSV（R2 对账场景）。
-/// 目标路径由前端保存对话框（tauri-plugin-dialog save）让用户自选，
-/// 这里只负责生成内容并写入；后缀校验防误传任意路径
+/// 会话中心：分页查询（M1-10，随会话窗口从报表迁移扩展）。
+/// 范围档白名单见 store：today｜7d｜30d｜90d｜all；状态档 all｜active｜ended｜errored；
+/// 排序键 recent｜tokens｜calls｜duration（store 侧白名单校验）
 #[tauri::command]
-async fn export_report_csv(
+async fn session_page(
     range: String,
     agent: Option<String>,
     project: Option<String>,
     model: Option<String>,
+    status: String,
+    keyword: String,
+    sort: String,
+    offset: i64,
+    store: tauri::State<'_, Arc<Store>>,
+) -> Result<store::SessionPage, String> {
+    run_report(store, move |s| {
+        s.session_page(
+            &range,
+            agent.as_deref(),
+            project.as_deref(),
+            model.as_deref(),
+            &status,
+            &keyword,
+            &sort,
+            offset,
+        )
+        .ok_or_else(|| format!("未知范围档/状态档/排序键：{range}/{status}/{sort}"))
+    })
+    .await
+}
+
+/// 会话中心：导出当前范围＋筛选＋状态＋关键字＋排序的会话列表 CSV（所见即所得）。
+/// 目标路径由前端保存对话框（tauri-plugin-dialog save）让用户自选，
+/// 这里只负责生成内容并写入；后缀校验防误传任意路径
+#[tauri::command]
+async fn export_sessions_csv(
+    range: String,
+    agent: Option<String>,
+    project: Option<String>,
+    model: Option<String>,
+    status: String,
+    keyword: String,
+    sort: String,
     path: String,
     store: tauri::State<'_, Arc<Store>>,
 ) -> Result<String, String> {
@@ -318,10 +347,18 @@ async fn export_report_csv(
             return Err("导出路径必须以 .csv 结尾".into());
         }
         let csv = s
-            .build_report_csv(&range, agent.as_deref(), project.as_deref(), model.as_deref())
-            .ok_or_else(|| format!("未知范围档：{range}"))?;
+            .build_sessions_csv(
+                &range,
+                agent.as_deref(),
+                project.as_deref(),
+                model.as_deref(),
+                &status,
+                &keyword,
+                &sort,
+            )
+            .ok_or_else(|| format!("未知范围档/状态档/排序键：{range}/{status}/{sort}"))?;
         std::fs::write(&path, csv.as_bytes()).map_err(|e| format!("CSV 写入失败：{e}"))?;
-        log::info!("[报表] 已导出 CSV：{}（{} 字节）", path, csv.len());
+        log::info!("[会话] 已导出 CSV：{}（{} 字节）", path, csv.len());
         Ok(path.clone())
     })
     .await
@@ -340,7 +377,7 @@ fn open_file_location(path: String) -> Result<(), String> {
     match std::process::Command::new("explorer").arg(format!("/select,{path}")).spawn() {
         Ok(_) => Ok(()),
         Err(e) => {
-            log::warn!("[报表] 打开导出目录失败（{path}）：{e}");
+            log::warn!("[导出] 打开导出目录失败（{path}）：{e}");
             Err(format!("打开目录失败：{e}"))
         }
     }
@@ -359,6 +396,23 @@ fn show_report_window(app: tauri::AppHandle) -> Result<(), String> {
         None => {
             log::warn!("[报表] 窗口不存在（未初始化？），入口点击无效果");
             Err("报表窗口不可用".into())
+        }
+    }
+}
+
+/// 显示并聚焦会话窗口（M1-10：岛面板标题行/「查看更多会话」溢出链接与
+/// 托盘菜单「会话」共用入口；常驻隐藏窗口，只 show 不重建）
+#[tauri::command]
+fn show_sessions_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    match app.get_webview_window("sessions") {
+        Some(w) => {
+            let _ = (w.show(), w.set_focus());
+            Ok(())
+        }
+        None => {
+            log::warn!("[会话] 窗口不存在（未初始化？），入口点击无效果");
+            Err("会话窗口不可用".into())
         }
     }
 }
@@ -404,10 +458,16 @@ fn island_peek(
     if edge == "none" {
         return;
     }
-    if show && hidden {
-        peek_apply(&app, store.as_ref(), &motion, false);
-    } else if !show && !hidden && autohide_enabled(store.as_ref()) {
-        peek_apply(&app, store.as_ref(), &motion, true);
+    // 目标态推导：滑入仅当当前隐藏；滑出仅当当前可见且自动隐藏开启（幂等守卫）
+    let target = match (show, hidden) {
+        (true, true) => Some(IslandTarget::Pill { summon: false }),
+        (false, false) if autohide_enabled(store.as_ref()) => {
+            Some(IslandTarget::Peek { jump: false })
+        }
+        _ => None,
+    };
+    if let Some(t) = target {
+        island_transition(&app, t);
     }
 }
 
@@ -425,11 +485,14 @@ fn island_refresh(
         (m.edge.clone(), m.hidden)
     };
     if edge != "none" {
-        let autohide = autohide_enabled(store.as_ref());
-        if hidden && !autohide {
-            peek_apply(&app, store.as_ref(), &motion, false);
-        } else if !hidden && autohide {
-            peek_apply(&app, store.as_ref(), &motion, true);
+        // 双向对称修正：关自动隐藏时若在隐藏态 → 滑回；开自动隐藏时若在停靠态 → 滑出
+        let target = match (hidden, autohide_enabled(store.as_ref())) {
+            (true, false) => Some(IslandTarget::Pill { summon: false }),
+            (false, true) => Some(IslandTarget::Peek { jump: false }),
+            _ => None,
+        };
+        if let Some(t) = target {
+            island_transition(&app, t);
         }
     }
 }
@@ -604,73 +667,125 @@ fn slide_to(
     });
 }
 
-/// 执行隐藏/显示：滑向隐藏位或停靠位，同步内存状态并向岛窗口广播 island-dock 事件
-fn peek_apply(
-    app: &tauri::AppHandle,
-    store: &Store,
-    motion: &Arc<Mutex<IslandMotion>>,
-    hide: bool,
-) {
+/// 岛的目标状态：显隐语义的唯一来源。全项目任何入口（托盘、悬停、设置页开关、
+/// 拖放吸附、启动恢复）都只声明目标态，编排细节一律由 island_transition 执行——
+/// 新增显隐入口不再各自写一套时序（2026-09-20 M1-9 显隐逻辑统一改造）
+enum IslandTarget {
+    /// 整窗隐藏（托盘隐藏）；停靠位仍记忆，供下次召回
+    Gone,
+    /// 贴边滑出、露标签。jump=true 瞬移（启动恢复专用，无动画）
+    Peek { jump: bool },
+    /// 胶囊可见（贴边滑回停靠位，或自由位原地亮出）。summon=true 时通知前端
+    /// 3s 无操作自动收回（临时召唤语义）
+    Pill { summon: bool },
+}
+
+/// 岛显隐唯一转换函数：全项目只允许这里动岛的窗口几何/可见性。
+/// 编排顺序固定——①改状态 ②窗口几何（收拢/滑动）③发 island-dock 事件
+/// ④窗口 show ⑤附带动作（穿透/召唤）。关键不变量：Gone 先预切前端 DOM 为
+/// 胶囊再整窗隐藏（隐藏期间 DOM 不可见，切换零成本），此后任何 show 的首帧
+/// 必然是目标态——「亮出旧状态残影再跳变」从机制上根除；show 与事件是异步
+/// 竞速，仅靠调用顺序压不住（2026-09-20 托盘召唤残影实测教训）。
+/// ⚠ 历史教训（2026-09-18）：slide_to 内部会 lock motion，本函数全程不得持
+/// motion 锁调用它——MutexGuard 活到作用域外会同线程自锁、全 UI 冻结
+fn island_transition(app: &tauri::AppHandle, target: IslandTarget) {
     let Some(win) = app.get_webview_window(ISLAND) else {
         return;
     };
-    let (edge, docked) = {
-        let m = motion.lock().unwrap();
-        (m.edge.clone(), saved_pos(store))
-    };
-    if edge == "none" || docked.is_none() {
-        return;
+    let motion = app.state::<Arc<Mutex<IslandMotion>>>();
+    let edge = motion.lock().unwrap().edge.clone();
+
+    match target {
+        IslandTarget::Gone => {
+            // ① DOM 预切回胶囊态（edge=none 时前端本就渲染胶囊，事件幂等）
+            // ② 整窗隐藏；穿透状态交由看护线程在下次显示前自然收敛
+            let _ = app.emit_to(
+                ISLAND,
+                "island-dock",
+                serde_json::json!({ "edge": edge, "hidden": false }),
+            );
+            if let Err(e) = win.hide() {
+                log::debug!("[岛] 转换 Gone 隐藏失败：{e}");
+            }
+            log::debug!("[岛] 转换 Gone（DOM 已预切胶囊）");
+        }
+        IslandTarget::Peek { jump } => {
+            // 非贴边停靠不存在"滑出隐藏"语义（island_peek/island_refresh 已守卫，
+            // 此处再防御一次）；停靠坐标缺失同样落空
+            if edge == "none" {
+                return;
+            }
+            let store = app.state::<Arc<Store>>();
+            let Some(docked) = saved_pos(&store) else {
+                return;
+            };
+            let Ok(Some(mon)) = win.current_monitor() else {
+                return;
+            };
+            let ml = monitor_logical(&mon);
+            let width = island_width(ml.2);
+            // 面板展开时贴边隐藏：先收拢到胶囊尺寸，锚定窗口底部的标签才会贴住屏幕边
+            let _ = win.set_size(tauri::LogicalSize::new(width, ISLAND_H));
+            {
+                let mut m = motion.lock().unwrap();
+                m.hidden = true;
+            }
+            // 滑出隐藏（In：加速离场）；启动恢复走 Jump 瞬移。
+            // 穿透交由看护线程按光标位置接管（90ms 节拍）
+            slide_to(
+                &win,
+                hidden_pos((ml.0, ml.1), ml.2, &edge, docked, width),
+                mon.scale_factor(),
+                &motion,
+                if jump { Slide::Jump } else { Slide::In(SLIDE_HIDE_MS) },
+            );
+            let _ = app.emit_to(
+                ISLAND,
+                "island-dock",
+                serde_json::json!({ "edge": edge, "hidden": true }),
+            );
+            log::debug!("[岛] 转换 Peek：edge={edge}");
+        }
+        IslandTarget::Pill { summon } => {
+            let Ok(Some(mon)) = win.current_monitor() else {
+                return;
+            };
+            let ml = monitor_logical(&mon);
+            let width = island_width(ml.2);
+            // 面板可能处于展开态，先收拢到胶囊尺寸
+            let _ = win.set_size(tauri::LogicalSize::new(width, ISLAND_H));
+            {
+                let mut m = motion.lock().unwrap();
+                m.hidden = false;
+            }
+            // 解除穿透立即生效：看护线程 90ms 粒度太慢，滑入途中收不到悬停
+            let _ = win.set_ignore_cursor_events(false);
+            // 贴边停靠：滑回停靠位（Out：减速进场）；自由位原地亮出，无需滑动
+            if edge != "none" {
+                let store = app.state::<Arc<Store>>();
+                if let Some(docked) = saved_pos(&store) {
+                    slide_to(
+                        &win,
+                        docked,
+                        mon.scale_factor(),
+                        &motion,
+                        Slide::Out(SLIDE_SHOW_MS),
+                    );
+                }
+            }
+            let _ = app.emit_to(
+                ISLAND,
+                "island-dock",
+                serde_json::json!({ "edge": edge, "hidden": false }),
+            );
+            let _ = win.show();
+            if summon {
+                // 广播"托盘召唤"给前端计时（3s 无操作自动收回，鼠标移入即取消）
+                let _ = app.emit_to(ISLAND, "island-summon", ());
+            }
+            log::debug!("[岛] 转换 Pill：edge={edge} summon={summon}");
+        }
     }
-    let docked = docked.unwrap();
-    let Ok(Some(mon)) = win.current_monitor() else {
-        return;
-    };
-    let ml = monitor_logical(&mon);
-    let width = island_width(ml.2);
-    // 隐藏/显示前强制收回收缩态尺寸：面板展开时贴边隐藏，若按 520 高度渲染，
-    // 锚定窗口底部的标签会出现在面板下方而非屏幕边缘
-    let _ = win.set_size(tauri::LogicalSize::new(width, ISLAND_H));
-    let to = if hide {
-        hidden_pos((ml.0, ml.1), ml.2, &edge, docked, width)
-    } else {
-        docked
-    };
-    {
-        let mut m = motion.lock().unwrap();
-        m.hidden = hide;
-    }
-    // 滑入显示：立即解除鼠标穿透（看护线程的按光标启停是 90ms 粒度，这里必须同步做，
-    // 否则滑入后的胶囊最长 90ms 收不到悬停）；滑出隐藏交给看护线程按光标位置接管
-    if !hide {
-        let _ = win.set_ignore_cursor_events(false);
-    }
-    let scale = mon.scale_factor();
-    // 隐藏加速离场（In），显示减速进场（Out）
-    slide_to(
-        &win,
-        to,
-        scale,
-        motion,
-        if hide { Slide::In(SLIDE_HIDE_MS) } else { Slide::Out(SLIDE_SHOW_MS) },
-    );
-    log::debug!(
-        "[岛] {}：edge={} 落点 {:?}",
-        if hide { "滑出隐藏" } else { "滑回显示" },
-        edge,
-        to
-    );
-    // 先取值再放锁再广播：MutexGuard 实现 Drop 会活到函数末尾，持锁调用任何
-    // 又会 lock motion 的函数都会同线程自锁——motion
-    // 永久被持有后主线程 Moved 处理器拿锁阻塞，全 UI 冻结（2026-09-18 实测教训）
-    let (edge_s, hidden_s) = {
-        let m = motion.lock().unwrap();
-        (m.edge.clone(), m.hidden)
-    };
-    let _ = app.emit_to(
-        ISLAND,
-        "island-dock",
-        serde_json::json!({"edge": edge_s, "hidden": hidden_s}),
-    );
 }
 
 /// 拖放后的贴靠评估：吸附到最近的屏幕边，按设置决定是否滑出隐藏；自由位置则原样记忆。
@@ -718,40 +833,19 @@ fn apply_snap(
     {
         let mut m = motion.lock().unwrap();
         m.edge = edge.to_string();
-        m.hidden = hide;
     }
     store.set_setting("island_pos", &format!("{},{}", docked.0, docked.1));
     store.set_setting("island_edge", edge);
-    // 吸附隐藏前强制收回收缩态尺寸（拖拽时面板可能仍展开，理由同 peek_apply）
-    if hide {
-        let _ = win.set_size(tauri::LogicalSize::new(width, ISLAND_H));
-    }
-    let to = if hide {
-        hidden_pos((ml.0, ml.1), ml.2, edge, docked, width)
-    } else {
-        docked
-    };
-    // 拖放吸附与 peek 同一套缓动语言：隐藏加速离场，落位减速进场
-    slide_to(
-        &win,
-        to,
-        scale,
-        motion,
-        if hide { Slide::In(SLIDE_HIDE_MS) } else { Slide::Out(SLIDE_SHOW_MS) },
-    );
+    // 显隐交由统一状态机（edge/坐标已持久化，转换函数据此取落点）；
     // 状态迁移留痕（排障主线索："岛不贴边/位置不对/消失"靠它重建时间线）
-    log::debug!("[岛] 拖放吸附：edge={} hidden={} 落点 {:?}", edge, hide, to);
-    // 先取值再放锁再广播：MutexGuard 实现 Drop 会活到函数末尾，持锁调用任何
-    // 又会 lock motion 的函数都会同线程自锁——motion
-    // 永久被持有后主线程 Moved 处理器拿锁阻塞，全 UI 冻结（2026-09-18 实测教训）
-    let (edge_s, hidden_s) = {
-        let m = motion.lock().unwrap();
-        (m.edge.clone(), m.hidden)
-    };
-    let _ = app.emit_to(
-        ISLAND,
-        "island-dock",
-        serde_json::json!({"edge": edge_s, "hidden": hidden_s}),
+    log::debug!("[岛] 拖放吸附：edge={} hide={} 落点 {:?}", edge, hide, docked);
+    island_transition(
+        app,
+        if hide {
+            IslandTarget::Peek { jump: false }
+        } else {
+            IslandTarget::Pill { summon: false }
+        },
     );
 }
 
@@ -794,7 +888,7 @@ fn cursor_on_top_tab(win: &tauri::WebviewWindow) -> bool {
 }
 
 /// 切换岛窗口鼠标穿透。带状态缓存：期望与缓存一致时不发系统调用，
-/// 避免 90ms 看护节拍下重复 SetWindowLong；peek_apply 显示路径绕过缓存
+/// 避免 90ms 看护节拍下重复 SetWindowLong；island_transition 显示路径绕过缓存
 /// 直接解除后，此处下一轮比对会自动收敛（缓存与实际短暂失配无害）
 fn set_click_through(win: &tauri::WebviewWindow, on: bool, last: &mut bool) {
     if on == *last {
@@ -825,10 +919,12 @@ pub fn run() {
             autostart_set,
             open_repository,
             report_snapshot,
-            report_sessions,
-            export_report_csv,
+            session_options,
+            session_page,
+            export_sessions_csv,
             open_file_location,
             show_report_window,
+            show_sessions_window,
             island_peek,
             island_refresh,
             island_dock_state,
@@ -967,31 +1063,19 @@ pub fn run() {
                 });
             }
 
-            // 启动恢复：上次贴边 + 自动隐藏开启 → 瞬时滑出（仅露边）；其余按记忆坐标可见
+            // 启动恢复：上次贴边 + 自动隐藏开启 → 瞬移滑出（仅露边）；其余按记忆坐标可见。
+            // 走统一转换函数：此时 webview 未挂载，island-dock 事件无接收者，
+            // 前端挂载后经 island_dock_state 拉取补齐首帧状态（原有时序）
             {
                 let edge = motion.lock().unwrap().edge.clone();
                 if edge != "none" && autohide_enabled(store.as_ref()) {
-                    if let (Some(mon), Some(docked)) = (
-                        win.current_monitor().ok().flatten(),
-                        saved_pos(store.as_ref()),
-                    ) {
-                        let ml = monitor_logical(&mon);
-                        slide_to(
-                            &win,
-                            hidden_pos((ml.0, ml.1), ml.2, &edge, docked, island_width(ml.2)),
-                            mon.scale_factor(),
-                            &motion,
-                            Slide::Jump,
-                        );
-                        // 同步内存隐藏态：否则 island_peek 会误判"未隐藏"，悬停滑入失效
-                        motion.lock().unwrap().hidden = true;
-                        log::debug!("[岛] 启动恢复贴边隐藏：edge={edge} 停靠位 {:?}", docked);
-                    }
+                    island_transition(app.handle(), IslandTarget::Peek { jump: true });
+                    log::debug!("[岛] 启动恢复贴边隐藏：edge={edge}");
                 }
             }
 
-            // 设置/报表/关于/托盘菜单窗口：关闭即隐藏（而非销毁），保证托盘可反复唤起
-            for label in ["settings", "report", "about", "tray-menu"] {
+            // 设置/会话/报表/关于/托盘菜单窗口：关闭即隐藏（而非销毁），保证托盘可反复唤起
+            for label in ["settings", "sessions", "report", "about", "tray-menu"] {
                 if let Some(w) = app.get_webview_window(label) {
                     let w2 = w.clone();
                     w.on_window_event(move |ev| {
@@ -1219,42 +1303,34 @@ fn show_aux_window(app: &tauri::AppHandle, label: &str) {
 }
 
 /// 托盘切换灵动岛显隐（"隐藏"=彻底消失，"显示"=临时召唤）。
-/// 贴边隐藏态的窗口仍在屏外"可见"（is_visible=true）——隐藏须连边缘标签一起
-/// 整窗 hide；显示则先在前端切好胶囊态再亮窗（顺序关键，见函数内注释），
-/// 贴边停靠时滑回停靠位并通知前端 3s 后自动收起（前端持定时器，鼠标移入即
-/// 取消，见 App.tsx island-summon）
+/// 贴边隐藏态的窗口仍在屏外"可见"（is_visible=true）——隐藏是整窗 hide；
+/// 显示时贴边停靠滑回停靠位亮相（summon：3s 无操作自动收回，鼠标移入即
+/// 取消，见 App.tsx island-summon），自由摆放原地亮出、无自动收起。
+/// 编排细节全部在 island_transition（显隐唯一入口）
 fn toggle_island(app: &tauri::AppHandle) {
     let Some(w) = app.get_webview_window(ISLAND) else {
         return;
     };
     if w.is_visible().unwrap_or(false) {
-        // 任意可见态（胶囊或贴边标签）→ 彻底隐藏；停靠坐标仍记忆，供下次召回
-        if let Err(e) = w.hide() {
-            log::debug!("[岛] 托盘隐藏失败：{e}");
-        }
+        // 任意可见态（胶囊或贴边标签）→ 整窗隐藏；停靠坐标仍记忆，供下次召回
+        island_transition(app, IslandTarget::Gone);
         return;
     }
-    let motion = app.state::<Arc<Mutex<IslandMotion>>>();
-    let edge = motion.lock().unwrap().edge.clone();
-    if edge != "none" {
-        // 贴边停靠：先切状态、后亮窗——peek_apply 把前端状态切成胶囊并开始
-        // 滑回停靠位时窗口仍隐藏，island-dock 事件先行到达，show() 亮出的首帧
-        // 即胶囊。若先 show 后切状态，首帧是旧状态（贴边标签）残影，闪现后才
-        // 跳成胶囊（2026-09-20 所有者实测反馈）
-        let store = app.state::<Arc<Store>>();
-        peek_apply(app, store.as_ref(), motion.inner(), false);
-        if let Err(e) = w.show() {
-            log::debug!("[岛] 托盘显示失败：{e}");
-            return;
-        }
-        // 广播"托盘召唤"给前端计时（3s 无操作自动收回，鼠标移入即取消）
-        let _ = app.emit_to(ISLAND, "island-summon", ());
-    } else {
-        // edge=none 自由摆放：胶囊在原位直接出现，无自动收起
-        if let Err(e) = w.show() {
-            log::debug!("[岛] 托盘显示失败：{e}");
-        }
-    }
+    // 隐藏中 → 召回
+    let edge = app
+        .state::<Arc<Mutex<IslandMotion>>>()
+        .lock()
+        .unwrap()
+        .edge
+        .clone();
+    island_transition(
+        app,
+        if edge != "none" {
+            IslandTarget::Pill { summon: true }
+        } else {
+            IslandTarget::Pill { summon: false }
+        },
+    );
 }
 
 /// 托盘菜单动作分发（webview 菜单项 → Rust）：白名单枚举，全部复用托盘旧有
@@ -1269,6 +1345,10 @@ fn tray_menu_action(app: tauri::AppHandle, action: String) -> Result<(), String>
         }
         "report" => {
             show_aux_window(&app, "report");
+            Ok(())
+        }
+        "sessions" => {
+            show_aux_window(&app, "sessions");
             Ok(())
         }
         "settings" => {

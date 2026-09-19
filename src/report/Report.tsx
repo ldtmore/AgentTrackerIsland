@@ -1,13 +1,12 @@
 /**
- * 报表页（M1-R1 重构）：多维用量分析 ——
+ * 报表页（M1-R1 重构；M1-10 瘦身：会话明细迁往独立会话窗口，本页回归纯聚合分析）：
  * 汇总卡 / 趋势（粒度随范围自动：今日→小时、7~30 天→日、90 天→周、全部→月）/
- * Agent·项目·模型·供应商维度条（点击联动全局筛选）/ 周×小时热力图 / 会话明细分页。
+ * Agent·项目·模型·供应商维度条（点击联动全局筛选）/ 周×小时热力图。
  * 数据来自本地 SQLite，Rust 侧单命令整页快照（各图口径一致）；
- * 时间口径为本机时区；筛选变更全量重拉，翻页仅重拉会话表（本地查询毫秒级）
+ * 时间口径为本机时区；筛选变更全量重拉（本地查询毫秒级）
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
 import * as echarts from "echarts/core";
 import type { EChartsCoreOption } from "echarts/core";
 import { BarChart, HeatmapChart } from "echarts/charts";
@@ -19,6 +18,8 @@ import {
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import Chart from "./Chart";
+import SearchSelect from "../shared/SearchSelect";
+import { tail } from "../shared/format";
 import { fmtTokens, fmtDuration, agentColor, errorReason } from "../shared/types";
 import { useTheme } from "../shared/theme";
 import "./report.css";
@@ -75,27 +76,6 @@ interface HeatCell {
   calls: number;
 }
 
-/** 会话明细行 */
-interface SessionRow {
-  session_id: string;
-  agent: string;
-  project_dir: string | null;
-  title: string | null;
-  first_ts: number;
-  last_ts: number;
-  calls: number;
-  total_tokens: number;
-  /** 模型生成时长合计；转录无时长字段的 Agent（Claude Code）为 null */
-  duration_ms: number | null;
-}
-
-/** 会话分页结果 */
-interface SessionPage {
-  total: number;
-  page_size: number;
-  rows: SessionRow[];
-}
-
 /** 筛选下拉选项（projects 中空串=未知项目） */
 interface FilterOptions {
   agents: string[];
@@ -138,9 +118,6 @@ const STACK = [
 /** 维度条渐变备用色（项目/模型/供应商行，未提供 colorFn 时按序取用） */
 const DIM_COLORS = ["#38bdf8", "#f472b6", "#facc15", "#4ade80", "#fb7185", "#a78bfa", "#60a5fa", "#34d399"];
 
-/** 路径取尾段（F:\repo\projA → projA；显示用，过滤值仍用全路径） */
-const tail = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
-
 /** 趋势桶显示标签：今日→"HH:00"、7/30 天与 90 天→"MM-DD"、全部→"YYYY-MM" */
 function bucketLabel(b: string, range: string): string {
   if (range === "today") return b.slice(11);
@@ -148,111 +125,7 @@ function bucketLabel(b: string, range: string): string {
   return b.slice(5);
 }
 
-/** 毫秒 → "MM-dd HH:mm"（本机时区） */
-function fmtDT(ms: number): string {
-  const d = new Date(ms);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-/** 可搜索下拉（筛选用）：选项多时输入关键字模糊匹配快速定位；
- *  value 为过滤原值（项目为全路径），label 为显示文本（项目为尾段） */
-function SearchSelect({
-  value,
-  options,
-  allLabel,
-  onChange,
-}: {
-  /** 当前选中值；null=全部 */
-  value: string | null;
-  options: { value: string; label: string }[];
-  allLabel: string;
-  onChange: (v: string | null) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [q, setQ] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
-
-  // 点击组件外部关闭浮层
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
-
-  // 模糊过滤：label 与 value 都参与匹配（项目可按全路径关键字搜）
-  const kw = q.trim().toLowerCase();
-  const filtered = kw
-    ? options.filter(
-        (o) => o.label.toLowerCase().includes(kw) || o.value.toLowerCase().includes(kw),
-      )
-    : options;
-  const current = options.find((o) => o.value === value);
-
-  return (
-    <div className="rp-sel" ref={ref}>
-      <button
-        type="button"
-        className={`rp-sel-btn${open ? " open" : ""}`}
-        onClick={() => {
-          setOpen(!open);
-          setQ(""); // 每次打开重置搜索词
-        }}
-      >
-        <span className="rp-sel-text" title={current?.value ?? allLabel}>
-          {current ? current.label : allLabel}
-        </span>
-        <span className="rp-sel-caret">▾</span>
-      </button>
-      {open && (
-        <div className="rp-sel-pop">
-          <input
-            className="rp-sel-search"
-            autoFocus
-            value={q}
-            placeholder="输入关键字过滤…"
-            onChange={(e) => setQ(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") setOpen(false);
-              if (e.key === "Enter" && filtered.length > 0) {
-                onChange(filtered[0].value);
-                setOpen(false);
-              }
-            }}
-          />
-          <div className="rp-sel-list">
-            <div
-              className={`rp-sel-opt${value == null ? " on" : ""}`}
-              onClick={() => {
-                onChange(null);
-                setOpen(false);
-              }}
-            >
-              {allLabel}
-            </div>
-            {filtered.map((o) => (
-              <div
-                key={o.value}
-                className={`rp-sel-opt${value === o.value ? " on" : ""}`}
-                title={o.value}
-                onClick={() => {
-                  onChange(o.value);
-                  setOpen(false);
-                }}
-              >
-                {o.label}
-              </div>
-            ))}
-            {filtered.length === 0 && <div className="rp-sel-none">无匹配项</div>}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+/** 可搜索下拉（筛选用）已抽至 shared/SearchSelect（M1-10：报表页与会话窗口共用） */
 
 /** 指标键（趋势图三档；热力图两档无时长数据） */type MetricKey = "token" | "calls" | "duration";
 
@@ -364,31 +237,22 @@ export default function Report() {
   const [agent, setAgent] = useState<string | null>(null);
   const [project, setProject] = useState<string | null>(null);
   const [model, setModel] = useState<string | null>(null);
-  // 数据：整页快照 + 会话分页
+  // 数据：整页快照（会话明细已迁往会话窗口，M1-10）
   const [snap, setSnap] = useState<ReportSnapshot | null>(null);
-  const [sess, setSess] = useState<SessionPage | null>(null);
-  const [sessOffset, setSessOffset] = useState(0);
   const [loaded, setLoaded] = useState(false);
   // 图表指标切换（数据已多指标下发，切换免回查）
   const [trendMetric, setTrendMetric] = useState<MetricKey>("token");
   const [heatMetric, setHeatMetric] = useState<"token" | "calls">("token");
-  // CSV 导出提示：text 为展示文案；path 非空时可点击定位到文件（失败时不可点）
-  const [exportTip, setExportTip] = useState<{ text: string; path: string | null } | null>(null);
 
-  // 筛选变更：整页快照 + 会话表第一页一起重拉（本地毫秒级）
+  // 筛选变更：整页快照重拉（本地毫秒级）
   useEffect(() => {
     let alive = true;
     setLoaded(false);
-    setSessOffset(0);
     (async () => {
       try {
-        const [s, page] = await Promise.all([
-          invoke<ReportSnapshot>("report_snapshot", { range, agent, project, model }),
-          invoke<SessionPage>("report_sessions", { range, agent, project, model, offset: 0 }),
-        ]);
+        const s = await invoke<ReportSnapshot>("report_snapshot", { range, agent, project, model });
         if (!alive) return;
         setSnap(s);
-        setSess(page);
       } catch {
         if (alive) setSnap(null); // 查询失败按空态展示（范围档白名单外等异常）
       } finally {
@@ -399,51 +263,6 @@ export default function Report() {
       alive = false;
     };
   }, [range, agent, project, model]);
-
-  /** 翻页：只重拉会话表，不刷新其它图 */
-  const turnPage = (dir: 1 | -1) => {
-    const size = sess?.page_size ?? 8;
-    const total = sess?.total ?? 0;
-    const pages = Math.max(1, Math.ceil(total / size));
-    const next = Math.min(Math.max(sessOffset + dir * size, 0), (pages - 1) * size);
-    if (next === sessOffset) return;
-    setSessOffset(next);
-    invoke<SessionPage>("report_sessions", { range, agent, project, model, offset: next })
-      .then(setSess)
-      .catch(() => {});
-  };
-
-  /** 导出当前范围＋筛选的会话明细 CSV：先弹系统保存对话框让用户自选
-   *  目录与文件名（取消则不动作），成功后提示文字可点击定位文件 */
-  const doExport = async () => {
-    const d = new Date();
-    const p2 = (n: number) => String(n).padStart(2, "0");
-    const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
-    const target = await save({
-      title: "导出用量报表 CSV",
-      defaultPath: `AgentTrackerIsland-用量报表-${stamp}.csv`,
-      filters: [{ name: "CSV 文件", extensions: ["csv"] }],
-    });
-    if (!target) return; // 用户取消
-    setExportTip({ text: "导出中…", path: null });
-    try {
-      await invoke<string>("export_report_csv", { range, agent, project, model, path: target });
-      setExportTip({
-        text: `已导出：${target.split(/[\\/]/).pop()}（点击打开所在目录）`,
-        path: target,
-      });
-    } catch (e) {
-      setExportTip({ text: `导出失败：${e}`, path: null });
-    }
-  };
-
-  /** 点击导出提示：资源管理器定位到导出文件 */
-  const openExportLocation = () => {
-    if (!exportTip?.path) return;
-    invoke("open_file_location", { path: exportTip.path }).catch((e) => {
-      setExportTip({ text: `打开目录失败：${e}`, path: null });
-    });
-  };
 
   // 图表主题色（M1-4）：轴线/图例文字、网格线随主题切换；
   // 序列配色（STACK/DIM_COLORS/热力色阶）为高饱和色，双主题通用
@@ -565,9 +384,6 @@ export default function Report() {
 
   const summary = snap?.summary;
   const empty = loaded && (snap == null || (summary != null && summary.calls === 0));
-  const pageSize = sess?.page_size ?? 8;
-  const pageCount = Math.max(1, Math.ceil((sess?.total ?? 0) / pageSize));
-  const pageNo = Math.floor(sessOffset / pageSize) + 1;
   const hasFilter = agent != null || project != null || model != null;
 
   return (
@@ -575,18 +391,7 @@ export default function Report() {
       <div className="rp-header">
         <span className="rp-title">用量报表</span>
         <div className="rp-header-right">
-          {exportTip && (
-            <span
-              className={`rp-export-tip${exportTip.path ? " link" : ""}`}
-              title={exportTip.path ?? exportTip.text}
-              onClick={openExportLocation}
-            >
-              {exportTip.text}
-            </span>
-          )}
-          <button className="rp-btn rp-export" onClick={doExport}>
-            导出 CSV
-          </button>
+          {/* 会话级导出已随会话明细迁往会话窗口（M1-10） */}
           <div className="rp-ranges">
             {RANGES.map((r) => (
               <button
@@ -763,58 +568,13 @@ export default function Report() {
               <Chart option={heatOption} height={230} />
             </section>
 
-            {/* 会话明细（下钻终点）：按总 token 降序分页 */}
-            <section className="rp-card">
-              <div className="rp-card-head">
-                <div className="rp-card-title">会话明细（共 {sess?.total ?? 0} 个）</div>
-                <div className="rp-pager">
-                  <button className="rp-btn" disabled={pageNo <= 1} onClick={() => turnPage(-1)}>
-                    上一页
-                  </button>
-                  <span className="rp-page-no">
-                    {pageNo} / {pageCount}
-                  </span>
-                  <button className="rp-btn" disabled={pageNo >= pageCount} onClick={() => turnPage(1)}>
-                    下一页
-                  </button>
-                </div>
-              </div>
-              <table className="rp-table">
-                <thead>
-                  <tr>
-                    <th>会话 / 项目</th>
-                    <th>Agent</th>
-                    <th>首次</th>
-                    <th>最近</th>
-                    <th>次数</th>
-                    <th>生成时长</th>
-                    <th>总 Token</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(sess?.rows ?? []).map((r) => (
-                    <tr key={r.session_id}>
-                      <td title={r.project_dir ?? r.session_id}>
-                        {r.title || (r.project_dir ? tail(r.project_dir) : r.session_id.slice(-8))}
-                      </td>
-                      <td>{r.agent}</td>
-                      <td>{fmtDT(r.first_ts)}</td>
-                      <td>{fmtDT(r.last_ts)}</td>
-                      <td>{r.calls}</td>
-                      <td title="模型生成时长合计；— 表示该 Agent 转录无时长字段">
-                        {fmtDuration(r.duration_ms)}
-                      </td>
-                      <td className="num">{fmtTokens(r.total_tokens)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </section>
+            {/* 会话明细已迁往独立会话窗口（M1-10）：本页收敛为纯聚合分析 */}
 
             <div className="rp-foot">
               统计口径：输入＋输出＋缓存读写的全量 token（与官方账单同口径）·
               思考占比＝思考／（输入＋输出＋思考），不含缓存 ·
               生成时长与平均首字仅 ZCode 等转录含时长字段的 Agent ·
+              逐会话明细请用岛面板或托盘菜单打开「会话」窗口 ·
               数据源为本地 SQLite，不代表官方计费
             </div>
           </>

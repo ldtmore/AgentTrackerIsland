@@ -66,6 +66,16 @@ export function ReportIcon() {
   );
 }
 
+/** 列表（会话中心入口）：三行条目线，行首圆点示意逐条会话 */
+export function SessionsIcon() {
+  return (
+    <svg {...BASE} className="ico">
+      <path d="M8 6h13M8 12h13M8 18h13" />
+      <path d="M3.5 6v.5M3.5 12v.5M3.5 18v.5" />
+    </svg>
+  );
+}
+
 /** 胶囊（灵动岛显隐切换项）：横向圆角胶囊即岛的收缩态形态 */
 export function IslandIcon() {
   return (

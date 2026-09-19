@@ -23,7 +23,7 @@ import {
   type SessionState,
   type Thresholds,
 } from "../shared/types";
-import { GearIcon, InfoIcon, IslandIcon, PowerIcon, ReportIcon, WarnIcon } from "../shared/icons";
+import { GearIcon, InfoIcon, IslandIcon, PowerIcon, ReportIcon, SessionsIcon, WarnIcon } from "../shared/icons";
 import "./traymenu.css";
 
 /** 菜单窗口宽度（与 tauri.conf.json tray-menu.width 保持一致；高度自适应内容，无需同步） */
@@ -231,6 +231,7 @@ export default function TrayMenu() {
           onClick={() => act("toggle")}
         />
         <Item icon={<ReportIcon />} label="报表" onClick={() => act("report")} />
+        <Item icon={<SessionsIcon />} label="会话" onClick={() => act("sessions")} />
         <Item icon={<GearIcon />} label="设置" onClick={() => act("settings")} />
         <Item icon={<InfoIcon />} label="关于" onClick={() => act("about")} />
         <div className="tm-sep" />

@@ -1,0 +1,106 @@
+/* 可搜索下拉样式（M1-10 随组件从报表页抽出共享；色板走 App.css 主题变量） */
+
+.sel {
+  position: relative;
+  min-width: 150px;
+}
+
+.sel-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  color: var(--text-1);
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.sel-btn.open {
+  border-color: var(--accent);
+}
+
+.sel-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sel-caret {
+  font-size: 10px;
+  color: var(--text-4);
+  flex: none;
+}
+
+/* 浮层：搜索框 + 选项列表（顶部对齐按钮向下弹） */
+.sel-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: 360px;
+  background: var(--option-bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px var(--edge-shadow);
+  z-index: 30;
+  overflow: hidden;
+}
+
+.sel-search {
+  box-sizing: border-box;
+  width: 100%;
+  background: var(--input-bg);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-1);
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+}
+
+.sel-list {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.sel-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sel-list::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 3px;
+}
+
+.sel-opt {
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.sel-opt:hover {
+  background: var(--surface-hover);
+}
+
+.sel-opt.on {
+  color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.sel-none {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-4);
+}

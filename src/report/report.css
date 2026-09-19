@@ -1,5 +1,6 @@
-/* 报表页样式（M1-R1 重构：汇总卡＋筛选联动＋维度条＋会话表；常规窗口， */
-/* 色板走 App.css 的主题变量，支持深浅双主题，与设置页同族） */
+/* 报表页样式（M1-R1 重构；M1-10 瘦身：会话明细表样式随功能迁往 */
+/* sessions/sessions.css，可搜索下拉样式随组件迁往 shared/searchselect.css）。 */
+/* 常规窗口，色板走 App.css 的主题变量，支持深浅双主题，与设置页同族 */
 
 .rp-root {
   box-sizing: border-box;
@@ -48,36 +49,12 @@
   white-space: nowrap;
 }
 
-/* 页头右侧：导出提示 + 导出按钮 + 范围档 */
+/* 页头右侧：范围档（导出按钮已随会话明细迁往会话窗口，M1-10） */
 .rp-header-right {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-}
-
-/* 导出结果行内提示（成功显示文件名，失败显示原因；不弹窗不打扰）；
-   path 非空时加 link 类：可点击定位文件 */
-.rp-export-tip {
-  font-size: 11px;
-  color: var(--text-3);
-  max-width: 320px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.rp-export-tip.link {
-  color: var(--accent);
-  cursor: pointer;
-}
-
-.rp-export-tip.link:hover {
-  text-decoration: underline;
-}
-
-.rp-export {
-  white-space: nowrap;
 }
 
 .rp-ranges {
@@ -147,120 +124,13 @@
   color: var(--danger);
 }
 
-/* ===== 筛选条（维度下拉，与维度条点击双向联动） ===== */
+/* ===== 筛选条（维度下拉；可搜索下拉组件样式在 shared/searchselect.css） ===== */
 
 .rp-filter {
   display: flex;
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
-}
-
-/* ===== 可搜索下拉（筛选条） ===== */
-
-.rp-sel {
-  position: relative;
-  min-width: 150px;
-}
-
-.rp-sel-btn {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  background: var(--input-bg);
-  border: 1px solid var(--input-border);
-  color: var(--text-1);
-  border-radius: 8px;
-  padding: 5px 8px;
-  font-size: 12px;
-  font-family: inherit;
-  cursor: pointer;
-}
-
-.rp-sel-btn.open {
-  border-color: var(--accent);
-}
-
-.rp-sel-text {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.rp-sel-caret {
-  font-size: 10px;
-  color: var(--text-4);
-  flex: none;
-}
-
-/* 浮层：搜索框 + 选项列表（顶部对齐按钮向下弹） */
-.rp-sel-pop {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  min-width: 100%;
-  width: max-content;
-  max-width: 360px;
-  background: var(--option-bg);
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  box-shadow: 0 6px 20px var(--edge-shadow);
-  z-index: 30;
-  overflow: hidden;
-}
-
-.rp-sel-search {
-  box-sizing: border-box;
-  width: 100%;
-  background: var(--input-bg);
-  border: none;
-  border-bottom: 1px solid var(--border);
-  color: var(--text-1);
-  padding: 6px 8px;
-  font-size: 12px;
-  font-family: inherit;
-  outline: none;
-}
-
-.rp-sel-list {
-  max-height: 240px;
-  overflow-y: auto;
-}
-
-.rp-sel-list::-webkit-scrollbar {
-  width: 6px;
-}
-
-.rp-sel-list::-webkit-scrollbar-thumb {
-  background: var(--scroll-thumb);
-  border-radius: 3px;
-}
-
-.rp-sel-opt {
-  padding: 5px 10px;
-  font-size: 12px;
-  color: var(--text-2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-
-.rp-sel-opt:hover {
-  background: var(--surface-hover);
-}
-
-.rp-sel-opt.on {
-  color: var(--accent);
-  background: var(--surface-hover);
-}
-
-.rp-sel-none {
-  padding: 8px 10px;
-  font-size: 12px;
-  color: var(--text-4);
 }
 
 .rp-clear {
@@ -419,59 +289,7 @@
   padding: 2px 6px;
 }
 
-/* ===== 会话明细表 ===== */
-
-.rp-pager {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.rp-page-no {
-  font-size: 12px;
-  color: var(--text-3);
-  font-variant-numeric: tabular-nums;
-}
-
-.rp-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 4px;
-}
-
-.rp-table th {
-  text-align: left;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-4);
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-}
-
-.rp-table td {
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
-  color: var(--text-2);
-  white-space: nowrap;
-}
-
-.rp-table td:first-child {
-  max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text-1);
-}
-
-.rp-table td.num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-1);
-}
-
-.rp-table tbody tr:hover {
-  background: var(--surface-hover);
-}
+/* 会话明细表样式已随功能迁往 sessions/sessions.css（M1-10） */
 
 .rp-empty {
   color: var(--text-4);

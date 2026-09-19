@@ -1,0 +1,344 @@
+/* 会话窗口样式（M1-10：会话管理中心；常规窗口， */
+/* 色板走 App.css 的主题变量，支持深浅双主题，与报表/设置页同族） */
+
+.ss-root {
+  box-sizing: border-box;
+  /* 自身作为滚动容器（与设置/报表页同模式）：全局 App.css 对 body 设了 overflow:hidden，
+     内容超出窗口高度时由 .ss-root 出滚动条 */
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--root-bg);
+  color: var(--text-1);
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 13px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 滚动条：与设置/报表/岛面板同款（6px 细条半透明，悬停加亮） */
+.ss-root::-webkit-scrollbar {
+  width: 6px;
+}
+
+.ss-root::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ss-root::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 3px;
+}
+
+.ss-root::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+
+/* ===== 页头：标题 + 数据截至 + 刷新 + 导出 ===== */
+
+.ss-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.ss-title {
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ss-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 数据截至时间戳：诚实呈现数据时点（打开/刷新时查询，非实时） */
+.ss-stamp {
+  font-size: 11px;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+
+/* 导出结果行内提示（成功显示文件名，失败显示原因；不弹窗不打扰）；
+   path 非空时加 link 类：可点击定位文件 */
+.ss-export-tip {
+  font-size: 11px;
+  color: var(--text-3);
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ss-export-tip.link {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.ss-export-tip.link:hover {
+  text-decoration: underline;
+}
+
+.ss-export {
+  white-space: nowrap;
+}
+
+/* ===== 按钮（与报表 rp-btn 同款） ===== */
+
+.ss-btn {
+  background: var(--btn-bg);
+  border: 1px solid var(--border-strong);
+  color: var(--text-1);
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.ss-btn:hover:not(:disabled) {
+  background: var(--btn-bg-hover);
+}
+
+.ss-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ss-btn.active {
+  background: #10b981dd;
+  border-color: #10b981;
+}
+
+/* ===== 工具行 1：搜索框 + 状态档 chips ===== */
+
+.ss-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.ss-search {
+  position: relative;
+  flex: 1;
+  min-width: 220px;
+}
+
+.ss-search input {
+  box-sizing: border-box;
+  width: 100%;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  color: var(--text-1);
+  border-radius: 8px;
+  padding: 5px 28px 5px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+}
+
+.ss-search input:focus {
+  border-color: var(--accent);
+}
+
+/* 清空按钮（有输入时出现，右侧悬浮） */
+.ss-search-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  color: var(--text-4);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.ss-search-clear:hover {
+  color: var(--text-2);
+}
+
+.ss-chips {
+  display: flex;
+  gap: 6px;
+}
+
+/* 状态档 chip：选中态描边高亮（不用大面积色块，保持克制） */
+.ss-chip {
+  background: var(--btn-bg);
+  border: 1px solid var(--border-strong);
+  color: var(--text-2);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.ss-chip:hover {
+  background: var(--btn-bg-hover);
+}
+
+.ss-chip.on {
+  background: var(--btn-bg-hover);
+  border-color: var(--accent);
+  color: var(--text-1);
+}
+
+/* ===== 工具行 2：范围档 + 维度筛选 ===== */
+
+.ss-filter {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.ss-ranges {
+  display: flex;
+  gap: 6px;
+}
+
+.ss-clear {
+  padding: 5px 10px;
+}
+
+/* ===== 会话表 ===== */
+
+.ss-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ss-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-4);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+/* 可排序表头：可点击暗示 + 选中键高亮 */
+.ss-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.ss-table th.sortable:hover {
+  color: var(--text-2);
+}
+
+.ss-sort-mark {
+  color: var(--accent);
+}
+
+.ss-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 首列（状态）与第二列（会话名）不截断挤压；会话名列弹性收窄 */
+.ss-table td:nth-child(2) {
+  max-width: 280px;
+  color: var(--text-1);
+}
+
+.ss-table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+/* 仅新鲜会话可点击跳转：光标与悬浮提示暗示可点，旧行普通光标 */
+.ss-table tbody tr.clickable {
+  cursor: pointer;
+}
+
+/* 数字列右对齐等宽 */
+.ss-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+}
+
+/* 状态单元格：状态点 + 文案（状态点样式复用 App.css 的 .dot 体系） */
+.ss-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+}
+
+/* Agent 徽标：底色=身份色，与岛面板卡片同源 */
+.ss-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  color: #0b1220;
+  border-radius: 4px;
+  padding: 1px 5px;
+  line-height: 1.4;
+}
+
+/* 出错列：有错红字、无错弱化 */
+.ss-err {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.ss-err0 {
+  color: var(--text-4);
+}
+
+/* ===== 分页器 ===== */
+
+.ss-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.ss-page-no {
+  font-size: 12px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  margin-right: auto;
+}
+
+/* ===== 空态/加载/失败 ===== */
+
+.ss-empty {
+  color: var(--text-4);
+  text-align: center;
+  padding: 60px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.ss-retry {
+  padding: 5px 10px;
+}
+
+.ss-foot {
+  font-size: 11px;
+  color: var(--text-4);
+  padding-bottom: 4px;
+}
