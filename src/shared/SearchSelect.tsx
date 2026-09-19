@@ -4,6 +4,7 @@
  * value 为过滤原值（项目为全路径），label 为显示文本（项目为尾段）
  */
 import { useEffect, useRef, useState } from "react";
+import "./searchselect.css";
 
 export default function SearchSelect({
   value,

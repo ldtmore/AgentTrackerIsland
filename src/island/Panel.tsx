@@ -41,7 +41,7 @@ function MoreLink({ hidden }: { hidden: number }) {
     <Tip content="点击查看更多会话数据">
       <button className="more-link" onClick={openSessions}>
         查看更多会话
-        {hidden > 0 && <span className="history-latest">还有 {hidden} 个 → 会话窗口</span>}
+        {hidden > 0 && <span className="history-latest">还有 {hidden} 个</span>}
       </button>
     </Tip>
   );

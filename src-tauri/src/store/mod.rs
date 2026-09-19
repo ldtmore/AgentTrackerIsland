@@ -548,8 +548,12 @@ pub struct SessionRow {
     pub output_tokens: i64,
     pub cache_read_tokens: i64,
     pub cache_creation_tokens: i64,
+    /// 思考 token 合计（M1-11 补充露出；报表「思考占比」同源字段）
+    pub reasoning_tokens: i64,
     /// 模型生成时长合计（毫秒）；转录无时长字段的 Agent（Claude Code）为 None
     pub duration_ms: Option<i64>,
+    /// 平均首字延迟（毫秒）；无 ttft 记录的会话为 None
+    pub ttft_avg_ms: Option<i64>,
     /// 出错的调用条数（0 = 从未出错）
     pub errors: i64,
     /// 出现过的错误类型（逗号分隔去重；从未出错为 None）
@@ -562,6 +566,36 @@ pub struct SessionPage {
     pub total: i64,
     pub page_size: i64,
     pub rows: Vec<SessionRow>,
+}
+
+/// 会话详情：单次模型调用行（抽屉「调用流水」，M1-11）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionCallRow {
+    pub ts: i64,
+    pub model: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub duration_ms: Option<i64>,
+    pub ttft_ms: Option<i64>,
+    pub error_type: Option<String>,
+}
+
+/// 会话详情：状态事件行（抽屉「状态时间线」，M1-11）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionEventRow {
+    pub ts: i64,
+    pub hook: Option<String>,
+    pub payload: Option<String>,
+}
+
+/// 会话详情包（调用流水 + 状态时间线）
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct SessionDetail {
+    pub calls: Vec<SessionCallRow>,
+    pub events: Vec<SessionEventRow>,
 }
 
 /// 筛选下拉选项（只受范围影响、不受其他筛选影响——保证任意组合都能选中）
@@ -924,7 +958,8 @@ impl Store {
 
     /// 会话中心分页（会话窗口主查询，M1-10）：范围＋三维度筛选同报表口径，
     /// 另加状态档（all｜active｜ended｜errored）/关键字（标题、项目路径模糊匹配）/
-    /// 排序键（recent｜tokens｜calls｜duration，白名单映射防注入）。
+    /// 排序键（recent｜tokens｜calls｜duration，白名单映射防注入）/
+    /// 每页行数（0 或负值回退默认，钳制 ≤200 限制 LIMIT 注入面）。
     /// 结构=内层按会话聚合子查询＋外层套状态/关键字过滤：状态口径与前端
     /// shared/sessionDisplay.ts 的 displayState 同源——active=状态机活跃三态
     /// （working/waiting/error），或 idle 且最近活动在 ENDED_AFTER_MS 内；
@@ -939,8 +974,11 @@ impl Store {
         status: &str,
         keyword: &str,
         sort: &str,
+        page_size: i64,
         offset: i64,
     ) -> Option<SessionPage> {
+        // 每页行数：非法值回退默认，上限 200
+        let page_size = if page_size <= 0 { SESSION_PAGE_SIZE } else { page_size.min(200) };
         // 状态档与排序键先行白名单校验（未知值返回 None，命令层向前端报错）
         let status_sql: &str = match status {
             "all" => "",
@@ -972,8 +1010,10 @@ impl Store {
                     COALESCE(SUM(COALESCE(u.output_tokens,0)),0) AS output_tokens,
                     COALESCE(SUM(COALESCE(u.cache_read_tokens,0)),0) AS cache_read_tokens,
                     COALESCE(SUM(COALESCE(u.cache_creation_tokens,0)),0) AS cache_creation_tokens,
+                    COALESCE(SUM(COALESCE(u.reasoning_tokens,0)),0) AS reasoning_tokens,
                     COALESCE(SUM({TOTAL_EXPR}),0) AS total_tokens,
                     SUM(u.duration_ms) AS duration_ms,
+                    CAST(AVG(u.ttft_ms) AS INTEGER) AS ttft_avg_ms,
                     COALESCE(SUM(u.error_type IS NOT NULL),0) AS errors,
                     GROUP_CONCAT(DISTINCT u.error_type) AS error_types
              FROM usage_records u LEFT JOIN sessions s ON s.id = u.session_id{where_sql}
@@ -1005,7 +1045,7 @@ impl Store {
             .unwrap_or(0);
         // 行查询：LIMIT/OFFSET 参数追加在过滤参数之后
         let mut all_params = params;
-        all_params.push(SESSION_PAGE_SIZE.into());
+        all_params.push(page_size.into());
         all_params.push(offset.into());
         let rows_sql =
             format!("SELECT * FROM ({inner}) WHERE 1=1{kw_sql}{status_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?");
@@ -1026,8 +1066,10 @@ impl Store {
                     output_tokens: r.get("output_tokens")?,
                     cache_read_tokens: r.get("cache_read_tokens")?,
                     cache_creation_tokens: r.get("cache_creation_tokens")?,
+                    reasoning_tokens: r.get("reasoning_tokens")?,
                     total_tokens: r.get("total_tokens")?,
                     duration_ms: r.get("duration_ms")?,
+                    ttft_avg_ms: r.get("ttft_avg_ms")?,
                     errors: r.get("errors")?,
                     error_types: r.get("error_types")?,
                 })
@@ -1038,9 +1080,60 @@ impl Store {
         }
         Some(SessionPage {
             total,
-            page_size: SESSION_PAGE_SIZE,
+            page_size,
             rows,
         })
+    }
+
+    /// 会话详情（M1-11 抽屉）：单会话的调用流水 + 状态事件时间线。
+    /// 调用流水倒序（最新在上），上限 500 条防极端会话拖爆前端；
+    /// 状态事件的 session_id 存在两代口径——hook 事件按原始 id 记账、
+    /// 快照按 "{agent}:{id}" 命名空间 id——两个都查才不漏
+    pub fn session_detail(&self, session_id: &str) -> SessionDetail {
+        let conn = self.lock_conn();
+        let mut detail = SessionDetail::default();
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT ts, model,
+                    COALESCE(input_tokens,0), COALESCE(output_tokens,0),
+                    COALESCE(reasoning_tokens,0),
+                    COALESCE(cache_read_tokens,0), COALESCE(cache_creation_tokens,0),
+                    duration_ms, ttft_ms, error_type
+             FROM usage_records WHERE session_id = ?1 ORDER BY ts DESC LIMIT 500",
+        ) {
+            if let Ok(it) = stmt.query_map([session_id], |r| {
+                Ok(SessionCallRow {
+                    ts: r.get(0)?,
+                    model: r.get(1)?,
+                    input_tokens: r.get(2)?,
+                    output_tokens: r.get(3)?,
+                    reasoning_tokens: r.get(4)?,
+                    cache_read_tokens: r.get(5)?,
+                    cache_creation_tokens: r.get(6)?,
+                    duration_ms: r.get(7)?,
+                    ttft_ms: r.get(8)?,
+                    error_type: r.get(9)?,
+                })
+            }) {
+                detail.calls = it.filter_map(|x| x.ok()).collect();
+            }
+        }
+        // 原始 id：剥掉 "{agent}:" 前缀（无前缀时原样，防御）
+        let raw_id = session_id.split_once(':').map(|x| x.1).unwrap_or(session_id);
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT ts, hook, payload FROM status_events
+             WHERE session_id = ?1 OR session_id = ?2 ORDER BY ts DESC LIMIT 200",
+        ) {
+            if let Ok(it) = stmt.query_map(rusqlite::params![session_id, raw_id], |r| {
+                Ok(SessionEventRow {
+                    ts: r.get(0)?,
+                    hook: r.get(1)?,
+                    payload: r.get(2)?,
+                })
+            }) {
+                detail.events = it.filter_map(|x| x.ok()).collect();
+            }
+        }
+        detail
     }
 
     /// 按当前范围＋筛选＋状态档＋关键字导出会话列表 CSV（M1-10 随会话窗口迁移；
@@ -1092,8 +1185,10 @@ impl Store {
                     COALESCE(SUM(COALESCE(u.output_tokens,0)),0) AS output_tokens,
                     COALESCE(SUM(COALESCE(u.cache_read_tokens,0)),0) AS cache_read_tokens,
                     COALESCE(SUM(COALESCE(u.cache_creation_tokens,0)),0) AS cache_creation_tokens,
+                    COALESCE(SUM(COALESCE(u.reasoning_tokens,0)),0) AS reasoning_tokens,
                     COALESCE(SUM({TOTAL_EXPR}),0) AS total_tokens,
                     SUM(u.duration_ms) AS duration_ms,
+                    CAST(AVG(u.ttft_ms) AS INTEGER) AS ttft_avg,
                     COALESCE(SUM(u.error_type IS NOT NULL),0) AS errors,
                     GROUP_CONCAT(DISTINCT u.error_type) AS error_types
              FROM usage_records u LEFT JOIN sessions s ON s.id = u.session_id{where_sql}
@@ -1113,14 +1208,15 @@ impl Store {
         } else {
             " AND (title LIKE ? ESCAPE '\\' OR project_dir LIKE ? ESCAPE '\\')"
         };
-        // 外层：时间列才格式化为本机时区文本；时长/错误类型补默认值，单元格免判空
+        // 外层：时间列才格式化为本机时区文本；时长/首字/错误类型补默认值，单元格免判空
         let sql = format!(
             "SELECT session_id, agent, state, model, project_dir, title,
                     datetime(first_ts/1000,'unixepoch','localtime') AS first_local,
                     datetime(last_ts/1000,'unixepoch','localtime') AS last_local,
-                    calls, input_tokens, output_tokens, cache_read_tokens,
+                    calls, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens,
                     cache_creation_tokens, total_tokens,
-                    COALESCE(duration_ms,0) AS duration_ms, errors,
+                    COALESCE(duration_ms,0) AS duration_ms,
+                    COALESCE(CAST(ttft_avg AS TEXT),'') AS ttft, errors,
                     COALESCE(error_types,'') AS error_types
              FROM ({inner}) WHERE 1=1{kw_sql}{status_sql} ORDER BY {order_sql}"
         );
@@ -1141,15 +1237,17 @@ impl Store {
                 r.get::<_, i64>("calls")?.to_string(),
                 r.get::<_, i64>("input_tokens")?.to_string(),
                 r.get::<_, i64>("output_tokens")?.to_string(),
+                r.get::<_, i64>("reasoning_tokens")?.to_string(),
                 r.get::<_, i64>("cache_read_tokens")?.to_string(),
                 r.get::<_, i64>("cache_creation_tokens")?.to_string(),
                 r.get::<_, i64>("total_tokens")?.to_string(),
                 r.get::<_, i64>("duration_ms")?.to_string(),
+                csv_cell(&r.get::<_, String>("ttft")?),
                 r.get::<_, i64>("errors")?.to_string(),
                 csv_cell(&r.get::<_, String>("error_types")?),
             ])
         });
-        let mut out = String::from("\u{feff}会话ID,Agent,状态,模型,项目,标题,首次调用,最近调用,调用次数,输入,输出,缓存读,缓存写,总Token,生成时长(毫秒),出错次数,错误类型\r\n");
+        let mut out = String::from("\u{feff}会话ID,Agent,状态,模型,项目,标题,首次调用,最近调用,调用次数,输入,输出,思考,缓存读,缓存写,总Token,生成时长(毫秒),平均首字(毫秒),出错次数,错误类型\r\n");
         if let Ok(it) = rows {
             for cells in it.filter_map(|x| x.ok()) {
                 out.push_str(&cells.join(","));
@@ -1399,7 +1497,7 @@ mod tests {
 
         // 会话中心分页：默认最近活动降序、total/页大小、时长与状态列口径（CC 无时长）
         let page1 = store
-            .session_page("all", None, None, None, "all", "", "recent", 0)
+            .session_page("all", None, None, None, "all", "", "recent", SESSION_PAGE_SIZE, 0)
             .unwrap();
         assert_eq!(page1.total, 4);
         assert_eq!(page1.page_size, SESSION_PAGE_SIZE);
@@ -1410,6 +1508,8 @@ mod tests {
         assert_eq!(cc_row.state.as_deref(), Some("idle"), "sessions 行状态随行下发");
         let zc_row = page1.rows.iter().find(|r| r.session_id == "zcode:s1").unwrap();
         assert_eq!(zc_row.duration_ms, Some(5_000));
+        assert_eq!(zc_row.reasoning_tokens, 50, "思考 token 随聚合下发");
+        assert_eq!(zc_row.ttft_avg_ms, Some(900), "平均首字随聚合下发");
         // 四项拆解守恒：总量 = 四项之和（样本 1000+200+3000+0）
         assert_eq!(zc_row.input_tokens, 1_000);
         assert_eq!(zc_row.output_tokens, 200);
@@ -1425,51 +1525,87 @@ mod tests {
         assert_eq!(err_row.error_types.as_deref(), Some("rate_limited"));
         assert_eq!(zc_row.errors, 0);
         assert_eq!(zc_row.error_types, None);
+        // 每页行数：自定义生效、0/负值回退默认、超上限钳 200
+        let p2rows = store
+            .session_page("all", None, None, None, "all", "", "recent", 2, 0)
+            .unwrap();
+        assert_eq!(p2rows.rows.len(), 2);
+        assert_eq!(p2rows.page_size, 2);
+        let p0 = store
+            .session_page("all", None, None, None, "all", "", "recent", 0, 0)
+            .unwrap();
+        assert_eq!(p0.page_size, SESSION_PAGE_SIZE);
+        let p999 = store
+            .session_page("all", None, None, None, "all", "", "recent", 999, 0)
+            .unwrap();
+        assert_eq!(p999.page_size, 200);
         // 排序切换：按 token 降序（白名单第二键）
         let by_tokens = store
-            .session_page("all", None, None, None, "all", "", "tokens", 0)
+            .session_page("all", None, None, None, "all", "", "tokens", SESSION_PAGE_SIZE, 0)
             .unwrap();
         assert!(by_tokens.rows.windows(2).all(|w| w[0].total_tokens >= w[1].total_tokens));
         // 关键字：命中项目全路径；无匹配归零；LIKE 通配符按字面量转义
         let kw = store
-            .session_page("all", None, None, None, "all", "projA", "recent", 0)
+            .session_page("all", None, None, None, "all", "projA", "recent", SESSION_PAGE_SIZE, 0)
             .unwrap();
         assert_eq!(kw.total, 2, "projA 两会话命中");
-        assert_eq!(store.session_page("all", None, None, None, "all", "无此项目", "recent", 0).unwrap().total, 0);
         assert_eq!(
-            store.session_page("all", None, None, None, "all", "proj_", "recent", 0).unwrap().total,
+            store.session_page("all", None, None, None, "all", "无此项目", "recent", SESSION_PAGE_SIZE, 0)
+                .unwrap()
+                .total,
+            0
+        );
+        assert_eq!(
+            store.session_page("all", None, None, None, "all", "proj_", "recent", SESSION_PAGE_SIZE, 0)
+                .unwrap()
+                .total,
             0,
             "_ 已转义为字面量，不当代通配符"
         );
         // 状态档：三个近期 idle 样本=active，4 小时前样本=ended；errored 只剩限流会话
         let active = store
-            .session_page("all", None, None, None, "active", "", "recent", 0)
+            .session_page("all", None, None, None, "active", "", "recent", SESSION_PAGE_SIZE, 0)
             .unwrap();
         assert_eq!(active.total, 3, "idle 未超 2h 视为进行中");
         let ended = store
-            .session_page("all", None, None, None, "ended", "", "recent", 0)
+            .session_page("all", None, None, None, "ended", "", "recent", SESSION_PAGE_SIZE, 0)
             .unwrap();
         assert_eq!(ended.total, 1);
         assert_eq!(ended.rows[0].session_id, "claude-code:s2");
         let errored = store
-            .session_page("all", None, None, None, "errored", "", "recent", 0)
+            .session_page("all", None, None, None, "errored", "", "recent", SESSION_PAGE_SIZE, 0)
             .unwrap();
         assert_eq!(errored.total, 1);
         assert_eq!(errored.rows[0].session_id, "zcode:s2");
         // 白名单拒绝：非法状态档/排序键
-        assert!(store.session_page("all", None, None, None, "xyz", "", "recent", 0).is_none());
-        assert!(store.session_page("all", None, None, None, "all", "", "xyz", 0).is_none());
+        assert!(store.session_page("all", None, None, None, "xyz", "", "recent", SESSION_PAGE_SIZE, 0).is_none());
+        assert!(store.session_page("all", None, None, None, "all", "", "xyz", SESSION_PAGE_SIZE, 0).is_none());
         // 翻页：offset 越界返回空页但 total 不变
         let page2 = store
-            .session_page("all", None, None, None, "all", "", "recent", SESSION_PAGE_SIZE)
+            .session_page("all", None, None, None, "all", "", "recent", SESSION_PAGE_SIZE, SESSION_PAGE_SIZE)
             .unwrap();
         assert_eq!(page2.total, 4);
         assert!(page2.rows.is_empty());
         // 过滤联动：agent=zcode → 会话表只剩 2 个
         let zpage = store
-            .session_page("all", Some("zcode"), None, None, "all", "", "recent", 0)
+            .session_page("all", Some("zcode"), None, None, "all", "", "recent", SESSION_PAGE_SIZE, 0)
             .unwrap();
         assert_eq!(zpage.total, 2);
+
+        // 会话详情（M1-11）：流水倒序 + 状态事件双口径（命名空间 id 与原始 id 均命中）
+        let detail = store.session_detail("zcode:s1");
+        assert_eq!(detail.calls.len(), 1);
+        assert_eq!(detail.calls[0].input_tokens, 1_000);
+        assert_eq!(detail.calls[0].duration_ms, Some(5_000));
+        store.insert_status_event("claude-code", Some("s1"), "SessionStart", "{}", now);
+        store.insert_status_event("claude-code", Some("claude-code:s1"), "UserPromptSubmit", "{}", now + 1);
+        // zcode:s1 只能靠原始 id 命中 raw 事件；claude-code:s1 双口径（命名空间 id + 原始 id）各命中
+        assert_eq!(store.session_detail("zcode:s1").events.len(), 1, "原始 id 口径命中");
+        assert_eq!(
+            store.session_detail("claude-code:s1").events.len(),
+            2,
+            "原始 id 与命名空间 id 均可命中"
+        );
 
         // R2 汇总扩展：时长合计/平均首字/思考占比原料（样本 ttft 全 900、reasoning 全 50）
         assert_eq!(snap.summary.duration_ms, Some(5_000));

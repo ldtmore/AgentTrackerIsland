@@ -21,3 +21,8 @@ export function fmtDTFull(ms: number): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
+
+/** 毫秒 → "900 毫秒"/"1.2 秒"（平均首字延迟用） */
+export function fmtMs(ms: number): string {
+  return ms < 1000 ? `${ms} 毫秒` : `${(ms / 1000).toFixed(1)} 秒`;
+}

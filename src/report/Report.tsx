@@ -19,9 +19,10 @@ import {
 import { CanvasRenderer } from "echarts/renderers";
 import Chart from "./Chart";
 import SearchSelect from "../shared/SearchSelect";
-import { tail } from "../shared/format";
+import { fmtMs, tail } from "../shared/format";
 import { fmtTokens, fmtDuration, agentColor, errorReason } from "../shared/types";
 import { useTheme } from "../shared/theme";
+import { useAgentColors } from "../shared/useAgentColors";
 import "./report.css";
 
 // 按需注册用到的图表与组件（01-RESEARCH §9，减小 bundle）
@@ -129,11 +130,6 @@ function bucketLabel(b: string, range: string): string {
 
 /** 指标键（趋势图三档；热力图两档无时长数据） */type MetricKey = "token" | "calls" | "duration";
 
-/** 毫秒 → "900 毫秒"/"1.2 秒"（平均首字延迟用） */
-function fmtMs(ms: number): string {
-  return ms < 1000 ? `${ms} 毫秒` : `${(ms / 1000).toFixed(1)} 秒`;
-}
-
 /** 毫秒 → 短格式 "45s"/"12m"/"1.3h"（趋势图 y 轴用，长格式会挤爆轴标签） */
 function fmtAxisDur(ms: number): string {
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
@@ -232,6 +228,7 @@ function DimBars({
 
 export default function Report() {
   const theme = useTheme();
+  useAgentColors(); // 注入设置页自定义的 Agent 身份色（按 Agent 维度条配色跟随）
   // 筛选状态：范围档 + 三维度（null=全部；项目空串=未知项目）
   const [range, setRange] = useState("30d");
   const [agent, setAgent] = useState<string | null>(null);

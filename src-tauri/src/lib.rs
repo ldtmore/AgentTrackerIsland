@@ -298,7 +298,7 @@ async fn session_options(
 
 /// 会话中心：分页查询（M1-10，随会话窗口从报表迁移扩展）。
 /// 范围档白名单见 store：today｜7d｜30d｜90d｜all；状态档 all｜active｜ended｜errored；
-/// 排序键 recent｜tokens｜calls｜duration（store 侧白名单校验）
+/// 排序键 recent｜tokens｜calls｜duration；page_size 每页行数（store 侧钳制 ≤200）
 #[tauri::command]
 async fn session_page(
     range: String,
@@ -308,6 +308,7 @@ async fn session_page(
     status: String,
     keyword: String,
     sort: String,
+    page_size: i64,
     offset: i64,
     store: tauri::State<'_, Arc<Store>>,
 ) -> Result<store::SessionPage, String> {
@@ -320,11 +321,21 @@ async fn session_page(
             &status,
             &keyword,
             &sort,
+            page_size,
             offset,
         )
         .ok_or_else(|| format!("未知范围档/状态档/排序键：{range}/{status}/{sort}"))
     })
     .await
+}
+
+/// 会话中心：会话详情（M1-11 抽屉）：单会话的调用流水 + 状态事件时间线
+#[tauri::command]
+async fn session_detail(
+    session_id: String,
+    store: tauri::State<'_, Arc<Store>>,
+) -> Result<store::SessionDetail, String> {
+    run_report(store, move |s| Ok(s.session_detail(&session_id))).await
 }
 
 /// 会话中心：导出当前范围＋筛选＋状态＋关键字＋排序的会话列表 CSV（所见即所得）。
@@ -921,6 +932,7 @@ pub fn run() {
             report_snapshot,
             session_options,
             session_page,
+            session_detail,
             export_sessions_csv,
             open_file_location,
             show_report_window,

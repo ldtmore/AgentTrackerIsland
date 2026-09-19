@@ -699,7 +699,9 @@ body,
   color: #d1d5db;
   font-size: 11px;
   line-height: 1.6;
-  white-space: nowrap;
+  /* 长文案自动换行收进气泡底板——此前 nowrap 会让超出 280px 的文字溢出底板悬空
+     （会话窗口表头列说明率先踩中）；短提示不受影响 */
+  white-space: normal;
   z-index: 9999;
   pointer-events: none;
 }

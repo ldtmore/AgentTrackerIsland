@@ -17,9 +17,11 @@
   gap: 10px;
 }
 
-/* 滚动条：与设置/报表/岛面板同款（6px 细条半透明，悬停加亮） */
+/* 滚动条：与设置/报表/岛面板同款（6px 细条半透明，悬停加亮）；
+   width=竖向、height=横向（表格窄窗横向溢出时同为细长条，不走系统粗样式） */
 .ss-root::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
 
 .ss-root::-webkit-scrollbar-track {
@@ -240,6 +242,17 @@
   color: var(--text-2);
 }
 
+/* 带列级说明的表头（状态/Agent/出错/时长）：虚线下划线＋help 光标暗示可悬停 */
+.ss-table th.help {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.ss-table th.help:hover {
+  color: var(--text-2);
+}
+
 .ss-sort-mark {
   color: var(--accent);
 }
@@ -284,12 +297,22 @@
   color: var(--text-2);
 }
 
-/* Agent 徽标：底色=身份色，与岛面板卡片同源 */
+/* 出错会话的状态文字标红（与岛面板 .card-state.text-error 同语义） */
+.ss-state-err {
+  color: var(--danger);
+}
+
+/* 已结束会话整行置灰弱化（与岛面板 .card-ended 同一置灰度，扫表时层级清晰） */
+.ss-table tbody tr.ended {
+  opacity: 0.55;
+}
+
+/* Agent 徽标：底色=身份色（行内注入），文字恒深色保证可读（与 .card-badge 同值） */
 .ss-badge {
   display: inline-block;
   font-size: 10px;
   font-weight: 600;
-  color: #0b1220;
+  color: #0b0d10;
   border-radius: 4px;
   padding: 1px 5px;
   line-height: 1.4;
@@ -302,6 +325,11 @@
 }
 
 .ss-err0 {
+  color: var(--text-4);
+}
+
+/* 序号列：弱化小数字（辅助定位，不抢数据列的视觉权重） */
+.ss-seq {
   color: var(--text-4);
 }
 
@@ -319,6 +347,37 @@
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
   margin-right: auto;
+}
+
+/* 每页行数选择（原生 select：选项弹层不吃半透明变量，用不透明 option-bg） */
+.ss-pagesize {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.ss-pagesize select {
+  background: var(--btn-bg);
+  border: 1px solid var(--border-strong);
+  color: var(--text-1);
+  border-radius: 8px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+}
+
+.ss-pagesize select:hover {
+  background: var(--btn-bg-hover);
+}
+
+.ss-pagesize select option {
+  background: var(--option-bg);
+  color: var(--text-1);
 }
 
 /* ===== 空态/加载/失败 ===== */
@@ -341,4 +400,213 @@
   font-size: 11px;
   color: var(--text-4);
   padding-bottom: 4px;
+}
+
+/* ===== 会话详情抽屉（M1-11）：调用流水 + 状态时间线 ===== */
+
+/* 遮罩：点击关闭 */
+.ss-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 40;
+}
+
+/* 右侧滑入面板 */
+.ss-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 460px;
+  max-width: 92vw;
+  background: var(--root-bg);
+  border-left: 1px solid var(--border-strong);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  animation: ss-drawer-in 0.18s var(--ease-out);
+}
+
+@keyframes ss-drawer-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+.ss-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ss-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 14px;
+}
+
+.ss-drawer-title b {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ss-drawer-close {
+  background: none;
+  border: none;
+  color: var(--text-4);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  flex: none;
+}
+
+.ss-drawer-close:hover {
+  color: var(--text-1);
+}
+
+/* 元信息行：Agent 全名徽标 + 模型 + 完整路径（抽屉是全量信息视图，不做缩写截断） */
+.ss-drawer-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* 完整项目路径：允许任意字符断行，长路径不撑破抽屉 */
+.ss-drawer-path {
+  word-break: break-all;
+  color: var(--text-3);
+}
+
+.ss-drawer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 主体：流水/时间线滚动区 */
+.ss-drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ss-drawer-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.ss-drawer-body::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 3px;
+}
+
+.ss-drawer-sec-title {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-bottom: 6px;
+}
+
+.ss-drawer-empty,
+.ss-drawer-loading {
+  font-size: 12px;
+  color: var(--text-4);
+  padding: 8px 0;
+}
+
+.ss-drawer-err {
+  font-size: 12px;
+  color: var(--danger);
+  padding: 8px 0;
+}
+
+/* 单次调用卡片：时间 + 模型 + 错误标签 / 指标行 */
+.ss-call {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+
+.ss-call-err {
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
+.ss-call-line1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+  min-width: 0;
+}
+
+.ss-call-time {
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.ss-call-model {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ss-call-errtag {
+  color: var(--danger);
+  flex: none;
+  font-size: 11px;
+}
+
+.ss-call-line2 {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 状态时间线行 */
+.ss-event {
+  display: flex;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 12px;
+  border-bottom: 1px dashed var(--border);
+}
+
+.ss-event-time {
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.ss-event-hook {
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

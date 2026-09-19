@@ -47,10 +47,14 @@ interface TipPos {
 
 export default function Tip({
   content,
+  placement = "bottom",
   children,
 }: {
   /** 气泡内容（支持多行节点） */
   content: React.ReactNode;
+  /** 弹出方位：bottom=触发元素下方（默认，历史行为）；top=上方——
+   *  表头等贴顶触发源用 top，避免气泡正好盖住紧邻其下的第一行数据 */
+  placement?: "top" | "bottom";
   /** 触发元素（单个可接收鼠标事件的元素） */
   children: React.ReactElement<React.HTMLAttributes<HTMLElement>>;
 }) {
@@ -92,14 +96,21 @@ export default function Tip({
       Math.max(measure.cursorX - b.width / 2, EDGE_GAP),
       vw - b.width - EDGE_GAP,
     );
-    // 垂直：优先触发元素下方，放不下翻到上方，仍放不下贴视口底
+    // 垂直：按 placement 优先方位，放不下翻到另一侧，仍放不下贴视口边
     const belowY = measure.anchorBottom + ANCHOR_GAP;
+    const aboveY = measure.anchorTop - ANCHOR_GAP - b.height;
+    const fitsBelow = belowY + b.height <= vh - EDGE_GAP;
+    const fitsAbove = aboveY >= EDGE_GAP;
     const y =
-      belowY + b.height <= vh - EDGE_GAP
-        ? belowY
-        : Math.max(measure.anchorTop - ANCHOR_GAP - b.height, vh - b.height - EDGE_GAP);
+      placement === "top"
+        ? fitsAbove
+          ? aboveY
+          : Math.min(belowY, vh - b.height - EDGE_GAP)
+        : fitsBelow
+          ? belowY
+          : Math.max(aboveY, vh - b.height - EDGE_GAP);
     setPos({ x, y });
-  }, [measure]);
+  }, [measure, placement]);
 
   return (
     <>
