@@ -282,6 +282,12 @@
   cursor: pointer;
 }
 
+/* 当前打开抽屉的会话行：保持高亮，翻列表时不迷失在看哪一行 */
+.ss-table tbody tr.ss-row-active,
+.ss-table tbody tr.ss-row-active:hover {
+  background: var(--surface-hover);
+}
+
 /* 数字列右对齐等宽 */
 .ss-table td.num {
   text-align: right;
@@ -402,7 +408,7 @@
   padding-bottom: 4px;
 }
 
-/* ===== 会话详情抽屉（M1-11）：调用流水 + 状态时间线 ===== */
+/* ===== 会话详情抽屉：头区一行＋统计条＋页签（调用流水/状态时间线）＋正序倒序 ===== */
 
 /* 遮罩：点击关闭 */
 .ss-mask {
@@ -418,7 +424,7 @@
   top: 0;
   right: 0;
   bottom: 0;
-  width: 460px;
+  width: 520px;
   max-width: 92vw;
   background: var(--root-bg);
   border-left: 1px solid var(--border-strong);
@@ -442,6 +448,7 @@
   }
 }
 
+/* 头区一行：状态点＋标题（左）＋跳转＋关闭（右），原三行纵排收为一行 */
 .ss-drawer-head {
   display: flex;
   align-items: center;
@@ -463,7 +470,25 @@
   text-overflow: ellipsis;
 }
 
+/* 头区右侧工具：跳转＋关闭（跳转压缩为小按钮，完整说明在悬浮提示） */
+.ss-drawer-headtools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.ss-drawer-jump {
+  padding: 3px 10px;
+  font-size: 11px;
+}
+
+/* 关闭按钮：绝对定位悬浮在抽屉左上角外侧——不占抽屉空间、位置恒定；
+   抽屉（fixed）即其包含块 */
 .ss-drawer-close {
+  position: absolute;
+  top: 8px;
+  left: -34px;
   background: none;
   border: none;
   color: var(--text-4);
@@ -478,7 +503,20 @@
   color: var(--text-1);
 }
 
-/* 元信息行：Agent 全名徽标 + 模型 + 完整路径（抽屉是全量信息视图，不做缩写截断） */
+/* 窄窗口（抽屉被 92vw 钳制、外侧放不下按钮）：回贴抽屉内左上角，标题区让位 */
+@media (max-width: 600px) {
+  .ss-drawer-close {
+    left: 10px;
+    top: 12px;
+    background: var(--root-bg);
+  }
+
+  .ss-drawer-head {
+    padding-left: 24px;
+  }
+}
+
+/* 元信息行：Agent 全名徽标＋模型（等宽字体）＋最后活动相对时间（右对齐） */
 .ss-drawer-meta {
   display: flex;
   align-items: center;
@@ -489,25 +527,169 @@
   min-width: 0;
 }
 
-/* 完整项目路径：允许任意字符断行，长路径不撑破抽屉 */
-.ss-drawer-path {
-  word-break: break-all;
+/* 模型名：等宽字体（中间弹性位，过长省略） */
+.ss-drawer-model {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 最后活动相对时间：弱色小字（悬浮看首末完整时间） */
+.ss-drawer-rel {
+  flex: none;
   color: var(--text-3);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
-.ss-drawer-actions {
+/* 完整项目路径：独立一行，等宽弱色小字，允许任意字符断行不撑破抽屉 */
+.ss-drawer-path {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+  word-break: break-all;
+}
+
+/* 统计条：五格汇总（数据全部来自行数据，零额外查询） */
+.ss-drawer-stats {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.ss-drawer-stat {
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
-/* 主体：流水/时间线滚动区 */
+.ss-drawer-stat-label {
+  font-size: 10px;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+
+.ss-drawer-stat-value {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 出错子标：红色小字跟在调用数后 */
+.ss-drawer-stat-err {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--danger);
+}
+
+/* 统计条弱色明细行：输入/缓存/思考/首字/错误率等次要指标一行放下，可换行 */
+.ss-drawer-stat-detail {
+  font-size: 11px;
+  color: var(--text-4);
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 页签栏：两页签（选中描边高亮，同状态档 chip 风格）＋右侧排序切换/刷新 */
+.ss-drawer-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+
+.ss-drawer-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text-3);
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.ss-drawer-tab:hover {
+  background: var(--surface-hover);
+  color: var(--text-1);
+}
+
+.ss-drawer-tab.on {
+  background: var(--btn-bg-hover);
+  border-color: var(--accent);
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+/* 页签栏右侧工具：排序切换＋刷新 */
+.ss-drawer-tools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ss-drawer-order {
+  background: var(--btn-bg);
+  border: 1px solid var(--border-strong);
+  color: var(--text-2);
+  border-radius: 8px;
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.ss-drawer-order:hover {
+  background: var(--btn-bg-hover);
+  color: var(--text-1);
+}
+
+/* 排序方向三角：accent 色与主表格排序标记同一符号语言 */
+.ss-drawer-order-mark {
+  color: var(--accent);
+}
+
+.ss-drawer-refresh {
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  font-size: 11px;
+  padding: 3px 6px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.ss-drawer-refresh:hover {
+  color: var(--text-1);
+}
+
+/* 主体：页签内容唯一滚动区 */
 .ss-drawer-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
 }
 
 .ss-drawer-body::-webkit-scrollbar {
@@ -519,10 +701,38 @@
   border-radius: 3px;
 }
 
-.ss-drawer-sec-title {
-  font-size: 12px;
-  color: var(--text-3);
-  margin-bottom: 6px;
+/* 截断诚实提示：命中加载上限时出现在列表顶部 */
+.ss-trunc {
+  font-size: 11px;
+  color: var(--text-4);
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  padding: 4px 8px;
+  margin-bottom: 8px;
+}
+
+/* 日期分组分隔行：左右细线夹标签（今天／昨天／MM-dd（周X）） */
+.ss-day-sep {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 6px;
+  color: var(--text-4);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.ss-day-sep::before,
+.ss-day-sep::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.ss-day-sep:first-child {
+  margin-top: 2px;
 }
 
 .ss-drawer-empty,
@@ -532,27 +742,94 @@
   padding: 8px 0;
 }
 
+/* 加载态呼吸动画（prefers-reduced-motion 下被全局收束） */
+.ss-drawer-loading {
+  animation: ss-loading-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes ss-loading-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 .ss-drawer-err {
   font-size: 12px;
   color: var(--danger);
   padding: 8px 0;
 }
 
-/* 单次调用卡片：时间 + 模型 + 错误标签 / 指标行 */
+/* 单次调用卡片：与状态时间线共用同一条竖向时间轴——
+   轴段由每张卡自绘（上下撑满），日期分隔行处自然断开 */
 .ss-call {
+  position: relative;
+  margin-left: 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 6px 8px;
   margin-bottom: 6px;
 }
 
+/* 轴线段：卡片左外沿，与事件轴同一垂直线（轴距容器左缘 5px） */
+.ss-call::before {
+  content: "";
+  position: absolute;
+  left: -11px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+/* 轴上圆点：垂直居中于卡片（卡片高度随拆解行换行变化时始终居中）；正常调用灰点 */
+.ss-call::after {
+  content: "";
+  position: absolute;
+  left: -14.5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-4);
+}
+
+/* 出错调用：红点＋淡红光晕，扫轴一眼定位错误 */
+.ss-call-err::after {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.18);
+}
+
+/* 悬浮卡片：轻微提亮＋点微亮，指示「正在读哪一条」；出错卡保持红底语义并加深 */
+.ss-call:hover {
+  background: var(--surface-hover);
+}
+
+.ss-call:hover::after {
+  background: var(--text-3);
+}
+
+.ss-call-err:hover {
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.ss-call-err:hover::after {
+  background: var(--danger);
+}
+
+/* 出错卡：红边＋极淡红底，扫表一眼定位 */
 .ss-call-err {
   border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.06);
 }
 
 .ss-call-line1 {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 8px;
   font-size: 12px;
   color: var(--text-2);
@@ -561,6 +838,8 @@
 
 .ss-call-time {
   color: var(--text-4);
+  font-family: var(--mono);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   flex: none;
 }
@@ -568,9 +847,20 @@
 .ss-call-model {
   flex: 1;
   min-width: 0;
+  font-family: var(--mono);
+  font-size: 11px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 合计 token（含缓存）：扫表主数字，右对齐加粗 */
+.ss-call-total {
+  color: var(--text-1);
+  font-weight: 600;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  flex: none;
 }
 
 .ss-call-errtag {
@@ -589,17 +879,47 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 状态时间线行 */
+/* 状态时间线：左侧细竖线＋圆点的时间轴视觉（分隔行处自然断开）；
+   悬浮行轻微提亮（与调用卡同一「正在读哪一条」的指示语言） */
 .ss-event {
+  position: relative;
   display: flex;
   gap: 10px;
-  padding: 3px 0;
+  padding: 4px 0 4px 16px;
   font-size: 12px;
-  border-bottom: 1px dashed var(--border);
+  border-radius: 6px;
+}
+
+.ss-event:hover {
+  background: var(--surface-hover);
+}
+
+.ss-event::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+.ss-event::after {
+  content: "";
+  position: absolute;
+  left: 2.5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-4);
 }
 
 .ss-event-time {
   color: var(--text-4);
+  font-family: var(--mono);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   flex: none;
 }
@@ -609,4 +929,36 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* 流水条目复制按钮：悬浮条目时出现在行尾；复制成功变「已复制」并保持可见 1.2 秒 */
+.ss-copy {
+  margin-left: auto;
+  flex: none;
+  background: transparent;
+  border: none;
+  color: var(--text-4);
+  font-size: 11px;
+  padding: 0 2px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.12s var(--ease-out);
+}
+
+.ss-call:hover .ss-copy,
+.ss-event:hover .ss-copy,
+.ss-copy:focus-visible,
+.ss-copy.ok {
+  opacity: 1;
+}
+
+.ss-copy:hover {
+  color: var(--text-1);
+}
+
+.ss-copy.ok {
+  color: var(--accent);
 }

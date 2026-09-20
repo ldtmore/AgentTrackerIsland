@@ -591,11 +591,15 @@ pub struct SessionEventRow {
     pub payload: Option<String>,
 }
 
-/// 会话详情包（调用流水 + 状态时间线）
+/// 会话详情包（调用流水 + 状态时间线）。
+/// calls_total / events_total 为库中真实总数：列表受 LIMIT 截断时，
+/// 前端据此诚实展示「N / 共 M」，避免截断后的 N 冒充全量
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct SessionDetail {
     pub calls: Vec<SessionCallRow>,
     pub events: Vec<SessionEventRow>,
+    pub calls_total: i64,
+    pub events_total: i64,
 }
 
 /// 筛选下拉选项（只受范围影响、不受其他筛选影响——保证任意组合都能选中）
@@ -1088,10 +1092,25 @@ impl Store {
     /// 会话详情（M1-11 抽屉）：单会话的调用流水 + 状态事件时间线。
     /// 调用流水倒序（最新在上），上限 500 条防极端会话拖爆前端；
     /// 状态事件的 session_id 存在两代口径——hook 事件按原始 id 记账、
-    /// 快照按 "{agent}:{id}" 命名空间 id——两个都查才不漏
+    /// 快照按 "{agent}:{id}" 命名空间 id——两个都查才不漏；
+    /// 另查两表真实总数（COUNT），列表被 LIMIT 截断时前端诚实展示「N / 共 M」
     pub fn session_detail(&self, session_id: &str) -> SessionDetail {
         let conn = self.lock_conn();
         let mut detail = SessionDetail::default();
+        // 原始 id：剥掉 "{agent}:" 前缀（无前缀时原样，防御）
+        let raw_id = session_id.split_once(':').map(|x| x.1).unwrap_or(session_id);
+        // 真实总数：一条查询带两个标量子查询（状态事件同样兼容两代 session_id 口径）
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT (SELECT COUNT(*) FROM usage_records WHERE session_id = ?1),
+                    (SELECT COUNT(*) FROM status_events WHERE session_id = ?1 OR session_id = ?2)",
+        ) {
+            if let Ok(mut it) = stmt.query(rusqlite::params![session_id, raw_id]) {
+                if let Ok(Some(row)) = it.next() {
+                    detail.calls_total = row.get(0).unwrap_or(0);
+                    detail.events_total = row.get(1).unwrap_or(0);
+                }
+            }
+        }
         if let Ok(mut stmt) = conn.prepare(
             "SELECT ts, model,
                     COALESCE(input_tokens,0), COALESCE(output_tokens,0),
@@ -1117,8 +1136,7 @@ impl Store {
                 detail.calls = it.filter_map(|x| x.ok()).collect();
             }
         }
-        // 原始 id：剥掉 "{agent}:" 前缀（无前缀时原样，防御）
-        let raw_id = session_id.split_once(':').map(|x| x.1).unwrap_or(session_id);
+        // 状态事件查询：命名空间 id 与原始 id 双口径都命中才不漏
         if let Ok(mut stmt) = conn.prepare(
             "SELECT ts, hook, payload FROM status_events
              WHERE session_id = ?1 OR session_id = ?2 ORDER BY ts DESC LIMIT 200",
@@ -1597,15 +1615,20 @@ mod tests {
         assert_eq!(detail.calls.len(), 1);
         assert_eq!(detail.calls[0].input_tokens, 1_000);
         assert_eq!(detail.calls[0].duration_ms, Some(5_000));
+        // 真实总数与列表长度一致（未截断时相等；截断口径由 LIMIT 上限保证，此处验证 COUNT 正确性）
+        assert_eq!(detail.calls_total, 1);
+        assert_eq!(detail.events_total, 0);
         store.insert_status_event("claude-code", Some("s1"), "SessionStart", "{}", now);
         store.insert_status_event("claude-code", Some("claude-code:s1"), "UserPromptSubmit", "{}", now + 1);
         // zcode:s1 只能靠原始 id 命中 raw 事件；claude-code:s1 双口径（命名空间 id + 原始 id）各命中
         assert_eq!(store.session_detail("zcode:s1").events.len(), 1, "原始 id 口径命中");
+        let cc_detail = store.session_detail("claude-code:s1");
         assert_eq!(
-            store.session_detail("claude-code:s1").events.len(),
+            cc_detail.events.len(),
             2,
             "原始 id 与命名空间 id 均可命中"
         );
+        assert_eq!(cc_detail.events_total, 2, "状态事件总数同样兼容双口径");
 
         // R2 汇总扩展：时长合计/平均首字/思考占比原料（样本 ttft 全 900、reasoning 全 50）
         assert_eq!(snap.summary.duration_ms, Some(5_000));
