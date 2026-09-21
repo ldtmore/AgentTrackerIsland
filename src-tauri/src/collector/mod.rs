@@ -19,6 +19,31 @@ pub struct SessionInfo {
     pub last_usage_at: Option<i64>,
 }
 
+/// 一轮增量采集的产出（2026-09-21 cost-state 校准扩展）：
+/// rows 是常规用量流水；cost_snapshots 是 CC 转录 cost-state 行携带的
+/// 会话级累计快照（按会话×归一化模型取最大值），供 service 层重算后台差值；
+/// titles 是 CC 转录 ai-title 行携带的会话标题（后写覆盖=最新），供会话元数据兜底
+#[derive(Debug, Default)]
+pub struct CollectOutput {
+    pub rows: Vec<UsageRow>,
+    pub cost_snapshots: Vec<CostSnapshot>,
+    /// （命名空间会话 id， 最新标题）；ZCode 恒空（其 session 表自带标题）
+    pub titles: Vec<(String, String)>,
+}
+
+/// 一条 cost-state 累计快照：某会话某模型的官方总账累计（含 assistant 与后台调用）
+#[derive(Debug, Clone)]
+pub struct CostSnapshot {
+    /// 命名空间会话 id（"{agent}:{原始id}"，与 UsageRow.session_id 同口径）
+    pub session_id: String,
+    /// 归一化模型名（去 [1m] 等上下文后缀，与 assistant 行模型名对齐）
+    pub model: String,
+    /// 四项 token 累计（该会话该模型的会话级总量）
+    pub cumulative_tokens: i64,
+    /// 该 cost-state 行的时间戳（毫秒）
+    pub ts: i64,
+}
+
 /// Agent 适配器抽象：实现者只读不改目标 Agent 的任何数据（红线①）
 ///
 /// M0 采集模型为"定时轮询水位增量"（外层调度器驱动），watch 实时事件源
@@ -31,7 +56,8 @@ pub trait AgentAdapter: Send + Sync {
     fn scan_sessions(&self) -> anyhow::Result<Vec<SessionInfo>>;
 
     /// 增量采集用量：返回 started_at 严格大于 watermark 的调用记录
-    fn collect_usage(&self, watermark_ts: i64) -> anyhow::Result<Vec<UsageRow>>;
+    /// （cost_snapshots 仅 CC 有，ZCode 源库无 cost-state 对应物，返回空）
+    fn collect_usage(&self, watermark_ts: i64) -> anyhow::Result<CollectOutput>;
 }
 
 pub mod claude_code;

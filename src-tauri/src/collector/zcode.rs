@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use rusqlite::{OpenFlags, Connection};
 
-use super::{AgentAdapter, SessionInfo, provider_from_model};
+use super::{AgentAdapter, CollectOutput, SessionInfo, provider_from_model};
 use crate::store::UsageRow;
 
 /// ZCode 数据库默认路径解析（%USERPROFILE%\.zcode\cli\db\db.sqlite）
@@ -112,8 +112,11 @@ impl AgentAdapter for ZcodeAdapter {
         Ok(out)
     }
 
-    /// 水位增量读取 model_usage（列白名单，未知列忽略以容忍 Schema 漂移）
-    fn collect_usage(&self, watermark_ts: i64) -> anyhow::Result<Vec<UsageRow>> {
+    /// 水位增量读取 model_usage（列白名单，未知列忽略以容忍 Schema 漂移）。
+    /// source_id = 源库行 id（"mu:{id}"，2026-09-21 幂等键升级）；
+    /// error_type：用户主动取消（cancelled_by_user=1）不算错误——取消是正常操作
+    /// 而非故障，计入"出错次数/错误分布"会污染口径（所有者 2026-09-21 拍板）
+    fn collect_usage(&self, watermark_ts: i64) -> anyhow::Result<CollectOutput> {
         let conn = match self.open() {
             Ok(c) => c,
             Err(e) => {
@@ -121,53 +124,56 @@ impl AgentAdapter for ZcodeAdapter {
                 if self.db_path.exists() {
                     log::debug!("[zcode] 库打开失败（本轮按空处理）：{e:#}");
                 }
-                return Ok(vec![]);
+                return Ok(CollectOutput::default());
             }
         };
         let mut stmt = conn.prepare(
-            "SELECT session_id, model_id, started_at,
+            "SELECT id, session_id, model_id, started_at,
                     input_tokens, output_tokens, reasoning_tokens,
                     cache_read_input_tokens, cache_creation_input_tokens,
-                    duration_ms, time_to_first_token_ms, error_type
+                    duration_ms, time_to_first_token_ms,
+                    CASE WHEN cancelled_by_user = 1 THEN NULL ELSE error_type END
              FROM model_usage
              WHERE started_at > ?1
              ORDER BY started_at ASC
              LIMIT 5000",
         )?;
         let rows = stmt.query_map([watermark_ts], |r| {
-            let session_id: String = r.get(0)?;
-            let model: String = r.get(1)?;
+            // 源库 id 实测为 TEXT 型（uuid 类字符串），必须按 String 读
+            let id: String = r.get(0)?;
+            let session_id: String = r.get(1)?;
+            let model: String = r.get(2)?;
             let provider = provider_from_model(&model);
             Ok(UsageRow {
                 session_id: format!("zcode:{session_id}"),
                 agent: "zcode".into(),
                 model,
                 provider,
-                ts: r.get(2)?,
-                input_tokens: r.get(3)?,
-                output_tokens: r.get(4)?,
-                reasoning_tokens: r.get(5)?,
-                cache_read_tokens: r.get(6)?,
-                cache_creation_tokens: r.get(7)?,
-                duration_ms: r.get(8)?,
-                ttft_ms: r.get(9)?,
-                error_type: r.get(10)?,
+                ts: r.get(3)?,
+                input_tokens: r.get(4)?,
+                output_tokens: r.get(5)?,
+                reasoning_tokens: r.get(6)?,
+                cache_read_tokens: r.get(7)?,
+                cache_creation_tokens: r.get(8)?,
+                duration_ms: r.get(9)?,
+                ttft_ms: r.get(10)?,
+                error_type: r.get(11)?,
+                source_id: Some(format!("mu:{id}")),
+                is_background: false,
             })
         })?;
         let mut err_rows = 0usize;
-        let out = rows
-            .filter_map(|x| match x {
-                Ok(v) => Some(v),
-                Err(_) => {
-                    err_rows += 1;
-                    None
-                }
-            })
-            .collect();
+        let mut out = vec![];
+        for x in rows {
+            match x {
+                Ok(v) => out.push(v),
+                Err(_) => err_rows += 1,
+            }
+        }
         if err_rows > 0 {
             log::debug!("[zcode] 采集 {err_rows} 行解析失败已跳过（Schema 漂移？）");
         }
-        Ok(out)
+        Ok(CollectOutput { rows: out, cost_snapshots: vec![], titles: vec![] })
     }
 }
 
@@ -194,7 +200,7 @@ mod tests {
         assert!(sessions[0].id.starts_with("zcode:sess_"));
         assert!(sessions[0].last_usage_at.is_some());
 
-        let usage = ad.collect_usage(0).unwrap();
+        let usage = ad.collect_usage(0).unwrap().rows;
         assert!(!usage.is_empty(), "本机应有历史用量");
         for u in usage.iter().take(5) {
             assert!(u.ts > 1_700_000_000_000, "时间戳应为毫秒：{}", u.ts);
@@ -203,7 +209,7 @@ mod tests {
         }
         // 水位增量：用最大 ts 再采一次，应无新行
         let max_ts = usage.iter().map(|u| u.ts).max().unwrap();
-        assert!(ad.collect_usage(max_ts).unwrap().is_empty());
+        assert!(ad.collect_usage(max_ts).unwrap().rows.is_empty());
     }
 
     /// 幂等入自库：同批数据插两遍，第二遍 0 行
@@ -211,7 +217,7 @@ mod tests {
     #[ignore]
     fn test_real_zcode_into_store_idempotent() {
         let ad = ZcodeAdapter::new();
-        let usage = ad.collect_usage(0).unwrap();
+        let usage = ad.collect_usage(0).unwrap().rows;
         let mut db = std::env::temp_dir();
         db.push(format!("at-t3-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&db);

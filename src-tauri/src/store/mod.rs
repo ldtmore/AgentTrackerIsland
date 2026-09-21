@@ -12,6 +12,16 @@ use rusqlite::{params, Connection, OptionalExtension};
 const MIGRATION_0001: &str = include_str!("migrations/0001_init.sql");
 /// 0002：用量表会话索引（会话级批量聚合加速）+ 移除从未使用的 watermarks.last_offset 列
 const MIGRATION_0002: &str = include_str!("migrations/0002_indexes.sql");
+/// 0003：幂等键升级 source_id + 后台用量标记 is_background（数据准确性治理 2026-09-21）；
+/// 重建空表并在 app_settings 写 usage_rebuild_pending，由聚合器首轮归零水位全量回溯
+const MIGRATION_0003: &str = include_str!("migrations/0003_source_key.sql");
+/// 0004：无条件重建 usage_records（0003 落地修复）——0003 首版 SQL 的
+/// CREATE IF NOT EXISTS 在已有旧表的库上被静默跳过但版本号已消耗，此类库的表
+/// 停留在旧结构；0004 对任何中间状态一次收敛（已是新结构的库多重建一次，幂等无害）
+const MIGRATION_0004: &str = include_str!("migrations/0004_rebuild_usage.sql");
+
+/// 重建标志键（0003 写入，聚合器消费后删除）
+pub const REBUILD_PENDING_KEY: &str = "usage_rebuild_pending";
 
 /// 一条 token 用量流水（来自任一 Agent 适配器的增量采集）
 #[derive(Debug, Clone)]
@@ -29,6 +39,11 @@ pub struct UsageRow {
     pub duration_ms: Option<i64>,
     pub ttft_ms: Option<i64>,
     pub error_type: Option<String>,
+    /// 真实消息身份（2026-09-21 双计根治）：CC=message.id(+requestId)、
+    /// ZCode=源库行 id、cost 校准行='cost:{sid}:{model}'；同源多行靠它幂等
+    pub source_id: Option<String>,
+    /// 后台用量校准行（cost-state 差值）：token 计入消耗，调用次数不计
+    pub is_background: bool,
 }
 
 /// 一条额度快照（来自 Provider 适配器）
@@ -91,6 +106,16 @@ impl Store {
             conn.execute_batch(MIGRATION_0002)?;
             conn.pragma_update(None, "user_version", 2)?;
             log::debug!("[存储] 迁移 0002 执行完成（用量索引）");
+        }
+        if ver < 3 {
+            conn.execute_batch(MIGRATION_0003)?;
+            conn.pragma_update(None, "user_version", 3)?;
+            log::info!("[存储] 迁移 0003 执行完成（幂等键升级 source_id，用量表已清空待全量回溯重建）");
+        }
+        if ver < 4 {
+            conn.execute_batch(MIGRATION_0004)?;
+            conn.pragma_update(None, "user_version", 4)?;
+            log::info!("[存储] 迁移 0004 执行完成（无条件重建用量表，修复 0003 可能的静默跳过）");
         }
         Ok(())
     }
@@ -160,9 +185,13 @@ impl Store {
         }
     }
 
-    /// 幂等插入用量流水：同幂等键（agent+session+ts+model）冲突时，仅当新行四项
-    /// 用量合计更大才整行覆盖——与 Claude Code"同消息保留最大快照"口径一致，
-    /// 跨 tick 重采到更完整的流式快照时能原地升级而非被 INSERT OR IGNORE 顶掉；
+    /// 幂等插入用量流水（2026-09-21 双计根治）：
+    /// 幂等键 = (agent, session_id, source_id)——source_id 是真实消息身份，
+    /// CC 流式复制快照行（同消息 timestamp 各异）在增量采集里靠它归并；
+    /// 冲突时：普通行仅当新行四项合计更大才整行覆盖（"保留最大快照"口径），
+    /// 后台校准行（存量 is_background=1）无条件覆盖——差值随 assistant 明细
+    /// 增长会缩小，必须跟随重算值而非保留历史最大。
+    /// source_id 为 NULL 的行不触发冲突（SQLite NULL≠NULL），多行共存仅作防御兜底；
     /// 返回实际变更行数（新插入或覆盖）。
     /// 事务/写失败不再 panic（审查 1.1）：记日志返回 0，等下一轮重采
     pub fn insert_usage(&self, rows: &[UsageRow]) -> usize {
@@ -181,9 +210,9 @@ impl Store {
                    session_id, agent, model, provider, ts,
                    input_tokens, output_tokens, reasoning_tokens,
                    cache_read_tokens, cache_creation_tokens,
-                   duration_ms, ttft_ms, error_type)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
-                 ON CONFLICT(agent, session_id, ts, model) DO UPDATE SET
+                   duration_ms, ttft_ms, error_type, source_id, is_background)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+                 ON CONFLICT(agent, session_id, source_id) DO UPDATE SET
                    input_tokens = excluded.input_tokens,
                    output_tokens = excluded.output_tokens,
                    reasoning_tokens = excluded.reasoning_tokens,
@@ -191,8 +220,10 @@ impl Store {
                    cache_creation_tokens = excluded.cache_creation_tokens,
                    duration_ms = excluded.duration_ms,
                    ttft_ms = excluded.ttft_ms,
-                   error_type = excluded.error_type
-                 WHERE (COALESCE(excluded.input_tokens,0) + COALESCE(excluded.output_tokens,0)
+                   error_type = excluded.error_type,
+                   ts = excluded.ts
+                 WHERE is_background = 1
+                    OR (COALESCE(excluded.input_tokens,0) + COALESCE(excluded.output_tokens,0)
                       + COALESCE(excluded.cache_read_tokens,0) + COALESCE(excluded.cache_creation_tokens,0))
                        >
                        (COALESCE(input_tokens,0) + COALESCE(output_tokens,0)
@@ -201,7 +232,8 @@ impl Store {
                     r.session_id, r.agent, r.model, r.provider, r.ts,
                     r.input_tokens, r.output_tokens, r.reasoning_tokens,
                     r.cache_read_tokens, r.cache_creation_tokens,
-                    r.duration_ms, r.ttft_ms, r.error_type
+                    r.duration_ms, r.ttft_ms, r.error_type,
+                    r.source_id, r.is_background as i64
                 ],
             );
             match n {
@@ -314,13 +346,14 @@ impl Store {
     }
 
     /// 今日用量汇总（账单口径四项相加）： 本机今日零点之后的 token 总量与调用次数。
-    /// 供胶囊/面板"今日"口径展示（2026-09-18 展示改造，替代误导性的全历史"累计"）
+    /// 供胶囊/面板"今日"口径展示（2026-09-18 展示改造，替代误导性的全历史"累计"）。
+    /// 调用次数不含后台校准行（is_background，cost-state 差值非真实调用）
     pub fn today_usage(&self, day_start_ms: i64) -> (i64, i64) {
         let conn = self.lock_conn();
         let result: rusqlite::Result<(i64, i64)> = conn.query_row(
             "SELECT COALESCE(SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)
                     +COALESCE(cache_read_tokens,0)+COALESCE(cache_creation_tokens,0)),0),
-                    COUNT(*)
+                    COALESCE(SUM(NOT is_background),0)
              FROM usage_records WHERE ts >= ?1",
             params![day_start_ms],
             |r| Ok((r.get(0)?, r.get(1)?)),
@@ -371,7 +404,8 @@ impl Store {
     }
 
     /// 批量：每个会话最近一次调用所用模型（Claude Code scan 阶段拿不到 model，
-    /// 展示时兜底回填）。窗口函数取每会话 ts 最大一行，替代逐会话点查（审查 2.2.2）
+    /// 展示时兜底回填）。窗口函数取每会话 ts 最大一行，替代逐会话点查（审查 2.2.2）。
+    /// 排除后台校准行：cost-state 差值行的模型（如 flash）不代表会话主模型
     pub fn latest_session_models(&self, session_ids: &[String]) -> std::collections::HashMap<String, String> {
         let mut out = std::collections::HashMap::new();
         if session_ids.is_empty() {
@@ -383,7 +417,7 @@ impl Store {
             "SELECT session_id, model FROM (
                SELECT session_id, model,
                       ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY ts DESC) AS rn
-               FROM usage_records WHERE session_id IN ({placeholders})
+               FROM usage_records WHERE session_id IN ({placeholders}) AND is_background = 0
              ) WHERE rn = 1"
         );
         let Ok(mut stmt) = conn.prepare(&sql) else {
@@ -440,6 +474,58 @@ impl Store {
         .optional()
         .ok()
         .flatten()
+    }
+
+    /// 某会话某模型的真实调用（非后台）四项用量合计。
+    /// cost-state 校准（2026-09-21）用：后台差值 = cost 累计快照 − 本值（下限 0）
+    pub fn assistant_model_total(&self, session_id: &str, model_lower: &str) -> i64 {
+        let conn = self.lock_conn();
+        conn.query_row(
+            "SELECT COALESCE(SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)
+                    +COALESCE(cache_read_tokens,0)+COALESCE(cache_creation_tokens,0)),0)
+             FROM usage_records
+             WHERE session_id = ?1 AND is_background = 0 AND LOWER(model) = ?2",
+            params![session_id, model_lower],
+            |r| r.get(0),
+        )
+        .unwrap_or(0)
+    }
+
+    /// 批量：一组会话已入库的标题（sessions 表持久层）。
+    /// 岛面板快照兜底用——CC 标题只随增量采集入库，快照不能依赖"本轮恰好采到"，
+    /// 否则文件无新行时标题丢失回退目录名（2026-09-21 实测踩中）
+    pub fn session_titles(&self, session_ids: &[String]) -> std::collections::HashMap<String, String> {
+        let mut out = std::collections::HashMap::new();
+        if session_ids.is_empty() {
+            return out;
+        }
+        let conn = self.lock_conn();
+        let placeholders = session_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, title FROM sessions
+             WHERE id IN ({placeholders}) AND title IS NOT NULL AND title != ''"
+        );
+        let Ok(mut stmt) = conn.prepare(&sql) else {
+            log::warn!("session_titles 查询准备失败");
+            return out;
+        };
+        let rows = stmt.query_map(rusqlite::params_from_iter(session_ids.iter()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        });
+        if let Ok(it) = rows {
+            for (sid, title) in it.filter_map(|x| x.ok()) {
+                out.insert(sid, title);
+            }
+        }
+        out
+    }
+
+    /// 清空采集水位（0003 重建流程：配合已清空的用量表，触发采集层全量回溯）
+    pub fn clear_watermarks(&self) {
+        let conn = self.lock_conn();
+        if let Err(e) = conn.execute("DELETE FROM watermarks", []) {
+            log::warn!("[存储] 水位清空失败（重建流程）：{e}");
+        }
     }
 
     /// 读取全部设置（设置页展示）
@@ -755,7 +841,7 @@ impl Store {
         let conn = self.lock_conn();
         let (where_sql, params) = filter_where(f);
         let sql = format!(
-            "SELECT COALESCE(SUM({TOTAL_EXPR}),0), COUNT(*),
+            "SELECT COALESCE(SUM({TOTAL_EXPR}),0), COALESCE(SUM(NOT u.is_background),0),
                     COUNT(DISTINCT u.session_id),
                     COUNT(DISTINCT COALESCE(s.project_dir,'')),
                     COALESCE(SUM(u.error_type IS NOT NULL),0),
@@ -798,7 +884,7 @@ impl Store {
                     COALESCE(SUM(COALESCE(u.output_tokens,0)),0),
                     COALESCE(SUM(COALESCE(u.cache_read_tokens,0)),0),
                     COALESCE(SUM(COALESCE(u.cache_creation_tokens,0)),0),
-                    COUNT(*),
+                    COALESCE(SUM(NOT u.is_background),0),
                     SUM(u.duration_ms)
              FROM usage_records u LEFT JOIN sessions s ON s.id = u.session_id{where_sql}
              GROUP BY b ORDER BY b"
@@ -829,7 +915,7 @@ impl Store {
         let group = dim_expr(dim);
         let (where_sql, params) = filter_where(f);
         let sql = format!(
-            "SELECT {group} AS label, COALESCE(SUM({TOTAL_EXPR}),0), COUNT(*)
+            "SELECT {group} AS label, COALESCE(SUM({TOTAL_EXPR}),0), COALESCE(SUM(NOT u.is_background),0)
              FROM usage_records u LEFT JOIN sessions s ON s.id = u.session_id{where_sql}
              GROUP BY label ORDER BY 2 DESC"
         );
@@ -856,7 +942,7 @@ impl Store {
         let sql = format!(
             "SELECT CAST(strftime('%w', u.ts/1000,'unixepoch','localtime') AS INTEGER),
                     CAST(strftime('%H', u.ts/1000,'unixepoch','localtime') AS INTEGER),
-                    COALESCE(SUM({TOTAL_EXPR}),0), COUNT(*)
+                    COALESCE(SUM({TOTAL_EXPR}),0), COALESCE(SUM(NOT u.is_background),0)
              FROM usage_records u LEFT JOIN sessions s ON s.id = u.session_id{where_sql}
              GROUP BY 1,2"
         );
@@ -964,10 +1050,12 @@ impl Store {
     /// 另加状态档（all｜active｜ended｜errored）/关键字（标题、项目路径模糊匹配）/
     /// 排序键（recent｜tokens｜calls｜duration，白名单映射防注入）/
     /// 每页行数（0 或负值回退默认，钳制 ≤200 限制 LIMIT 注入面）。
-    /// 结构=内层按会话聚合子查询＋外层套状态/关键字过滤：状态口径与前端
-    /// shared/sessionDisplay.ts 的 displayState 同源——active=状态机活跃三态
-    /// （working/waiting/error），或 idle 且最近活动在 ENDED_AFTER_MS 内；
-    /// ended=其余（offline、无 sessions 行、空闲超时）；errored=出过错。
+    /// 结构=内层按会话聚合子查询＋外层套状态/关键字过滤。
+    /// 状态口径（2026-09-21 冻结修复）：active = 状态非 offline 且最近活动在
+    /// ENDED_AFTER_MS 内——原来三态（working/waiting/error）无时间条件，会话离开
+    /// 90 天观测列表后 sessions.state 冻结在最后值会被永久当"活跃"；统一时间窗后
+    /// 与前端 shared/sessionDisplay.ts 的 ENDED_AFTER_MS 语义对齐；
+    /// ended=其余（offline、空闲超时、冻结）。errored=出过错。
     /// 状态判定依赖聚合值 MAX(u.ts)，故过滤必须套在聚合之后
     pub fn session_page(
         &self,
@@ -986,12 +1074,8 @@ impl Store {
         // 状态档与排序键先行白名单校验（未知值返回 None，命令层向前端报错）
         let status_sql: &str = match status {
             "all" => "",
-            "active" => {
-                " AND (state IN ('working','waiting','error') OR (state='idle' AND last_ts >= ?))"
-            }
-            "ended" => {
-                " AND NOT (state IN ('working','waiting','error') OR (state='idle' AND last_ts >= ?))"
-            }
+            "active" => " AND (state != 'offline' AND last_ts >= ?)",
+            "ended" => " AND NOT (state != 'offline' AND last_ts >= ?)",
             "errored" => " AND errors > 0",
             _ => return None,
         };
@@ -1005,11 +1089,13 @@ impl Store {
         let f = self.report_filter(range, agent, project, model)?;
         let conn = self.lock_conn();
         let (where_sql, mut params) = filter_where(&f);
-        // 内层子查询：按会话聚合（别名供外层过滤/排序引用，避免脆弱的列号）
+        // 内层子查询：按会话聚合（别名供外层过滤/排序引用，避免脆弱的列号）；
+        // calls 不含后台校准行（cost-state 差值非真实调用）
         let inner = format!(
             "SELECT u.session_id, COALESCE(s.agent, u.agent) AS agent,
                     COALESCE(s.state,'offline') AS state, s.model, s.project_dir, s.title,
-                    MIN(u.ts) AS first_ts, MAX(u.ts) AS last_ts, COUNT(*) AS calls,
+                    MIN(u.ts) AS first_ts, MAX(u.ts) AS last_ts,
+                    COALESCE(SUM(NOT u.is_background),0) AS calls,
                     COALESCE(SUM(COALESCE(u.input_tokens,0)),0) AS input_tokens,
                     COALESCE(SUM(COALESCE(u.output_tokens,0)),0) AS output_tokens,
                     COALESCE(SUM(COALESCE(u.cache_read_tokens,0)),0) AS cache_read_tokens,
@@ -1099,9 +1185,11 @@ impl Store {
         let mut detail = SessionDetail::default();
         // 原始 id：剥掉 "{agent}:" 前缀（无前缀时原样，防御）
         let raw_id = session_id.split_once(':').map(|x| x.1).unwrap_or(session_id);
-        // 真实总数：一条查询带两个标量子查询（状态事件同样兼容两代 session_id 口径）
+        // 真实总数：一条查询带两个标量子查询（状态事件同样兼容两代 session_id 口径）；
+        // 调用总数排除后台校准行（cost-state 差值非真实调用，流水同样不展示）
         if let Ok(mut stmt) = conn.prepare(
-            "SELECT (SELECT COUNT(*) FROM usage_records WHERE session_id = ?1),
+            "SELECT (SELECT COUNT(*) FROM usage_records
+                      WHERE session_id = ?1 AND is_background = 0),
                     (SELECT COUNT(*) FROM status_events WHERE session_id = ?1 OR session_id = ?2)",
         ) {
             if let Ok(mut it) = stmt.query(rusqlite::params![session_id, raw_id]) {
@@ -1117,7 +1205,7 @@ impl Store {
                     COALESCE(reasoning_tokens,0),
                     COALESCE(cache_read_tokens,0), COALESCE(cache_creation_tokens,0),
                     duration_ms, ttft_ms, error_type
-             FROM usage_records WHERE session_id = ?1 ORDER BY ts DESC LIMIT 500",
+             FROM usage_records WHERE session_id = ?1 AND is_background = 0 ORDER BY ts DESC LIMIT 500",
         ) {
             if let Ok(it) = stmt.query_map([session_id], |r| {
                 Ok(SessionCallRow {
@@ -1169,15 +1257,11 @@ impl Store {
         keyword: &str,
         sort: &str,
     ) -> Option<String> {
-        // 白名单校验与 session_page 同款
+        // 白名单校验与 session_page 同款（状态口径同其 2026-09-21 冻结修复版）
         let status_sql: &str = match status {
             "all" => "",
-            "active" => {
-                " AND (state IN ('working','waiting','error') OR (state='idle' AND last_ts >= ?))"
-            }
-            "ended" => {
-                " AND NOT (state IN ('working','waiting','error') OR (state='idle' AND last_ts >= ?))"
-            }
+            "active" => " AND (state != 'offline' AND last_ts >= ?)",
+            "ended" => " AND NOT (state != 'offline' AND last_ts >= ?)",
             "errored" => " AND errors > 0",
             _ => return None,
         };
@@ -1198,7 +1282,8 @@ impl Store {
             "SELECT u.session_id, COALESCE(s.agent, u.agent) AS agent,
                     COALESCE(s.state,'offline') AS state, s.model,
                     COALESCE(s.project_dir,'') AS project_dir, COALESCE(s.title,'') AS title,
-                    MIN(u.ts) AS first_ts, MAX(u.ts) AS last_ts, COUNT(*) AS calls,
+                    MIN(u.ts) AS first_ts, MAX(u.ts) AS last_ts,
+                    COALESCE(SUM(NOT u.is_background),0) AS calls,
                     COALESCE(SUM(COALESCE(u.input_tokens,0)),0) AS input_tokens,
                     COALESCE(SUM(COALESCE(u.output_tokens,0)),0) AS output_tokens,
                     COALESCE(SUM(COALESCE(u.cache_read_tokens,0)),0) AS cache_read_tokens,
@@ -1319,6 +1404,8 @@ mod tests {
             duration_ms: Some(7812),
             ttft_ms: Some(900),
             error_type: None,
+            source_id: Some(format!("test:{ts}")),
+            is_background: false,
         }
     }
 
@@ -1333,6 +1420,46 @@ mod tests {
         // 重复打开：迁移幂等，数据仍在
         let store2 = Store::open(&path).unwrap();
         assert_eq!(store2.get_setting("k").as_deref(), Some("v"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 0003 首版 SQL 曾在已有旧表的库上被 CREATE IF NOT EXISTS 静默跳过，
+    /// 但 user_version 已消耗到 3——此类"被骗库"必须由 0004 无条件重建收敛。
+    /// 回归锁定：ver=3 + 旧 13 列结构的库，open 后应升级为可用新结构
+    /// （带 source_id/is_background 的行能成功写入）
+    #[test]
+    fn test_migrate_rescues_deceived_v3_db() {
+        let path = tmp_db("deceived");
+        {
+            // 手工构造被骗库：旧 13 列结构 + user_version=3 + 重建标志已消费
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT);
+                 CREATE TABLE watermarks(agent TEXT PRIMARY KEY, last_ts INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE usage_records (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   session_id TEXT NOT NULL, agent TEXT NOT NULL, model TEXT NOT NULL,
+                   provider TEXT, ts INTEGER NOT NULL,
+                   input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER,
+                   cache_read_tokens INTEGER, cache_creation_tokens INTEGER,
+                   duration_ms INTEGER, ttft_ms INTEGER, error_type TEXT,
+                   UNIQUE(agent, session_id, ts, model)
+                 );
+                 PRAGMA user_version = 3;
+                 INSERT INTO app_settings(key, value) VALUES('usage_rebuild_pending', '0');",
+            )
+            .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        // 0004 应已重建为新结构：带新列的行可写入，重建标志重新置位
+        let mut row = sample_usage(1_000);
+        row.source_id = Some("probe".into());
+        assert_eq!(store.insert_usage(&[row]), 1, "被骗库经 0004 后应支持新结构写入");
+        assert_eq!(
+            store.get_setting(crate::store::REBUILD_PENDING_KEY).as_deref(),
+            Some("1"),
+            "重建标志应重新置位以触发全量回溯"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1382,7 +1509,86 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// 2026-09-21 双计根治回归：
+    /// ① 同 source_id（同消息）timestamp 各异的流式复制行 → 合并为一行、保留最大快照
+    ///   （旧幂等键 (sid,ts,model) 不含消息身份，跨 tick 分裂时双计 +27.8%）
+    /// ② 后台校准行无条件覆盖（差值随 assistant 增长缩小，须跟随重算值而非保留最大）
+    /// ③ 调用次数口径：today_usage / 会话页 calls 排除后台行，token 计入
     #[test]
+    fn test_source_key_merges_and_background_calls() {
+        let path = tmp_db("srckey");
+        let store = Store::open(&path).unwrap();
+        // 同消息（source_id 相同）两行快照，timestamp 不同（流式复制行实测形态）
+        let mut small = sample_usage(1_000);
+        small.source_id = Some("msg_a".into());
+        small.input_tokens = Some(40);
+        let mut big = sample_usage(5_000);
+        big.source_id = Some("msg_a".into());
+        big.input_tokens = Some(100);
+        assert_eq!(store.insert_usage(&[small, big.clone()]), 2);
+        // 同批次重复重采（水位余量回退场景）：不再新增
+        assert_eq!(store.insert_usage(&[big.clone()]), 0);
+        // 库中该消息只有一行（旧键实现下会是两行）
+        let n: i64 = {
+            let mut conn = store.lock_conn();
+            // 测试内直达连接仅此一处用途：精确断言行数
+            conn.query_row(
+                "SELECT COUNT(*) FROM usage_records WHERE source_id = 'msg_a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(n, 1, "同 source_id 必须合并为一行");
+
+        // 后台校准行：差值行先大后小，两次都覆盖（跟随重算值）；
+        // 字段形态与 service 层构造一致：只有 input_tokens 承载差值，其余为 None
+        let mut bg1 = sample_usage(6_000);
+        bg1.source_id = Some("cost:zcode:abc:glm-5.3".into());
+        bg1.is_background = true;
+        bg1.input_tokens = Some(500);
+        bg1.output_tokens = None;
+        bg1.reasoning_tokens = None;
+        bg1.cache_read_tokens = None;
+        bg1.cache_creation_tokens = None;
+        bg1.duration_ms = None;
+        bg1.ttft_ms = None;
+        assert_eq!(store.insert_usage(&[bg1]), 1);
+        let mut bg2 = sample_usage(7_000);
+        bg2.source_id = Some("cost:zcode:abc:glm-5.3".into());
+        bg2.is_background = true;
+        bg2.input_tokens = Some(300); // 差值缩小：普通行的"保留最大"不适用
+        bg2.output_tokens = None;
+        bg2.reasoning_tokens = None;
+        bg2.cache_read_tokens = None;
+        bg2.cache_creation_tokens = None;
+        bg2.duration_ms = None;
+        bg2.ttft_ms = None;
+        assert_eq!(store.insert_usage(&[bg2]), 1);
+        let bg_val: i64 = {
+            let mut conn = store.lock_conn();
+            conn.query_row(
+                "SELECT input_tokens FROM usage_records WHERE source_id = 'cost:zcode:abc:glm-5.3'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(bg_val, 300, "后台行必须无条件覆盖为最新差值");
+
+        // 调用次数排除后台行；token 计入（100+200+3000+0 普通 + 300 后台）
+        let (today_tokens, today_calls) = store.today_usage(0);
+        assert_eq!(today_calls, 1, "调用次数不含后台校准行");
+        assert_eq!(today_tokens, 3_300 + 300, "token 总量含后台校准行");
+        // 会话页 calls 同口径（后台行计入 token 但不计次数）
+        let page = store
+            .session_page("all", None, None, None, "all", "", "recent", 20, 0)
+            .unwrap();
+        let row = page.rows.iter().find(|r| r.session_id == "zcode:abc").unwrap();
+        assert_eq!(row.calls, 1);
+        assert_eq!(row.total_tokens, 3_600);
+        let _ = std::fs::remove_file(&path);
+    }    #[test]
     fn test_cleanup() {
         let path = tmp_db("clean");
         let store = Store::open(&path).unwrap();
@@ -1428,6 +1634,8 @@ mod tests {
                 duration_ms: dur,
                 ttft_ms: Some(900),
                 error_type: err.map(String::from),
+                source_id: Some(format!("{agent}:{sid}:{ts}")),
+                is_background: false,
             }
         };
         let rows = vec![

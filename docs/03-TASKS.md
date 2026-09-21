@@ -385,6 +385,70 @@
 - ✅ 验收：所有者 dev 验收通过（2026-09-20）；状态时间线的真实事件丰富度随 hooks 启用逐步体现
 - 依赖：M1-10
 
+### M1-12 数据准确性治理：双计根治＋后台用量补采 ✅（2026-09-21 代码完成，待所有者 dev 验收）
+
+- 触发：所有者提出「数据更新不准确」，全链路核查（采集→存储→查询→展示）＋本机真实数据
+  四方对账实证，定位出两个实锤误差源与三个口径/健壮性问题（对账方法与数字见 01-RESEARCH §8 补记）
+- 🐛 **双计根治（活跃日实测虚高 +27.8%，今日 +19.4 万 token）**：CC 同一 assistant 消息平均
+  写 2~3 行纯复制流式快照（usage 全同、timestamp 各异，1~10 秒差居多，实测 492/534 条消息），
+  旧幂等键 `(agent, session_id, ts, model)` 不含消息身份——工具运行期间这些行跨采集轮次
+  分裂入库各自成行；工具未运行期间写入的数据靠启动后一轮全量回溯＋调用内 message.id 去重
+  恰好无误，故历史天误差 0.0%、唯独活跃日虚高。修复：迁移 0003 重建 usage_records，
+  幂等键升级为 `(agent, session_id, source_id)`（CC=message.id(+requestId)，ZCode=源库行 id），
+  同源多行冲突时保留最大快照（原口径不变）
+- ✨ **后台用量补采（缺口 133 万 token，占 4.55%）**：CC 转录 cost-state 行携带会话级累计
+  `modelUsage`（camelCase、模型名带 `[1m]` 后缀、无 ISO timestamp 只有毫秒 startTime），
+  按（会话×归一化模型）取最大累计快照，超出 assistant 明细的部分＝标题生成等后台调用的
+  真实消耗，以差值行入库（`source_id='cost:…'`、`is_background=1`、无条件覆盖跟随重算）；
+  token 计入消耗口径，调用次数不计（today_usage/报表趋势/维度分组/热力图/会话页 calls
+  统一切换为 `SUM(NOT is_background)`），调用流水与最近模型展示排除后台行
+- ✨ **存量清洗＝自动清空重建**（所有者拍板）：0003 迁移重建空表＋写 `usage_rebuild_pending`
+  标志，聚合器构造时检测后归零水位，首轮采集全量回溯自动收敛（数据源 CC 转录/ZCode 源库
+  都是完整事实源；现存转录最早 08-30 与自库最早一致，重建零损失）
+- ✨ **水位时钟防线**：`set_watermark` 前钳制 `min(max_ts, now)`——行时间戳若因时钟回拨
+  出现未来值，旧实现水位被永久推高后所有新行被过滤（数据静默停更）
+- 🐛 **取消不算错误**（所有者拍板）：ZCode 采集 SQL `CASE WHEN cancelled_by_user=1 THEN NULL`，
+  用户主动 ESC 不再计入出错次数/错误分布（存量 21 行随重建自然清洗）
+- 🐛 **冻结状态修复**：会话中心/CSV 的 active 判定统一为「state != 'offline' 且最近活动在
+  ENDED_AFTER_MS 内」——原三态（working/waiting/error）无时间条件，会话离开 90 天观测
+  列表后 sessions.state 冻结会被永久当"活跃"
+- 🐛 **0003 落地修复＝迁移 0004**（所有者实测"标题没解决"后深挖发现）：0003 首版 SQL 的
+  `CREATE TABLE IF NOT EXISTS` 在已有旧表的库上被静默跳过、但 user_version 已消耗到 3——
+  此类库表停留在旧 13 列结构（无 source_id/is_background），新代码写入全部失败/旧逻辑持续
+  双计，且修复版 0003 永远不会再执行。0004 无条件重建为同款新结构，任何中间状态一次收敛
+  （已是新结构的库多一次清空重建，全量回溯幂等恢复）；回归测试模拟"ver=3＋旧 13 列"被骗库
+  验证自动修复
+- 🔧 **first_cwd 读取量 8KB→64KB**（所有者截图显示编码目录名回退）：头部可能连续多行
+  summary/attachment/ai-title 等不带 cwd 的行，实测 8KB 仅覆盖 19/43 文件、64KB 覆盖
+  43/43；cwd 缓存按 mtime，重启后自动以新逻辑重读
+- 🔧 顺带发现并修复：ZCode 源库 `model_usage.id` 实测 TEXT 型（按 i64 读全部行解析失败）；
+  cost-state 行无 `timestamp` 字段回退 `startTime`
+- ✨ **CC 会话标题补采**（所有者实测反馈"标题显示的是目录名"）：CC 终端的会话标题就写在
+  转录 `ai-title` 行（`{"aiTitle":…,"sessionId":…}`，随对话推进多次重写、散布全文，
+  实测 185 行/41 文件）——此前 scan 未解析、title 恒 None，前端 cardTitle 回退链落到
+  项目目录名。修复：`collect_usage` 增量解析顺路带出（后写覆盖=最新标题，零额外 IO），
+  `CollectOutput.titles` 透传 → upsert_session 与 SessionView 兜底（COALESCE 保旧不丢）；
+  0003 重建首轮全量回溯恰好把全部存量标题一次补齐；无 timestamp 字段故不做水位过滤。
+  ZCode 不受影响（session 表自带标题）。
+  🐛 快照标题丢失二次修复（所有者截图实测踩中）：岛面板 SessionView 每轮快照重建，
+  兜底只挂"本轮恰好采到新标题"——文件无新行时标题消失回退目录名。加第三级来源
+  `store.session_titles` 批量读 sessions 表持久值（与 latest_session_models 同款模式），
+  标题链=scan 自带（ZCode）> 本轮新采集 > 已入库持久值
+- 🐛 **会话窗口 CC 模型列为空修复**（所有者截图实测踩中）：sessions.model 对 CC 恒 NULL
+  （scan 无模型信息、COALESCE 保 NULL），会话窗口直读表显示 —，岛面板走 latest_models
+  回填所以正确——两处口径不一致。修复：聚合器 upsert 时把回填后的模型持久化进
+  sessions.model（最近一次调用模型，与岛面板同口径），所有读表展示位统一
+- 结构改动：`AgentAdapter::collect_usage` 返回 `CollectOutput { rows, cost_snapshots, titles }`
+  （ZCode cost_snapshots/titles 恒空）；service 层用 `assistant_model_total` 点查重算差值，
+  `last_cost_cum` 内存缓存避免重复重算
+- 验证：cargo test 31/31（新增回归：同 source_id 异时戳合并/后台行无条件覆盖/calls 排除）、
+  ignored 集成 8/8（真实 CC/ZCode/hooks e2e/聚合器）、cargo check 零告警、npm build 通过；
+  **端到端对账**：临时库跑真实聚合器重建，今日 CC=696,302 与现存文件真实口径分毫不差
+  （修复前自库 889,947），总量 30.48M ≈ assistant 29.1M＋后台 1.33M
+- ⚠️ 验收注意：首次启动会执行 0003 迁移并清空用量表，随后 10 秒内全量回溯恢复
+  （岛面板 token 短暂从 0 涨回属预期）；「今日消耗」数字会比修复前变小（去掉双计）
+- 依赖：无（独立修复批次）
+
 ### 已划出 M1（2026-09-17 所有者拍板）
 
 - Anthropic 官方订阅额度 → 移回 M2 愿景池（所有者无官方订阅）
@@ -393,20 +457,30 @@
 
 ## 待议区（看板外想法，不擅自实施）
 
-- **零用量会话不在会话窗口显示**（M1-10 有意边界）：会话查询沿用 usage_records
-  INNER JOIN（与原报表同口径），装了 hook 但从未产生模型调用的会话不可见；
-  改 LEFT JOIN 需把时间过滤挪进 ON 子句，真实遇到此类会话再议
+- **零用量会话不在会话窗口显示**（M1-10 有意边界；**2026-09-21 所有者拍板收尾**）：
+  会话查询沿用 usage_records 聚合口径（岛面板=文件扫描含零用量会话，两处数量天然不同），
+  保持现状不改 LEFT JOIN；差异以交互引导消化——会话窗口标题右侧新增口径说明小字
+  「仅统计产生过调用的会话」，悬浮 Tip 给出与岛面板口径差异的完整解释
+  （所有者原则：数据口径不一致要么设计引导、要么保持一致，不能让用户猜）
 - **报表页不补汇总级导出**（M1-10 拍板）：导出能力随会话明细整体迁往会话窗口；
   若日后需要"按范围汇总一行"的导出再议
-- **CC 跨 tick 流式重复残留**（M1-7 P2 余项）：usage_records 幂等键不含 messageId，
-  同一消息的多条流式快照行若时间戳不同仍会入库两行（同键取最大快照场景已修复）。
-  影响用量准确度，需取真实增量样本测影响量级再定方案（加 message_id 列需迁移 0002）
+- ~~CC 跨 tick 流式重复残留~~ → **已解决（M1-12，2026-09-21）**：幂等键升级 source_id
+  ＋存量自动清空重建，实测活跃日 +27.8% 双计归零，详见 M1-12 与 01-RESEARCH §8
 - **hook 事件文件无轮转**：%LOCALAPPDATA% 事件文件 append-only 无限增长，且每 10s
   tick 全量读取一次；长期运行需补轮转/截断策略
+  → **部分过时（2026-09-21 核实）**：8MB 轮转与偏移增量读已随审查 1.2 落地
+  （collector/hook_events.rs rotate_if_large），本条仅剩"轮转保留一代 .old"的现状记录
 - **CC 采集全量重读**：每 tick 全量重读所有 mtime 新于水位的转录文件；
   scan_sessions 对 90 天内全部转录读 8KB 头后才截断 100——转录量大时改文件内
   偏移增量（即原 02-DESIGN §2.1 的文件内偏移方案）
+  → **部分过时（2026-09-21 核实）**：per-file 字节偏移增量读已随审查 1.3 落地，
+  仅剩 scan_sessions 的 8KB 头读取（cwd 缓存已按 mtime 缓解）
 - **sessions 表不在清理范围**：每会话一行缓慢累积，长期可考虑随数据保留周期清理
+- **CC cost-state 后台量已补采（M1-12）**：差值行 is_background=1，token 计入、
+  次数不计；后续若需要"后台调用独立维度报表"再议
+- **CC 启发式状态的 mtime 噪声（M1-12 遗留观察）**：未装 hooks 时 last_activity_at 取
+  文件 mtime，ai-title/file-history 等非对话行追加会推高造成"假 working"（装 hooks 的
+  用户不受影响）；后续可改用自库最近调用时间兜底
 - **WT 中 Claude Code 卡片跳转未命中**（T10 遗留）：ZCode ✅/标题含路径的场景理论 ✅，
   但所有者环境（Windows Terminal + PowerShell 7）进程链匹配未命中。下次调试线索：
   ①打印 WT 进程树（pwsh 的父链是 WindowsTerminal.exe 还是经 OpenConsole/conhost 中转）；

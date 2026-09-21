@@ -16,7 +16,8 @@ use std::sync::Arc;
 use crate::collector::claude_code::ClaudeCodeAdapter;
 use crate::collector::hook_events;
 use crate::collector::zcode::ZcodeAdapter;
-use crate::collector::AgentAdapter;
+use crate::collector::{AgentAdapter, provider_from_model};
+use crate::store::UsageRow;
 use crate::provider::glm::GlmProvider;
 use crate::provider::ProviderAdapter;
 use crate::state::{
@@ -112,6 +113,9 @@ pub struct Aggregator {
     last_states: HashMap<String, SessionState>,
     /// 上轮额度耗尽标志（翻转留痕用）
     last_quota_exhausted: bool,
+    /// cost-state 校准缓存：会话×模型 → 上次入库的累计值（值未变则跳过重算；
+    /// 内存态，重启后首轮全量重算一遍，幂等无害）
+    last_cost_cum: HashMap<(String, String), i64>,
 }
 
 impl Aggregator {
@@ -145,6 +149,14 @@ impl Aggregator {
                 glm.as_ref().map(|g| g.base()).unwrap_or("")
             );
         }
+        // 0003 重建流程（2026-09-21 数据准确性治理）：迁移已清空 usage_records，
+        // 此处归零水位并摘除标志——首轮 collect_usage(0) 全量回溯自动重建
+        // （数据源 CC 转录/ZCode 源库都是完整事实源，重建零损失）
+        if store.get_setting(crate::store::REBUILD_PENDING_KEY).as_deref() == Some("1") {
+            store.clear_watermarks();
+            store.set_setting(crate::store::REBUILD_PENDING_KEY, "0");
+            log::info!("[重建] 幂等键升级（0003）：水位已归零，首轮采集将全量回溯重建用量数据");
+        }
         Self {
             store,
             adapters: vec![Box::new(ZcodeAdapter::new()), Box::new(ClaudeCodeAdapter::new())],
@@ -158,6 +170,7 @@ impl Aggregator {
             last_error: None,
             last_states: HashMap::new(),
             last_quota_exhausted: false,
+            last_cost_cum: HashMap::new(),
         }
     }
 
@@ -287,16 +300,71 @@ impl Aggregator {
                 .store
                 .get_watermark(agent_id)
                 .saturating_sub(WATERMARK_MARGIN_MS);
-            let usage = match ad.collect_usage(watermark) {
-                Ok(u) => u,
+            let output = match ad.collect_usage(watermark) {
+                Ok(o) => o,
                 Err(e) => {
                     log::warn!("[{agent_id}] 用量采集失败（本轮按空处理）：{e:#}");
                     had_error = true;
                     last_err = Some(format!("[{agent_id}] 用量采集失败：{e:#}"));
-                    vec![]
+                    Default::default()
                 }
             };
+            let usage = output.rows;
             let inserted = self.store.insert_usage(&usage);
+            // 会话标题（CC 转录 ai-title 行）：采集顺路带出，ZCode 恒空（session 表自带）
+            let latest_titles: HashMap<String, String> = output.titles.into_iter().collect();
+            // cost-state 校准（P5，2026-09-21）：CC 专属。会话级累计快照中超出
+            // assistant 明细的部分是标题生成等后台调用的真实消耗——差值行入库，
+            // token 计入消耗、调用次数不计。差值随 assistant 行增长而缩小，
+            // 幂等键 'cost:{sid}:{model}' + 后台行无条件覆盖，每轮跟随重算值
+            if !output.cost_snapshots.is_empty() {
+                let calib_rows: Vec<UsageRow> = output
+                    .cost_snapshots
+                    .iter()
+                    .filter(|snap| {
+                        // 累计值未变化：跳过重算（省一次点查+写库）
+                        self.last_cost_cum
+                            .get(&(snap.session_id.clone(), snap.model.clone()))
+                            != Some(&snap.cumulative_tokens)
+                    })
+                    .map(|snap| {
+                        let assistant = self
+                            .store
+                            .assistant_model_total(&snap.session_id, &snap.model);
+                        UsageRow {
+                            session_id: snap.session_id.clone(),
+                            agent: "claude-code".into(),
+                            model: snap.model.clone(),
+                            provider: provider_from_model(&snap.model),
+                            ts: snap.ts,
+                            input_tokens: Some((snap.cumulative_tokens - assistant).max(0)),
+                            output_tokens: None,
+                            reasoning_tokens: None,
+                            cache_read_tokens: None,
+                            cache_creation_tokens: None,
+                            duration_ms: None,
+                            ttft_ms: None,
+                            error_type: None,
+                            source_id: Some(format!(
+                                "cost:{}:{}",
+                                snap.session_id, snap.model
+                            )),
+                            is_background: true,
+                        }
+                    })
+                    .collect();
+                for snap in &output.cost_snapshots {
+                    self.last_cost_cum
+                        .insert((snap.session_id.clone(), snap.model.clone()), snap.cumulative_tokens);
+                }
+                let calib = self.store.insert_usage(&calib_rows);
+                if calib > 0 {
+                    log::debug!(
+                        "[校准] cost-state 后台差值行更新 {calib} 条（本轮快照 {} 组）",
+                        output.cost_snapshots.len()
+                    );
+                }
+            }
             // 本适配器轮次统计（tick 摘要输出用）：采集行数/入库变更/水位推进一览
             collect_stats.push(format!(
                 "{agent_id}：会话 {}，采到 {} 行入库 {inserted}",
@@ -304,7 +372,9 @@ impl Aggregator {
                 usage.len()
             ));
             if let Some(max_ts) = usage.iter().map(|u| u.ts).max() {
-                self.store.set_watermark(agent_id, max_ts);
+                // 时钟防线（2026-09-21）：行时间戳为"未来值"（时钟回拨前写入/NTP 校正）
+                // 会把水位永久推高，之后所有新行被过滤——数据静默停更。钳制不超过当前时刻
+                self.store.set_watermark(agent_id, max_ts.min(now));
             }
             // 本轮新采集中的最近错误（按会话）
             let mut recent_errors: HashMap<&str, i64> = HashMap::new();
@@ -320,6 +390,8 @@ impl Aggregator {
             let breakdowns = self.store.session_usage_breakdown(&ids);
             let latest_models = self.store.latest_session_models(&ids);
             let latest_errors = self.store.latest_session_errors(&ids);
+            // 已入库标题（持久层兜底）：快照不能依赖"本轮恰好采到新标题"
+            let stored_titles = self.store.session_titles(&ids);
 
             for info in &info_list {
                 let raw_sid = info.id.split_once(':').map(|(_, s)| s).unwrap_or("");
@@ -356,11 +428,23 @@ impl Aggregator {
                     _ => {}
                 }
                 self.last_states.insert(info.id.clone(), state);
+                // 标题：scan 阶段（ZCode）自带；CC 转录标题由本次采集带出兜底
+                let title = info
+                    .title
+                    .clone()
+                    .or_else(|| latest_titles.get(&info.id).cloned());
+                // 模型：CC scan 阶段拿不到（转录文件级无模型信息），用量流水最近一次回填——
+                // 否则 sessions.model 恒 NULL，会话窗口模型列永远显示 —（岛面板有回填所以正确，
+                // 两处口径不一致；回填后所有读 sessions 表的展示位统一）
+                let model = info
+                    .model
+                    .clone()
+                    .or_else(|| latest_models.get(&info.id).cloned());
                 // 会话元数据与状态入库（收缩态查询走内存快照，库做持久层）
                 self.store.upsert_session(
                     &info.id, agent_id,
-                    info.provider.as_deref(), info.model.as_deref(),
-                    info.project_dir.as_deref(), info.title.as_deref(),
+                    info.provider.as_deref(), model.as_deref(),
+                    info.project_dir.as_deref(), title.as_deref(),
                     info.last_seen_at,
                     &serde_json::to_string(&state).unwrap_or_default().trim_matches('"').to_string(),
                     None,
@@ -373,7 +457,12 @@ impl Aggregator {
                     // Claude Code scan 阶段拿不到 model，从自库最近一次调用兜底回填（R1）
                     model: info.model.clone().or_else(|| latest_models.get(&info.id).cloned()),
                     project_dir: info.project_dir.clone(),
-                    title: info.title.clone(),
+                    // 标题三级来源：scan 自带（ZCode）> 本轮新采集（CC）> 已入库持久值
+                    title: info
+                        .title
+                        .clone()
+                        .or_else(|| latest_titles.get(&info.id).cloned())
+                        .or_else(|| stored_titles.get(&info.id).cloned()),
                     state,
                     session_tokens: bd.total(),
                     input_tokens: bd.input,

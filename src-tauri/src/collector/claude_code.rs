@@ -9,7 +9,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use super::{AgentAdapter, SessionInfo, provider_from_model};
+use super::{AgentAdapter, CollectOutput, CostSnapshot, SessionInfo, provider_from_model};
 use crate::store::UsageRow;
 
 /// 单文件增量回退字节量：与 service 层 60s 水位余量配对，覆盖"行写入顺序
@@ -61,6 +61,35 @@ struct TranscriptLine {
     /// 同消息多 requestId = 多次真实 API 调用（重试/恢复重发），各自计消耗
     #[serde(rename = "requestId")]
     request_id: Option<String>,
+    /// cost-state 行的会话级累计快照（camelCase 字段，2026-09-21 校准补采）：
+    /// 键是模型名（可能带 [1m] 上下文后缀），值是该模型四项用量的会话累计
+    #[serde(rename = "modelUsage")]
+    model_usage: Option<std::collections::HashMap<String, CostModelUsage>>,
+    /// cost-state 行没有 ISO timestamp 字段，只有毫秒数 startTime（实测 2026-09-21）
+    #[serde(rename = "startTime")]
+    start_time: Option<i64>,
+    /// ai-title 行的会话标题（CC 终端里显示的标题；随对话推进多次重写，取最后写入）
+    #[serde(rename = "aiTitle")]
+    ai_title: Option<String>,
+}
+
+/// cost-state 行 modelUsage 的单模型累计结构（camelCase，与 assistant 行 snake_case 不同）
+#[derive(serde::Deserialize, Clone)]
+struct CostModelUsage {
+    #[serde(rename = "inputTokens", default)]
+    input_tokens: i64,
+    #[serde(rename = "outputTokens", default)]
+    output_tokens: i64,
+    #[serde(rename = "cacheReadInputTokens", default)]
+    cache_read_input_tokens: i64,
+    #[serde(rename = "cacheCreationInputTokens", default)]
+    cache_creation_input_tokens: i64,
+}
+
+/// 归一化 cost-state 的模型名：去掉 [1m] 等上下文后缀（glm-5.3[1m] → glm-5.3），
+/// 与 assistant 行的 message.model 对齐——差值计算按同模型相减才不虚
+fn normalize_cost_model(model: &str) -> String {
+    model.split('[').next().unwrap_or(model).to_string()
 }
 
 pub struct ClaudeCodeAdapter {
@@ -124,13 +153,15 @@ impl ClaudeCodeAdapter {
             .unwrap_or(0)
     }
 
-    /// 从转录文件头部（≤8KB）提取首个带 cwd 的行，得到真实项目路径（R2）。
+    /// 从转录文件头部提取首个带 cwd 的行，得到真实项目路径（R2）。
     /// 展示与窗口跳转匹配都依赖真实路径（编码目录名无法与窗口标题匹配）；
     /// 头部无 cwd（罕见，如全是 summary 行）时由调用方退回编码目录名。
+    /// 读取量 64KB（2026-09-21 实测：8KB 只覆盖 19/43 文件——头部可能连续多行
+    /// summary/attachment/ai-title 等不带 cwd 的行；64KB 覆盖 43/43）
     fn first_cwd(path: &std::path::Path) -> Option<String> {
         use std::io::Read;
         let mut f = std::fs::File::open(path).ok()?;
-        let mut buf = vec![0u8; 8192];
+        let mut buf = vec![0u8; 64 * 1024];
         let n = f.read(&mut buf).ok()?;
         let head = String::from_utf8_lossy(&buf[..n]);
         for line in head.lines() {
@@ -214,9 +245,17 @@ impl AgentAdapter for ClaudeCodeAdapter {
     /// mtime 未变 → 无新字节直接跳过；有变化 → 从（上次偏移 - 64KB 回退量）读到尾，
     /// 只解析新增部分——替代旧"有变动即整文件重读+逐行解析"，长会话文件数十 MB 时
     /// 每 tick 的开销从 O（全文件） 降为 O（新增）。回读与乱序兜底靠调用内去重 +
-    /// 自库幂等键，不会重复入库；按 message.id 去重（同 id 保留用量最大行）
-    fn collect_usage(&self, watermark_ts: i64) -> anyhow::Result<Vec<UsageRow>> {
+    /// 自库幂等键，不会重复入库。
+    /// 去重键（2026-09-21 双计根治）：message.id(+requestId) 作为 source_id 直接入库，
+    /// 自库幂等键 (agent, session_id, source_id) 与此对齐——同消息的流式复制快照行
+    /// 即使 timestamp 各异、跨 tick 分裂，也会原地合并而非各自成行（实测双计 +27.8% 的根因）。
+    /// 同时解析 cost-state 行的会话级累计快照返回，供 service 层重算后台差值
+    fn collect_usage(&self, watermark_ts: i64) -> anyhow::Result<CollectOutput> {
         let mut dedup: std::collections::HashMap<String, UsageRow> = std::collections::HashMap::new();
+        // cost 累计快照：会话×归一化模型 → （最大累计， 最新行时间）
+        let mut cost: std::collections::HashMap<(String, String), (i64, i64)> = std::collections::HashMap::new();
+        // 会话标题（ai-title 行）：后写覆盖=取最新（CC 随对话推进多次重写标题）
+        let mut titles: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         // 异常统计（2026-09-17 埋点审查）：本轮结束若有异常汇总一条 debug；
         // 正常轮零输出零噪音，持续出现即"采集源异常"的排障线索
         let (mut err_open, mut err_read, mut bad_lines) = (0usize, 0usize, 0usize);
@@ -278,6 +317,48 @@ impl AgentAdapter for ClaudeCodeAdapter {
                     bad_lines += 1;
                     continue; // 容忍坏行（红线：解析失败不阻塞）
                 };
+                // ---- cost-state 行：会话级累计快照（后台用量校准的数据源） ----
+                if j.kind == "cost-state" {
+                    let Some(models) = j.model_usage else { continue };
+                    // 该行型无 ISO timestamp，回退毫秒 startTime；两者皆缺才跳过
+                    let ts = match j.timestamp.as_deref().and_then(iso_to_ms) {
+                        Some(t) => t,
+                        None => match j.start_time {
+                            Some(t) if t > 0 => t,
+                            _ => continue,
+                        },
+                    };
+                    if ts <= watermark_ts {
+                        continue; // 旧行：累计未变化，免重算
+                    }
+                    let sid = j.session_id.unwrap_or_else(|| file_session.clone());
+                    for (raw_model, u) in models {
+                        let cum = u.input_tokens + u.output_tokens
+                            + u.cache_read_input_tokens + u.cache_creation_input_tokens;
+                        let key = (sid.clone(), normalize_cost_model(&raw_model));
+                        // 同一会话同一模型多行累计快照：只保留最大值（会话级总量单调增）
+                        cost.entry(key)
+                            .and_modify(|e| {
+                                if cum > e.0 {
+                                    e.0 = cum;
+                                    e.1 = ts;
+                                }
+                            })
+                            .or_insert((cum, ts));
+                    }
+                    continue;
+                }
+                // ---- ai-title 行：会话标题（无 timestamp 字段，不做水位过滤；
+                //      后写覆盖=保留最新标题）----
+                if j.kind == "ai-title" {
+                    if let Some(t) = j.ai_title {
+                        if !t.is_empty() {
+                            let sid = j.session_id.unwrap_or_else(|| file_session.clone());
+                            titles.insert(format!("claude-code:{sid}"), t);
+                        }
+                    }
+                    continue;
+                }
                 if j.kind != "assistant" {
                     continue;
                 }
@@ -291,9 +372,9 @@ impl AgentAdapter for ClaudeCodeAdapter {
                 }
                 // 无 message.id 的行无法去重，防御性跳过（实测数据中不存在）
                 let Some(msg_id) = msg.id.clone() else { continue };
-                // 去重键与 ccusage/better-ccusage 同口径：messageId+requestId 组合，
-                // 缺 requestId 时退化为纯 messageId
-                let dedup_key = match j.request_id.as_deref() {
+                // source_id 与 ccusage/better-ccusage 同口径：messageId+requestId 组合，
+                // 缺 requestId 时退化为纯 messageId（实测本机数据无 requestId）
+                let source_id = match j.request_id.as_deref() {
                     Some(rid) if !rid.is_empty() => format!("{msg_id}:{rid}"),
                     _ => msg_id,
                 };
@@ -319,10 +400,13 @@ impl AgentAdapter for ClaudeCodeAdapter {
                     duration_ms: None, // JSONL 无时长字段（ZCode 独有）
                     ttft_ms: None,
                     error_type: None,
+                    source_id: Some(source_id),
+                    is_background: false,
                 };
-                // 同去重键多行：保留用量快照最大者（与文件遍历顺序无关）
+                // 同源消息多行（流式复制快照）：保留用量快照最大者（与文件遍历顺序无关）
                 let total = row_total(&row);
-                dedup.entry(dedup_key)
+                let key = row.source_id.clone().unwrap_or_default();
+                dedup.entry(key)
                     .and_modify(|old| {
                         if total > row_total(old) {
                             *old = row.clone();
@@ -340,7 +424,20 @@ impl AgentAdapter for ClaudeCodeAdapter {
         }
         let mut rows: Vec<UsageRow> = dedup.into_values().collect();
         rows.sort_by_key(|r| r.ts);
-        Ok(rows)
+        let cost_snapshots = cost
+            .into_iter()
+            .map(|((sid, model), (cum, ts))| CostSnapshot {
+                session_id: format!("claude-code:{sid}"),
+                model,
+                cumulative_tokens: cum,
+                ts,
+            })
+            .collect();
+        Ok(CollectOutput {
+            rows,
+            cost_snapshots,
+            titles: titles.into_iter().collect(),
+        })
     }
 }
 
@@ -687,7 +784,7 @@ mod tests {
         std::fs::write(&file, lines.join("\n")).unwrap();
 
         let ad = ClaudeCodeAdapter::with_root(dir.clone());
-        let rows = ad.collect_usage(0).unwrap();
+        let rows = ad.collect_usage(0).unwrap().rows;
         // msg_a 去重后保留大快照 + msg_b：共 2 行
         assert_eq!(rows.len(), 2, "同 message.id 必须去重");
         assert!(rows.iter().all(|r| r.session_id == "claude-code:sess-test-0001"));
@@ -698,10 +795,44 @@ mod tests {
         assert!(rows.iter().all(|r| r.ts > 1_700_000_000_000));
 
         // 时间水位：全部行早于该水位 → 0 行
-        let rows2 = ad.collect_usage(1_800_000_000_000_000).unwrap();
+        let rows2 = ad.collect_usage(1_800_000_000_000_000).unwrap().rows;
         assert!(rows2.is_empty());
         // 但注意：该临时文件 mtime 是"现在"，> 大水位？不——水位比较用文件 mtime <= watermark 跳过，
         // 1.8e15 是远未来，mtime（现在）< 水位 → 文件被跳过，结果一致为空，验证文件级过滤也生效
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ai-title 行标题提取（2026-09-21）：提取标题、后写覆盖取最新、
+    /// 无 timestamp 字段不受水位过滤影响
+    #[test]
+    fn test_collect_ai_titles() {
+        let dir = std::env::temp_dir().join(format!("at-t12-title-{}", std::process::id()));
+        let proj = dir.join("F--title-test");
+        std::fs::create_dir_all(&proj).unwrap();
+        let file = proj.join("sess-title.jsonl");
+        let lines = [
+            r#"{"type":"user","timestamp":"2026-09-20T10:00:00.000Z","sessionId":"sess-title"}"#,
+            r#"{"type":"ai-title","aiTitle":"初始标题","sessionId":"sess-title"}"#,
+            r#"{"type":"assistant","timestamp":"2026-09-20T10:00:01.000Z","sessionId":"sess-title","message":{"id":"msg_t1","model":"glm-5.3","usage":{"input_tokens":10,"output_tokens":5}}}"#,
+            // 标题随对话推进被 CC 重写：后写覆盖 = 取最新
+            r#"{"type":"ai-title","aiTitle":"更新后的标题","sessionId":"sess-title"}"#,
+            // 空标题行：忽略
+            r#"{"type":"ai-title","aiTitle":"","sessionId":"sess-title"}"#,
+        ];
+        std::fs::write(&file, lines.join("\n")).unwrap();
+
+        let ad = ClaudeCodeAdapter::with_root(dir.clone());
+        let out = ad.collect_usage(0).unwrap();
+        assert_eq!(out.rows.len(), 1);
+        assert_eq!(out.titles.len(), 1, "同会话多行标题应合并");
+        assert_eq!(
+            out.titles[0],
+            ("claude-code:sess-title".to_string(), "更新后的标题".to_string()),
+            "应取最后写入的标题"
+        );
+        // 水位推进后：无新行 → titles 也为空（服务层靠库 COALESCE 保留旧标题）
+        let out2 = ad.collect_usage(0).unwrap();
+        assert!(out2.titles.is_empty(), "文件未变时不应重复产出标题");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -718,7 +849,7 @@ mod tests {
         std::fs::write(&file, format!("{line1}\n")).unwrap();
 
         let ad = ClaudeCodeAdapter::with_root(dir.clone());
-        let r1 = ad.collect_usage(0).unwrap();
+        let r1 = ad.collect_usage(0).unwrap().rows;
         assert_eq!(r1.len(), 1);
         let ts1 = chrono::DateTime::parse_from_rfc3339("2026-09-15T10:00:01.000Z")
             .unwrap()
@@ -727,12 +858,12 @@ mod tests {
         // 追加第二条消息 → 旧行被水位过滤，只产出新增 1 行（与 service 层调用一致）
         let line2 = r#"{"type":"assistant","timestamp":"2026-09-15T10:00:02.000Z","sessionId":"sess-incr","message":{"id":"msg_2","model":"glm-5.3","usage":{"input_tokens":20,"output_tokens":8}}}"#;
         std::fs::write(&file, format!("{line1}\n{line2}\n")).unwrap();
-        let r2 = ad.collect_usage(ts1).unwrap();
+        let r2 = ad.collect_usage(ts1).unwrap().rows;
         assert_eq!(r2.len(), 1, "第二次采集应只含新增行");
         assert_eq!(r2[0].input_tokens, Some(20));
 
         // 文件未变化 → 0 行
-        let r3 = ad.collect_usage(0).unwrap();
+        let r3 = ad.collect_usage(0).unwrap().rows;
         assert!(r3.is_empty(), "mtime 未变时应跳过文件");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -744,7 +875,8 @@ mod tests {
         let ad = ClaudeCodeAdapter::new();
         let sessions = ad.scan_sessions().unwrap();
         assert!(!sessions.is_empty(), "本机应有活跃 Claude Code 会话");
-        let usage = ad.collect_usage(0).unwrap();
+        let out = ad.collect_usage(0).unwrap();
+        let usage = &out.rows;
         assert!(!usage.is_empty(), "本机应有历史用量");
         assert!(usage.iter().all(|u| u.session_id.starts_with("claude-code:")));
         assert!(usage
@@ -752,8 +884,14 @@ mod tests {
             .all(|u| u.model.to_ascii_lowercase().starts_with("glm")));
         // 水位增量：紧接的第二次采集应接近空（容忍正在写入的新消息，避免竞态误报）
         let max_ts = usage.iter().map(|u| u.ts).max().unwrap();
-        let second = ad.collect_usage(max_ts).unwrap();
+        let second = ad.collect_usage(max_ts).unwrap().rows;
         assert!(second.len() <= 5, "水位增量应接近空，实际 {} 行（增长中的会话）", second.len());
+        // cost-state 快照：本机真实数据应有非空累计（后台校准数据源）
+        assert!(!out.cost_snapshots.is_empty(), "本机应有 cost-state 累计快照");
+        assert!(out.cost_snapshots.iter().all(|c| c.session_id.starts_with("claude-code:")));
+        // ai-title 标题：本机真实转录应有标题（CC 终端会话标题同源）
+        assert!(!out.titles.is_empty(), "本机应有 ai-title 会话标题");
+        assert!(out.titles.iter().all(|(sid, t)| sid.starts_with("claude-code:") && !t.is_empty()));
     }
 
     /// A2 对账：全量分项汇总打印，与 `npx ccusage` 输出人工比对
@@ -762,7 +900,7 @@ mod tests {
     #[ignore]
     fn test_real_cc_reconcile_totals() {
         let ad = ClaudeCodeAdapter::new();
-        let usage = ad.collect_usage(0).unwrap();
+        let usage = ad.collect_usage(0).unwrap().rows;
         let sum = |f: fn(&UsageRow) -> Option<i64>| usage.iter().filter_map(f).sum::<i64>();
         println!("行数（assistant 消息）：{}", usage.len());
         println!("input:  {}", sum(|r| r.input_tokens));

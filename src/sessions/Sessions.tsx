@@ -428,9 +428,14 @@ export default function Sessions() {
 
   return (
     <div className="ss-root">
-      {/* 页头：标题 + 数据截至 + 刷新 + 导出 */}
+      {/* 页头：标题 + 口径说明 + 数据截至 + 刷新 + 导出 */}
       <div className="ss-header">
-        <span className="ss-title">会话</span>
+        <div className="ss-title-wrap">
+          <span className="ss-title">会话</span>
+          <Tip content="本窗口仅统计产生过模型调用的会话；岛面板按转录/源库文件扫描，包含打开过但未产生调用的会话，因此两处数量可能不同">
+            <span className="ss-title-note">仅统计产生过调用的会话</span>
+          </Tip>
+        </div>
         <div className="ss-header-right">
           {exportTip && (
             <span

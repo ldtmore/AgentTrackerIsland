@@ -52,6 +52,22 @@
   white-space: nowrap;
 }
 
+/* 标题+口径说明的包裹层：小字紧贴标题，不被 space-between 推向右侧 */
+.ss-title-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 口径说明小字：本窗口只统计有调用记录的会话（与岛面板的文件扫描口径差异），
+   hover 见完整解释——数据口径差异必须交互引导，不能让用户猜（2026-09-21 所有者拍板） */
+.ss-title-note {
+  font-size: 11px;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+
 .ss-header-right {
   display: flex;
   align-items: center;
