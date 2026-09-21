@@ -9,6 +9,7 @@
 [![status](https://img.shields.io/badge/status-M1_进行中（报表·双主题·贴边隐藏落地）-blue)](docs/03-TASKS.md)
 [![tauri](https://img.shields.io/badge/Tauri-2-orange)](https://tauri.app)
 [![rust](https://img.shields.io/badge/Rust-stable-success)](https://www.rust-lang.org)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ## 这是什么
 
@@ -44,4 +45,6 @@ Tauri 2 · Rust · React + TypeScript · SQLite（rusqlite）· ECharts
 
 ## License
 
-未定（开源发布前确定）
+本项目基于 [MIT License](LICENSE) 协议开源。
+
+Copyright (c) 2026 LDT · Made with AI

@@ -100,7 +100,11 @@ export default function About() {
         </div>
       </section>
 
-      <div className="ab-foot">旁路观测 · 只看不碰 · 故障隔离</div>
+      {/* 页脚：红线关键词 + 版权署名（作者 LDT，AI 协助开发） */}
+      <div className="ab-foot">
+        <div>旁路观测 · 只看不碰 · 故障隔离</div>
+        <div>© 2026 LDT · Made with AI</div>
+      </div>
     </div>
   );
 }

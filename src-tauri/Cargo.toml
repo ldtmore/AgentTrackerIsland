@@ -2,7 +2,8 @@
 name = "agenttrackerisland"
 version = "0.1.0"
 description = "主流 AI Agent 的旁路观测台:状态监控与用量统计"
-authors = ["Detto"]
+authors = ["LDT"]
+license = "MIT"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

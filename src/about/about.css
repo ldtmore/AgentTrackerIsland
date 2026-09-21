@@ -184,7 +184,7 @@
   background: var(--btn-bg-hover);
 }
 
-/* ===== 页脚：产品红线关键词，贴底居中 ===== */
+/* ===== 页脚：产品红线关键词 + 版权署名，贴底居中 ===== */
 
 .ab-foot {
   margin-top: auto;
@@ -192,4 +192,9 @@
   text-align: center;
   font-size: 11px;
   color: var(--text-4);
+}
+
+/* 两行页脚的行间距：关键词行与署名行轻微分隔 */
+.ab-foot > div + div {
+  margin-top: 2px;
 }
