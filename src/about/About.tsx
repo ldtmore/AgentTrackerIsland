@@ -61,7 +61,7 @@ export default function About() {
         </div>
         <div className="ab-slogan">主流 Agent 状态实时监控灵动岛工作台</div>
         <p className="ab-intro">
-          去你的岛，又名“智岛”（AgentTrackerIsland），是一款主流 AI Agent 的
+          去你的岛（AgentTrackerIsland），是一款主流 AI Agent 的
           旁路观测工具：只看不碰。实时掌握各 Agent 的运行状态与用量消耗；
           有它无它，你的原有工作流照常运转，零影响。
         </p>

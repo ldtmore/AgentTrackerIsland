@@ -282,12 +282,12 @@
   两处 tooltip 的字面 `\n`（JSX 字符串属性不解释转义，IslandBar.tsx）
 - 🔧 托盘菜单：退出项前加分隔线；"灵动岛"项文案动态化（显示灵动岛/隐藏灵动岛，
   随贴边与窗口可见性刷新，TrayToggle 句柄入 managed state）；tooltip 更名
-  "智岛（AgentTrackerIsland）"；三个辅助窗口菜单分支去重（show_aux_window）
+  "去你的岛（AgentTrackerIsland）"；三个辅助窗口菜单分支去重（show_aux_window）
 - 🧹 卫生：移除未用依赖 window-vibrancy 0.8.0（M1-5 划出后保留理由失效；
   锁文件中 0.6.0 为 tauri 自身传递依赖，不受影响）；删模板残留 src/assets/react.svg；
   修 lib.rs saved_pos 陈旧注释（物理→逻辑坐标）
 - ✨ 定名对齐（纯展示文案，未动 productName/identifier 与数据目录）：岛启动文案
-  "智岛启动中…"；窗口标题"智岛 · 设置/报表/关于"；index.html title；README 状态徽章
+  "「去你的岛」启动中…"；窗口标题"去你的岛 · 设置/报表/关于"；index.html title；README 状态徽章
 - ⏸ 暂不处理（所有者拍板）：托盘图标尺寸——现状=ico 首条目 32×32，200% 屏 1:1
   完美，其他 DPI 由系统缩放；如需清晰化方案见 02-DESIGN §5 M1-8 回写
 - 验证：cargo test **29/29** 通过（8 个集成测试按设计 ignore）、cargo check 零警告、

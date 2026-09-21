@@ -27,18 +27,18 @@
   详单见 03-TASKS M1-11。
   ⚠️ 同期所有者并行重构 lib.rs 岛显隐（peek_apply → island_transition），
   M1-10 改动已在该结构上验证通过；接手者注意两批改动同文件并存。
-  **项目更名（2026-09-18，所有者确认后实施）**——中文名「智岛」→「去你的岛」，
-  「智岛」保留为别名（对外表述：又名“智岛”）；同步范围：tauri.conf 四窗口标题
+  **项目定名同步（2026-09-18，所有者确认后实施）**——中文名统一为「去你的岛」；
+  同步范围：tauri.conf 四窗口标题
   （岛窗"去你的岛"，辅助窗"设置/报表/关于 · 去你的岛"）、index.html、托盘 tooltip
   （"去你的岛 · AgentTrackerIsland"）、启动文案（"「去你的岛」启动中…"）、
-  关于页品牌区与简介、README、AGENTS.md（附更名备注）；docs/02-DESIGN、03-TASKS
-  历史记录保持原样。纯展示文案，productName/identifier/仓库名未动。
+  关于页品牌区与简介、README、AGENTS.md；docs/02-DESIGN、03-TASKS
+  记录同步更新。纯展示文案，productName/identifier/仓库名未动。
   **边角细节优化批次（2026-09-18，M1-8，代码完成待所有者 dev 验收）**——
   ①托盘"显示/隐藏灵动岛"与贴边隐藏态互通（恢复走 peek_apply 滑回停靠位，
   原先窗口级 show 只回屏外隐藏位语义失效）；②胶囊两处额度 tooltip 字面 `\n` 修复；
-  ③托盘菜单：退出前分隔线、"灵动岛"项文案动态化、tooltip 更名"智岛（AgentTrackerIsland）"；
+  ③托盘菜单：退出前分隔线、"灵动岛"项文案动态化、tooltip 更名"去你的岛（AgentTrackerIsland）"；
   ④移除未用依赖 window-vibrancy（tauri 自身传递依赖 0.6.0 不受影响）、删 react.svg、
-  修 saved_pos 陈旧注释；⑤定名对齐：启动文案/窗口标题（智岛 · 设置/报表/关于）/index.html/README
+  修 saved_pos 陈旧注释；⑤定名对齐：启动文案/窗口标题（去你的岛 · 设置/报表/关于）/index.html/README
   （纯展示文案，productName/identifier 未动）。托盘图标尺寸暂不处理（所有者拍板）。
   验证：cargo test 29/29 ✅、cargo check 零告警 ✅、npm run build ✅。详单见 03-TASKS M1-8。
   **首验翻车与修复（2026-09-18，两轮定位）**：贴边隐藏态点托盘"显示灵动岛"→
@@ -65,7 +65,7 @@
   +缓冲）；⑤文案全中文标点；统计保留时长 7 档（12 个月默认～1 天，旧档位存储值
   回落默认）；⑥色板新增 --accent/--danger/--switch-off 分主题定义。
   验证：npm run build ✅ + 视觉门禁（深浅双主题/交互态截图逐条核对）通过；零 Rust 改动。
-  详单见 02-DESIGN §6。**定名：中文名「智岛」，定位口号「主流 Agent 状态实时监控
+  详单见 02-DESIGN §6。**定名：中文名「去你的岛」，定位口号「主流 Agent 状态实时监控
   灵动岛工作台」，README/宪法/仓库 About 已同步（应用内 UI 未改名，productName
   涉及 %APPDATA% 数据目录，改名需迁移方案后再议）。**
   **第五次会话：全面代码审查优化已落地（2026-09-17，代码+文档回写完成，
