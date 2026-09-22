@@ -9,7 +9,8 @@
 //!   值按协议归一化后 cached ⊆ prompt 统一成立——input −= cached 拆分入库；
 //!   thoughtsTokenCount 可能是思考文本估算值（当参考值用）。
 //! - error 信号：转录行无稳定错误形态（subtype=turn_result 待装机核实），
-//!   本期依赖 hooks 的 StopFailure/PostToolUseFailure（事件清单见 hooks 模块）。
+//!   依赖 hooks 的 StopFailure/PostToolUseFailure（事件清单见 hooks 模块）＋
+//!   OTel outfile 的 api_error（M2-12 增强通道，见 collector/otel.rs）。
 //! - hooks：22 事件 CC 式（settings.json `hooks` 键），事件名与 CC 几乎全同名
 //!   （PermissionRequest/StopFailure/PostToolUseFailure 直通状态机）；
 //!   ⚠️ Qwen timeout 单位秒（≥1000 按旧毫秒语义读），支持 async/shell 字段。
@@ -22,6 +23,7 @@ use super::engine::{
     body_after_partial, inject_json_hooks, iso_to_ms, mtime_ms, uninstall_json_hooks, GlobWalker,
     HotSignal, IncrementalFileReader, ProcessMatch,
 };
+use super::otel::{self, OtelOutfileSink};
 use super::{AgentAdapter, CollectOutput, SessionInfo, provider_from_model};
 use crate::store::UsageRow;
 
@@ -72,21 +74,32 @@ pub struct QwenCodeAdapter {
     head_cache: Mutex<HashMap<PathBuf, Option<HeadMeta>>>,
     /// per-file 最近模型缓存：模型随 assistant 行更新，增量读时旧行不在本轮增量内
     model_cache: Mutex<HashMap<PathBuf, String>>,
+    /// OTel outfile 增强通道（M2-12，见 collector/otel.rs 模块注释；token 行暂不入库）
+    otel: OtelOutfileSink,
 }
 
 impl QwenCodeAdapter {
     pub fn new() -> Self {
-        Self::with_root(runtime_root().unwrap_or_else(|| PathBuf::from("")))
+        // settings 在配置根（qwen_home）不在转录运行时根（runtime_root），两根
+        // 不同源须分别给定；qwen_home 取不到时同空路径兜底（sink 内部全程容错）
+        let settings = qwen_home().unwrap_or_else(|| PathBuf::from("")).join("settings.json");
+        Self::with_roots(runtime_root().unwrap_or_else(|| PathBuf::from("")), settings)
     }
 
-    /// 指定根目录构造（单测注入临时目录用）
+    /// 指定根目录构造（单测注入临时目录用）：settings 与转录同根
     pub fn with_root(root: PathBuf) -> Self {
+        Self::with_roots(root.clone(), root.join("settings.json"))
+    }
+
+    /// 公共构造：root＝转录运行时根，settings_path＝遥测配置载体位置
+    fn with_roots(root: PathBuf, settings_path: PathBuf) -> Self {
         Self {
             root,
             walker: Mutex::new(GlobWalker::default()),
             reader: Mutex::new(IncrementalFileReader::default()),
             head_cache: Mutex::new(HashMap::new()),
             model_cache: Mutex::new(HashMap::new()),
+            otel: OtelOutfileSink::new(otel::QWEN_PROFILE, settings_path),
         }
     }
 
@@ -201,6 +214,7 @@ impl AgentAdapter for QwenCodeAdapter {
     }
 
     /// 快轮信号：projects 目录浅枚举（转录追加即活动）＋hooks 事件文件（装了才有）
+    /// ＋OTel outfile（配置了才有）
     fn hot_signals(&self) -> Vec<HotSignal> {
         vec![
             HotSignal::File(std::sync::Arc::new(|| {
@@ -212,6 +226,8 @@ impl AgentAdapter for QwenCodeAdapter {
                 depth: 3,
                 max_files: 400,
             },
+            // OTel outfile 快轮信号：配置了 outfile 才有信号（从无到有即变化）
+            self.otel.hot_signal(),
         ]
     }
 
@@ -353,6 +369,17 @@ impl AgentAdapter for QwenCodeAdapter {
             log::debug!(
                 "[qwen-code] 采集异常统计：文件打开/读取失败 {err_open}，坏行 {bad_lines}（静默容忍）"
             );
+        }
+        // OTel outfile 通道（M2-12）：api_error 错误信号行并入本轮去重（转录行无稳定错误
+        // 形态，outfile 是本家最精确的 error 信号源）；token 行按所有者裁定（2026-09-23）
+        // 暂不入库：与转录通道同回合无公共 id 可对齐，入库必双计，装机对账后若切换主通道
+        // 在此处把 batch.rows 一并并入即可
+        let batch = self.otel.collect();
+        for e in batch.errors {
+            rows.push(e);
+        }
+        if !batch.rows.is_empty() {
+            log::debug!("[qwen-code] otel outfile：token 行 {}（暂不入库）", batch.rows.len());
         }
         rows.sort_by_key(|r| r.ts);
         Ok(CollectOutput {
@@ -594,6 +621,74 @@ mod tests {
         assert_eq!(s2["hooks"]["Stop"].as_array().unwrap().len(), 1);
         assert!(!s2["hooks"].as_object().unwrap().contains_key("PermissionRequest"));
         assert_eq!(s2["theme"], "dark");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// OTel outfile 通道挂载（M2-12）：settings 启用 telemetry.outfile 后，
+    /// api_error 错误信号行并入 collect_usage 输出（token 全 None）；api_response
+    /// token 行按所有者裁定暂不入库，不得出现在采集输出
+    #[test]
+    fn test_otel_error_channel_integrated() {
+        let dir = tmp_dir("otqwen");
+        let outfile = dir.join("telemetry.log");
+        // 一条 Qwen api_error 的 pretty JSON 记录（OTel SDK 真实序列化形态：仅含
+        // resource/instrumentationScope/attributes 三键，时间戳只在 attributes 里）
+        let err_rec = serde_json::json!({
+            "resource": {"attributes": {"service.name": "qwen-code"}},
+            "instrumentationScope": {"name": "qwen-code"},
+            "attributes": {
+                "session.id": "q-ot-sess",
+                "event.name": "api_error",
+                "event.timestamp": "2026-09-15T10:00:01.000Z",
+                "model": "qwen3-coder-plus",
+                "error_message": "Request failed with status 500",
+                "error_type": "server_error",
+                "response_id": "resp-ot1",
+            },
+        });
+        let mut content = serde_json::to_string_pretty(&err_rec).unwrap();
+        content.push('\n');
+        // 再拼一条 api_response token 记录：裁定暂不入库，验证其不出现
+        let tok_rec = serde_json::json!({
+            "resource": {"attributes": {"service.name": "qwen-code"}},
+            "instrumentationScope": {"name": "qwen-code"},
+            "attributes": {
+                "session.id": "q-ot-sess",
+                "event.name": "api_response",
+                "event.timestamp": "2026-09-15T10:00:02.000Z",
+                "model": "qwen3-coder-plus",
+                "input_token_count": 100,
+                "output_token_count": 20,
+                "cached_content_token_count": 0,
+                "thoughts_token_count": 5,
+                "response_id": "resp-ot2",
+            },
+        });
+        content.push_str(&serde_json::to_string_pretty(&tok_rec).unwrap());
+        content.push('\n');
+        std::fs::write(&outfile, &content).unwrap();
+
+        // settings.json 把 outfile 指向同目录临时文件（路径 JSON 转义字面量）
+        let settings = dir.join("settings.json");
+        let settings_text = format!(
+            r#"{{"telemetry": {{"enabled": true, "outfile": {}}}}}"#,
+            serde_json::to_string(outfile.to_str().unwrap()).unwrap()
+        );
+        std::fs::write(&settings, settings_text).unwrap();
+
+        let ad = QwenCodeAdapter::with_root(dir.clone());
+        let out = ad.collect_usage(0).unwrap();
+        // 恰 1 行：错误行并入；token 行（otq:resp-ot2）不出现
+        assert_eq!(out.rows.len(), 1, "应只有一条错误行，实际 {:?}", out.rows);
+        assert!(
+            !out.rows.iter().any(|r| r.source_id.as_deref() == Some("otq:resp-ot2")),
+            "token 行不应入库"
+        );
+        let e = &out.rows[0];
+        assert_eq!(e.session_id, "qwen-code:q-ot-sess");
+        assert_eq!(e.error_type.as_deref(), Some("server_error"));
+        assert_eq!(e.source_id.as_deref(), Some("otq:e:resp-ot1"));
+        assert_eq!(e.input_tokens, None, "错误行无 token 计量");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

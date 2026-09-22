@@ -9,7 +9,23 @@
   进度：T0–T9、T11 ✅；T10 🟨（ZCode ✅，WT 搁置）；T12 ⏸；T13 ⬜；
   M1-1/M1-3/M1-4/M1-6/M1-7/M1-8/M1-10/M1-11/M1-12 完成，M1-5 划出不做；M1-9 已提交。
   M2 P0 五项 ✅；**M2 P1 已提交（ef38be9，Codex＋Kimi Code 双适配器）**；
-  **M2-10a 已提交（bd5e705，OpenCode＋MiMo Code 同族适配器，验收通过）**。
+  **M2-10a 已提交（bd5e705，OpenCode＋MiMo Code 同族适配器，验收通过）**；
+  **M2-11 已提交（1423fe6，Gemini CLI＋Qwen Code 双适配器＋hooks 注入，所有者验收通过）**。
+  **M2-12 OtelSink 骨架代码完成（2026-09-23，待所有者验收）**——outfile 字段级源码
+  调研先行（详 01-RESEARCH §13.4）新确证五点：**Gemini api_response 双记录须按
+  event.name 过滤防双计**、Qwen 单记录顶层展开（无 tool 有 response_id/ttft_ms）、
+  outfile JSON 仅 attributes 可枚举（时间取 event.timestamp）、启用需 enabled+outfile
+  双前提、api_error 两家都有（比转录 error 文本精确）。实施：collector/otel.rs
+  公共模块（OtelProfile 差异声明＋发现链 JSONC/env/mtime 缓存＋pretty JSON 值流
+  StreamDeserializer 游标——截断停值起点/UTF-8 残缺只解析合法前缀/中段坏数据从
+  失败点跳行防卡死）＋两家适配器组合挂载（无新引擎管线，实施裁剪回写总纲 M2-12 行）；
+  **通道裁定（所有者拍板）：token 行解析与对账就绪但暂不入库**（与转录通道同回合
+  无公共 id 可对齐，入库必双计；装机对账后可一行切换），**api_error 行入库走
+  recent_error**（转录/hooks 均无的精确信号）；隐私白名单取数（logPrompts 脏字段
+  不碰）。验证：cargo test **71/71** 全绿（新增 10）＋check 零告警；
+  `test_real_otel_gemini`/`test_real_otel_qwen` 标 #[ignore] **装机后补跑**
+  （清单 01-RESEARCH §13.3 增补 9~12：路径形态/session.id 同源/首读性能/env 名）。
+  **所有者 dev 验收通过（2026-09-23），随本会话提交。**
   **M2-11 已提交（2026-09-23，Gemini CLI＋Qwen Code 双适配器＋hooks 注入，所有者验收通过）**——
   两轮源码级调研（数据面＋hooks 字段级，详 01-RESEARCH §13）**推翻总纲三处预想**：
   ①「Qwen 同族参数化换根即用」不成立（fork 基线 v0.8.2 自 v0.1 起停止同步，落盘

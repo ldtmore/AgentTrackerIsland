@@ -19,6 +19,7 @@ use super::engine::{
     body_after_partial, inject_json_hooks, iso_to_ms, mtime_ms, uninstall_json_hooks, GlobWalker,
     HotSignal, IncrementalFileReader, ProcessMatch,
 };
+use super::otel::{self, OtelOutfileSink};
 use super::{AgentAdapter, CollectOutput, SessionInfo, provider_from_model};
 use crate::store::UsageRow;
 
@@ -57,21 +58,28 @@ pub struct GeminiAdapter {
     head_cache: Mutex<HashMap<PathBuf, Option<HeadMeta>>>,
     /// per-file 最近模型缓存：模型随消息行更新，增量读时旧行不在本轮增量内
     model_cache: Mutex<HashMap<PathBuf, String>>,
+    /// OTel outfile 增强通道（M2-12，见 collector/otel.rs 模块注释；token 行暂不入库）
+    otel: OtelOutfileSink,
 }
 
 impl GeminiAdapter {
     pub fn new() -> Self {
+        // home 定位失败同样落空路径：settings.json 永远发现不到，outfile 通道静默降级
         Self::with_root(gemini_home().unwrap_or_else(|| PathBuf::from("")))
     }
 
     /// 指定根目录构造（单测注入临时目录用）
     pub fn with_root(root: PathBuf) -> Self {
+        // OTel outfile 通道的 settings 路径跟随注入根目录（单测注入语义；
+        // sink 需在 root 被 move 前构造）
+        let sink = OtelOutfileSink::new(otel::GEMINI_PROFILE, root.join("settings.json"));
         Self {
             root,
             walker: Mutex::new(GlobWalker::default()),
             reader: Mutex::new(IncrementalFileReader::default()),
             head_cache: Mutex::new(HashMap::new()),
             model_cache: Mutex::new(HashMap::new()),
+            otel: sink,
         }
     }
 
@@ -224,6 +232,8 @@ impl AgentAdapter for GeminiAdapter {
                 depth: 3,
                 max_files: 400,
             },
+            // OTel outfile 快轮信号：配置了 outfile 才有信号（未配置静默）
+            self.otel.hot_signal(),
         ]
     }
 
@@ -404,6 +414,17 @@ impl AgentAdapter for GeminiAdapter {
             log::debug!(
                 "[gemini] 采集异常统计：文件打开/读取失败 {err_open}，坏行 {bad_lines}（静默容忍）"
             );
+        }
+        // OTel outfile 通道（M2-12）：api_error 错误信号行并入本轮去重（与转录 error 行
+        // 不同 source 空间，同次错误可能两行——token 全 None，只影响 recent_error 展示无实害）；
+        // token 行按所有者裁定（2026-09-23）暂不入库：与转录通道同回合无公共 id 可对齐，
+        // 入库必双计，装机对账后若切换主通道在此处把 batch.rows 一并并入即可
+        let batch = self.otel.collect();
+        for e in batch.errors {
+            merge_row(&mut rows, e);
+        }
+        if !batch.rows.is_empty() {
+            log::debug!("[gemini] otel outfile：token 行 {}（暂不入库）", batch.rows.len());
         }
         let mut rows: Vec<UsageRow> = rows.into_values().collect();
         rows.sort_by_key(|r| r.ts);
@@ -662,6 +683,82 @@ mod tests {
         assert_eq!(s2["hooks"]["AfterAgent"].as_array().unwrap().len(), 1);
         assert!(!s2["hooks"].as_object().unwrap().contains_key("BeforeAgent"));
         assert_eq!(s2["theme"], "auto");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// OTel outfile 通道挂载（M2-12）：settings.json 配置 outfile 后，api_error 错误
+    /// 信号行经适配器并入采集输出走 recent_error；api_response token 行按所有者裁定
+    /// 暂不入库，不得出现。记录形态为 OTel SDK 真实序列化（pretty JSON，仅
+    /// resource/instrumentationScope/attributes 三键，时间戳只在 attributes 里）
+    #[test]
+    fn test_otel_error_channel_integrated() {
+        let dir = tmp_dir("otgem");
+        let outfile = dir.join("telemetry.log");
+        // OTel log 记录的 pretty JSON（模拟 safeJsonStringify(data,2)+'\n'）：
+        // event.name 只存在于 attributes 内（OTel SDK 序列化真实形态）
+        let log_record = |event: &str, mut attrs: serde_json::Value| {
+            if let Some(obj) = attrs.as_object_mut() {
+                obj.insert("event.name".into(), serde_json::json!(event));
+            }
+            let all = serde_json::json!({
+                "resource": {"attributes": {"service.name": "gemini-cli"}},
+                "instrumentationScope": {"name": "gemini-cli"},
+                "attributes": attrs,
+            });
+            let mut s = serde_json::to_string_pretty(&all).unwrap();
+            s.push('\n');
+            s
+        };
+        // api_error：error.type 优先于 error（otel.rs error_row 的字段宽容序列）
+        // 时间戳用过去明确日期：文件级过滤按 mtime（现在）> watermark，避开本机时钟边界
+        // （文件里现有测试同款注释）
+        let mut content = String::new();
+        content.push_str(&log_record(
+            "gemini_cli.api_error",
+            serde_json::json!({
+                "session.id": "sess-ot1",
+                "event.timestamp": "2026-09-15T10:00:01.000Z",
+                "model": "gemini-2.5-pro",
+                "error": "429 Too Many Requests",
+                "error.type": "rate_limit",
+            }),
+        ));
+        // api_response token 记录：验证其不出现（暂不入库）
+        content.push_str(&log_record(
+            "gemini_cli.api_response",
+            serde_json::json!({
+                "session.id": "sess-ot1",
+                "event.timestamp": "2026-09-15T10:00:02.000Z",
+                "model": "gemini-2.5-pro",
+                "input_token_count": 900,
+                "output_token_count": 150,
+                "cached_content_token_count": 200,
+            }),
+        ));
+        std::fs::write(&outfile, &content).unwrap();
+        // settings.json：outfile 写绝对路径（serde_json::to_string 生成路径字面量防
+        // Windows 反斜杠转义坑）
+        let settings = dir.join("settings.json");
+        let settings_text = format!(
+            r#"{{"telemetry": {{"enabled": true, "outfile": {}}}}}"#,
+            serde_json::to_string(outfile.to_str().unwrap()).unwrap()
+        );
+        std::fs::write(&settings, settings_text).unwrap();
+
+        let ad = GeminiAdapter::with_root(dir.clone());
+        let out = ad.collect_usage(0).unwrap();
+        // 恰 1 行：错误信号行并入，token 行不入
+        assert_eq!(out.rows.len(), 1, "只应有 otel 错误行，实际 {:?}", out.rows);
+        let e = &out.rows[0];
+        assert_eq!(e.session_id, "gemini:sess-ot1");
+        assert_eq!(e.error_type.as_deref(), Some("rate_limit"));
+        assert!(e.source_id.as_deref().unwrap().starts_with("ote:"));
+        assert_eq!(e.input_tokens, None);
+        // token 行不出现（source 以 ote: 开头且带 input 的行一条都没有）
+        assert!(out.rows.iter().all(|r| !matches!(
+            (r.source_id.as_deref(), r.input_tokens),
+            (Some(s), Some(_)) if s.starts_with("ote:")
+        )));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

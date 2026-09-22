@@ -323,6 +323,42 @@
 7. M2-12 前提：OTel outfile 真实样本（pretty JSON 流括号配平解析验证；Gemini
    混写三类记录、Qwen 命名空间）；logPrompts 关闭引导文案
 8. 两家可达状态集按 §2.7（04-EXPANSION）回写
+9. （M2-12 增补）telemetry.outfile 的**路径形态**：CLI 侧是否展开 `~/`、相对路径
+   以何为基准（Node fs 相对 cwd——我们对展开/原样都支持，相对路径 stat 不到即静默）
+10. （M2-12 增补）两家 attributes 的 `session.id` 与转录 sessionId **同源验证**
+    （决定 outfile 错误行能否精确归到转录同名会话；Qwen 侧 logApiResponse 有显式
+    sessionId 参数覆盖路径，更需实证）
+11. （M2-12 增补）超大 outfile 首读性能（CLI 无轮转，无限增长；如需再加尾段起点
+    策略）＋`test_real_otel_gemini`/`test_real_otel_qwen` 补跑（含与 `/stats` 对账、
+    token 行是否切主通道的最终裁定）
+12. （M2-12 增补）`GEMINI_TELEMETRY_ENABLED`/`QWEN_TELEMETRY_ENABLED` env 变量名
+    核实（Qwen 已源码确证 v0.24.4 config.ts:129；Gemini 同构推定）
+
+### 13.4 OTel outfile 字段级调研（M2-12 开工前核实，2026-09-23）
+
+> 核实方式：gemini-cli v0.60.0 本地克隆仓（E:\AIAgentTemp\ZCode-gemini-hooks-research\repo）
+> ＋qwen-code v0.24.4 GitHub 逐文件（telemetry 六件）＋OTel 上游 opentelemetry-js
+> sdk-logs 0.218.0 源码（gemini-cli 依赖版本）。§13.1/§13.2 的 outfile 行全部复核
+> 属实，本节补字段级细节。
+
+| 项 | Gemini CLI v0.60.0 | Qwen Code v0.24.4 |
+|---|---|---|
+| 文件写出 | `safeJsonStringify(data,2)+'\n'` 追加（file-exporters.ts），span/log/metric 三类 exporter **同文件混写**；metric temporality=CUMULATIVE、每 10s 导出 | 同构（sdk-impl.ts:316-321）；新事件才有 `qwen-code.` 前缀，api_response/api_error **无前缀** |
+| api_response log | **双记录**：`toLogRecord`（event.name=`gemini_cli.api_response`，attributes 带 6 项计数＋model＋duration_ms＋prompt_id＋session.id）＋`toSemanticLogRecord`（event.name=`gen_ai.client.inference.operation.details`，仅 gen_ai.usage.input/output 2 项）——**必须按 event.name 过滤，两条都取必双计**（loggers.ts:319-320） | **单记录**：attributes = getCommonAttributes ＋ **事件顶层展开**（token 5 项无 tool 项）＋显式 sessionId 可覆盖 session.id（loggers.ts:611-656） |
+| token 字段（attributes 顶层同名） | input/output/cached_content/thoughts/tool_token_count＋total | input/output/cached_content/thoughts/total（无 tool）；多 response_id/ttft_ms/subagent_name |
+| api_error | attributes：`error.message`/`error`/`error.type`（可选）/model/status_code/duration_ms/session.id | attributes 顶层展开：`error_message`/`error_type`（可选）/model/response_id/session.id |
+| session 关联 | getCommonAttributes 带 **`session.id`**（telemetryAttributes.ts:15）＝config.getSessionId()，与转录 metadata.sessionId 同源（装机核实） | getCommonAttributes 仅 `{session.id}`（loggers.ts:156） |
+| 记录 JSON 形状 | **只有 resource/instrumentationScope/attributes 三个可枚举键**——OTel sdk-logs 0.218.0 LogRecordImpl 的 timestamp/body/severity 全是私有字段不落盘；时间只能取 attributes.`event.timestamp`（两家自带 ISO 毫秒） | 同（sdk-logs 同代） |
+| 启用前提 | `telemetry.enabled=true` **且** outfile 有值（sdk.ts:169 enabled=false 整个 SDK 不初始化）；发现链 argv ?? `GEMINI_TELEMETRY_OUTFILE` ?? settings.telemetry.outfile（config.ts:106-109） | 同构（sdk-impl.ts + config.ts:127-130/195-196）；env 名 `QWEN_TELEMETRY_ENABLED`/`QWEN_TELEMETRY_OUTFILE` 已确证 |
+| 隐私 | logPrompts=true（默认）时 attributes 携带 response_text/request_text/gen_ai.*.messages **全文**——解析白名单取数（总纲 §2.8.2） | 同（response_text 顶层展开） |
+
+实施要点（对应 collector/otel.rs）：解析只依赖 attributes（新旧 SDK 兼容最稳面）；
+StreamDeserializer 按值配平＋精确字节游标（**不可复用引擎 64KB 回退的
+IncrementalFileReader**——重读会重复产出）；截断半条停值起点待补读；UTF-8 尾部
+多字节残缺只解析合法前缀（lossy 替换会使字节偏移失真）；中段坏数据从**失败点**向后
+跳行防卡死（从 last_good 跳只越过值间空白会空转——单测实锤过）；token 拆分与转录
+同口径（input−cached，cached ⊆ prompt；tool/total 不入账）。
+通道裁定见 03-TASKS M2-12：token 行暂不入库防双计，api_error 行入库走 recent_error。
 
 ---
 
@@ -337,3 +373,4 @@
 | 2026-09-23 | §11 新增（P1 勘察节）：Codex/Kimi Code 两家源码级核实完成（serde 属性级）；Kimi 记录纠正为新版 kimi-code；M2-6/M2-7 按此实施，真实对账留待装机 |
 | 2026-09-23 | §12 新增（P2 勘察节）：OpenCode/MiMo Code 源码级核实（Schema 字段级+drizzle 表列级）；**重大纠正——OpenCode 主存储已迁 SQLite**（总纲 JSON 记录过时），通道优先级反转为 SQLite 主+SSE 增强；M2-10a 按此实施 |
 | 2026-09-23 | §13 新增（P2 勘察节）：Gemini CLI/Qwen Code 两轮源码级核实（数据面+hooks 字段级）；**三处纠正总纲预想**——同族参数化不成立（fork 已分叉，独立双适配器）、Gemini 无 hooks 不成立（11 事件）、chats 已 JSONL 化（同 id 重 append）；token 口径裁定 cached ⊆ prompt；M2-11 按此实施（主通道+hooks 注入一并，所有者拍板扩大范围） |
+| 2026-09-23 | §13.4 新增（M2-12 开工前 outfile 字段级调研）：**Gemini 双记录须按 event.name 过滤防双计**、Qwen 单记录顶层展开、outfile JSON 仅 attributes 可枚举（时间取 event.timestamp）、启用需 enabled+outfile 双前提；OTLP receiver 仍留 backlog；M2-12 按此实施（token 行暂不入库防双计，所有者拍板） |

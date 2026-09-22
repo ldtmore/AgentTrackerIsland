@@ -698,6 +698,38 @@
   ✅ cargo check 零告警；✅ npm run build；✅ 所有者 dev 验收通过（2026-09-23）；
   ⬜ `test_real_gemini`/`test_real_qwen` 对账留待装机（清单 01-RESEARCH §13.3）
 
+### M2-12 OtelSink 骨架（Gemini/Qwen 的 OTel outfile 增强通道）✅（2026-09-23 所有者验收通过）
+
+- 背景（outfile 字段级源码调研新确证五点，详 01-RESEARCH §13.4）：①Gemini 每次
+  API 响应写**两条** log（api_response 全量 6 项计数＋semantic 摘要仅 2 项）——不按
+  event.name 白名单过滤必双计；②Qwen 为**单条**记录且形态分叉（token 计数在
+  attributes 顶层、无 tool 项、多 response_id/ttft_ms）；③outfile 每条 log 记录的
+  JSON 只有 resource/instrumentationScope/attributes 三个可枚举键（OTel sdk-logs
+  0.218.0 时间戳/body 私有不落盘），时间取 attributes.event.timestamp；
+  ④outfile 启用硬前提 telemetry.enabled=true＋outfile 有值（缺一不落盘），发现链
+  argv ?? env ?? settings.telemetry.outfile；⑤api_error 两家都有且比转录 error 文本
+  精确（带 error_type/status_code）
+- 内容：①`collector/otel.rs` 新建——OtelProfile 两家差异静态声明（提取逻辑零
+  per-agent 分支）＋outfile 发现（settings JSONC 容忍＋env 覆盖＋mtime 缓存＋`~/`
+  展开）＋pretty JSON 值流游标（serde_json StreamDeserializer 按值配平＋精确字节
+  偏移推进＋截断半条停值起点待补读＋UTF-8 尾部多字节残缺只解析合法前缀＋中段坏
+  数据防卡死跳行）＋白名单提取（api_response→token 行/api_error→error 行，span/
+  metrics/semantic 全跳过）；②两家适配器组合挂载（无新引擎管线——总纲 §2.3.4
+  「独立 OtelSink 引擎」在 outfile 模式下本质是单文件 tail，独立成引擎属过度设计，
+  实施裁剪回写总纲）：hot_signals 增 outfile 信号、collect_usage 尾部并入；③隐私
+  红线（总纲 §2.8.2）：logPrompts=true 时 attributes 携带 prompt/response 全文，
+  解析白名单取数只碰数字/模型/会话 id/时间戳/错误类型
+- **通道裁定（所有者拍板 2026-09-23）**：api_response token 行**解析与对账就绪但
+  暂不入库**——与转录通道（M2-11 已采）是同回合两份记录且无公共 id 可对齐，入库必
+  双计；api_error 行直接入库走 recent_error（转录/hooks 均无的精确信号，token 全
+  None 无冲突）。装机对账后若切 outfile 主通道，适配器侧把 batch.rows 一并并入即可
+- 涉及：src-tauri/src/collector/{otel,gemini,qwen,mod}.rs（service/lib/前端零改动）、
+  docs/{01-RESEARCH,04-EXPANSION,03-TASKS,HANDOFF}.md
+- 验收：✅ cargo test 71/71 全绿（新增 10：otel 8——流解析/白名单防双计/截断续读/
+  UTF-8 残缺/坏段防卡死/重建归零/错误行两形态/发现链与快轮，两家挂载集成各 1）；
+  ✅ cargo check 零告警；⬜ `test_real_otel_gemini`/`test_real_otel_qwen` 对账留待
+  装机（清单 01-RESEARCH §13.3 增补项）；✅ 所有者 dev 验收通过（2026-09-23）
+
 ## 待议区（看板外想法，不擅自实施）
 
 - **零用量会话不在会话窗口显示**（M1-10 有意边界；**2026-09-21 所有者拍板收尾**）：
