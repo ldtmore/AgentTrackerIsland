@@ -16,9 +16,11 @@ use std::sync::Arc;
 use crate::collector::claude_code::ClaudeCodeAdapter;
 use crate::collector::codex::CodexAdapter;
 use crate::collector::engine::{HotSignal, ProcessMatch};
+use crate::collector::gemini::GeminiAdapter;
 use crate::collector::hook_events;
 use crate::collector::kimi::KimiCodeAdapter;
 use crate::collector::opencode::OpenCodeFamilyAdapter;
+use crate::collector::qwen::QwenCodeAdapter;
 use crate::collector::zcode::ZcodeAdapter;
 use crate::collector::{AgentAdapter, provider_from_model};
 use crate::store::UsageRow;
@@ -190,6 +192,10 @@ impl Aggregator {
                 // 差异仅 agent id/数据根/db 文件名（01-RESEARCH §12）
                 Box::new(OpenCodeFamilyAdapter::opencode()),
                 Box::new(OpenCodeFamilyAdapter::mimo_code()),
+                // Gemini CLI＋Qwen Code（M2-11）：fork 已分叉故各自独立适配器
+                // （调研推翻「同族参数化换根即用」预想，01-RESEARCH §13）
+                Box::new(GeminiAdapter::new()),
+                Box::new(QwenCodeAdapter::new()),
             ],
             hook_offsets,
             last_quota_fetch: 0,

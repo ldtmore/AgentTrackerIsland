@@ -5,10 +5,10 @@
 //! Claude Code JSONL 的时间戳是 ISO 8601，需转 Unix 毫秒；usage 字段为 snake_case。
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use super::engine::{body_after_partial, iso_to_ms, mtime_ms, GlobWalker, HotSignal, IncrementalFileReader, ProcessMatch};
+use super::engine::{body_after_partial, inject_json_hooks, iso_to_ms, mtime_ms, uninstall_json_hooks, GlobWalker, HotSignal, IncrementalFileReader, ProcessMatch};
 use super::{AgentAdapter, CollectOutput, CostSnapshot, SessionInfo, provider_from_model};
 use crate::store::UsageRow;
 
@@ -430,13 +430,7 @@ fn row_total(r: &UsageRow) -> i64 {
 
 /// ISO → 毫秒助手已提升至 engine::iso_to_ms（M2-6 Codex 复用同名格式）
 
-/// 当前 Unix 毫秒
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+/// 当前 Unix 毫秒助手已提升至 engine::now_ms（M2-11 hooks 注入器公共化时迁出）
 
 // ===== hooks 安装/卸载（增强档，设置页一键装卸；02-DESIGN §4） =====
 
@@ -486,7 +480,7 @@ pub fn install_hooks() -> anyhow::Result<usize> {
         bridge.to_string_lossy().replace('\\', "/"),
         "claude-code"
     );
-    let injected = inject_into_settings(&settings, &cmd)?;
+    let injected = engine_inject(&settings, &cmd)?;
     log::info!("hooks 安装完成：注入 {injected} 个事件，桥脚本 {}", bridge.display());
     Ok(injected)
 }
@@ -495,125 +489,22 @@ pub fn install_hooks() -> anyhow::Result<usize> {
 /// 桥脚本文件保留（重装免复制，且无副作用）
 pub fn uninstall_hooks() -> anyhow::Result<usize> {
     let settings = claude_settings_path().ok_or_else(|| anyhow::anyhow!("无法定位 settings.json"))?;
-    let removed = uninstall_from_settings(&settings)?;
+    let removed = uninstall_json_hooks(&settings, BRIDGE_MARK)?;
     log::info!("hooks 卸载完成：移除 {removed} 个注入条目");
     Ok(removed)
 }
 
-/// 原子写（临时文件 + rename）。目标被占用时（典型：编辑器常驻打开 settings.json）
-/// Windows 的 rename 会失败——退避重试三次后放弃并给出可操作的指引（审查 2.1.4）
-fn atomic_write_retry(path: &Path, data: &[u8]) -> anyhow::Result<()> {
-    let tmp = path.with_extension("json.at-tmp");
-    std::fs::write(&tmp, data)?;
-    let mut last_err = None;
-    for attempt in 0..3 {
-        if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(150));
-        }
-        match std::fs::rename(&tmp, path) {
-            Ok(()) => return Ok(()),
-            Err(e) => last_err = Some(e),
-        }
-    }
-    Err(anyhow::anyhow!(
-        "写入 {} 失败（目标可能被编辑器占用，请关闭正在编辑该文件的程序后重试）：{}",
-        path.display(),
-        last_err.unwrap()
-    ))
+/// 组装注入条目并调公共注入器（M2-11 起机制迁入 engine，三家共用）：
+/// CC 的 timeout 单位秒、支持 async——桥脚本后台写事件文件零阻塞
+fn engine_inject(path: &std::path::Path, command: &str) -> anyhow::Result<usize> {
+    let entry = serde_json::json!({
+        "hooks": [{ "type": "command", "command": command, "timeout": 10, "async": true }]
+    });
+    inject_json_hooks(path, HOOK_EVENTS, entry, BRIDGE_MARK)
 }
 
-/// 清理历史备份，只保留最近 keep 份（审查 2.1.4：备份文件名带毫秒时间戳，
-/// 字典序即时间序；此前无限累积）
-fn prune_backups(path: &Path, keep: usize) {
-    let Some(dir) = path.parent() else { return };
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    let mut baks: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| n.starts_with("settings.json.bak-at-"))
-                .unwrap_or(false)
-        })
-        .collect();
-    baks.sort();
-    if baks.len() <= keep {
-        return;
-    }
-    let removed = baks.len() - keep;
-    for stale in baks.iter().take(removed) {
-        let _ = std::fs::remove_file(stale);
-    }
-    log::info!("hooks 备份清理：移除 {removed} 份历史备份，保留最近 {keep} 份");
-}
-
-/// settings.json 注入核心（独立函数便于用临时文件做单测）
-fn inject_into_settings(path: &std::path::Path, command: &str) -> anyhow::Result<usize> {
-    let raw = std::fs::read_to_string(path)?;
-    let mut s: serde_json::Value = serde_json::from_str(&raw)?;
-    // 备份（带时间戳，不覆盖历史备份）
-    let bak = path.with_extension(format!("json.bak-at-{}", now_ms()));
-    std::fs::write(&bak, &raw)?;
-    // 确保 hooks 对象存在
-    if s.get("hooks").and_then(|h| h.as_object()).is_none() {
-        s["hooks"] = serde_json::json!({});
-    }
-    let hooks = s["hooks"].as_object_mut().unwrap();
-    let mut injected = 0usize;
-    for ev in HOOK_EVENTS {
-        let entry = hooks.entry(ev.to_string()).or_insert(serde_json::json!([]));
-        if !entry.is_array() {
-            continue; // 用户配置了非数组结构：不碰，保守跳过
-        }
-        let already = entry.as_array().unwrap().iter().any(|g| {
-            g["hooks"].as_array().map(|hs| hs.iter().any(|h| {
-                h["command"].as_str().map(|c| c.contains(BRIDGE_MARK)).unwrap_or(false)
-            })).unwrap_or(false)
-        });
-        if already {
-            continue;
-        }
-        entry.as_array_mut().unwrap().push(serde_json::json!({
-            "hooks": [{ "type": "command", "command": command, "timeout": 10, "async": true }]
-        }));
-        injected += 1;
-    }
-    // 原子写：临时文件+rename，避免写一半损坏（红线：绝不弄坏用户配置）；
-    // rename 失败重试（审查 2.1.4）
-    atomic_write_retry(path, serde_json::to_string_pretty(&s)?.as_bytes())?;
-    prune_backups(path, 5);
-    Ok(injected)
-}
-
-/// settings.json 卸载核心
-fn uninstall_from_settings(path: &std::path::Path) -> anyhow::Result<usize> {
-    let raw = std::fs::read_to_string(path)?;
-    let mut s: serde_json::Value = serde_json::from_str(&raw)?;
-    let Some(hooks) = s.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
-        return Ok(0);
-    };
-    let mut removed = 0usize;
-    for ev in hooks.keys().cloned().collect::<Vec<_>>() {
-        if let Some(arr) = hooks.get_mut(&ev).and_then(|v| v.as_array_mut()) {
-            let before = arr.len();
-            arr.retain(|g| {
-                !g["hooks"].as_array().map(|hs| hs.iter().any(|h| {
-                    h["command"].as_str().map(|c| c.contains(BRIDGE_MARK)).unwrap_or(false)
-                })).unwrap_or(false)
-            });
-            removed += before - arr.len();
-            if arr.is_empty() {
-                hooks.remove(&ev);
-            }
-        }
-    }
-    if s["hooks"].as_object().map(|o| o.is_empty()).unwrap_or(true) {
-        s.as_object_mut().unwrap().remove("hooks");
-    }
-    atomic_write_retry(path, serde_json::to_string_pretty(&s)?.as_bytes())?;
-    Ok(removed)
-}
+/// 原子写/备份清理/注入核心/卸载核心（M2-11 迁入 engine.rs 公共化，三家共用：
+/// gemini/qwen-code 的 settings.json 同构；行为由 engine 单测与下方往返测试共同锁定）
 
 #[cfg(test)]
 mod tests {
@@ -634,8 +525,12 @@ mod tests {
           }
         }"#).unwrap();
 
-        // 注入：7 个事件（Stop 已存在→追加不覆盖）
-        let n = inject_into_settings(&settings, "node \"C:/x/.claude/hooks/hook-bridge.js\" claude-code").unwrap();
+        // 注入：7 个事件（Stop 已存在→追加不覆盖）；M2-11 起走 engine 公共注入器
+        let cmd = "node \"C:/x/.claude/hooks/hook-bridge.js\" claude-code";
+        let entry = serde_json::json!({
+            "hooks": [{ "type": "command", "command": cmd, "timeout": 10, "async": true }]
+        });
+        let n = super::super::engine::inject_json_hooks(&settings, HOOK_EVENTS, entry, BRIDGE_MARK).unwrap();
         assert_eq!(n, 7);
         let s1: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
@@ -644,11 +539,14 @@ mod tests {
         assert_eq!(s1["statusLine"]["type"], "command", "其他配置不受影响");
 
         // 重复注入：防重复，0 条
-        let n2 = inject_into_settings(&settings, "node \"C:/x/.claude/hooks/hook-bridge.js\" claude-code").unwrap();
+        let entry2 = serde_json::json!({
+            "hooks": [{ "type": "command", "command": cmd, "timeout": 10, "async": true }]
+        });
+        let n2 = super::super::engine::inject_json_hooks(&settings, HOOK_EVENTS, entry2, BRIDGE_MARK).unwrap();
         assert_eq!(n2, 0);
 
         // 卸载：回到与原文件等价（自家条目全清，用户 hooks 原样保留）
-        let removed = uninstall_from_settings(&settings).unwrap();
+        let removed = super::super::engine::uninstall_json_hooks(&settings, BRIDGE_MARK).unwrap();
         assert_eq!(removed, 7);
         let s2: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();

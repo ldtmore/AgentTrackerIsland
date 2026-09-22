@@ -664,6 +664,40 @@
   联动、副标题变「未启用」、精确开关不误触卡片）；⬜ 真机主题切换联动待所有者
   dev 验收（直开环境主题保存链路不可达属预期）
 
+### M2-11 Gemini CLI + Qwen Code 适配器（fork 已分叉的独立双适配器＋hooks 注入）✅（2026-09-23 所有者验收通过）
+
+- 背景（两轮源码调研推翻总纲三处预想，详 01-RESEARCH §13）：①「Qwen 同族参数化
+  换根即用」不成立——Qwen Code fork 基线 gemini-cli v0.8.2 且自 v0.1 起停止同步，
+  落盘结构已大幅分叉（Qwen=projects/<sanitizeCwd>/chats/<uuid>.jsonl 纯追加消息树，
+  Gemini=tmp/<slug>/chats/session-*.jsonl 含 $set/$rewindTo 控制行＋同 id 重 append），
+  故两家**各自独立适配器**（强行 Family 参数化违反 YAGNI），仅共享 token 拆分口径；
+  ②Gemini「无 hooks」预想不成立——现有 11 事件 CC 式 hooks；Qwen 22 事件且几乎
+  全 CC 同名（PermissionRequest/StopFailure/PostToolUseFailure 直通状态机）；
+  ③token 口径裁定：两家均 cached ⊆ prompt（OpenAI 语义），官方 /stats 明确
+  input = prompt − cached，入库前拆分
+- 内容（所有者拍板扩大范围：主通道＋hooks 注入一并做）：
+  ①`collector/gemini.rs`：`tmp/*/chats/session-*.jsonl` tail（GlobWalker 多段
+  pattern，子代理嵌套两层天然排除）＋首行 metadata 头缓存（sessionId/directories/
+  首条 user 标题兜底，内容永不变缓存永续）＋`gm:{id}` 幂等（同 id 重 append 靠
+  库层 UPSERT 后写覆盖，同轮保留用量大者）＋`$set` 行只取 summary 作 titles
+  （忽略 messages 全量数组）＋type:error 行喂 recent_error＋`GEMINI_CLI_HOME` 重定向；
+  ②`collector/qwen.rs`：`projects/*/chats/*.jsonl` 纯追加 tail（`*.jsonl` 天然排除
+  runtime.json sidecar 与 legacy tmp 目录）＋文件名即会话 uuid＋行内 cwd 直取
+  （sanitizeCwd 不可逆无需反解）＋`qw:{uuid}` 幂等＋custom_title 多指针宽容提取
+  ＋`QWEN_HOME`/`QWEN_RUNTIME_DIR` 双重定向；③hooks：两家 settings.json JSON 注入，
+  **注入机制第三次重复即抽象**——CC 注入核心迁入 engine.rs 公共化
+  （inject_json_hooks/uninstall_json_hooks＋原子写/备份清理），三家共用；
+  Gemini 注入 7 事件（BeforeAgent/AfterAgent/BeforeTool/AfterTool 语义就近映射，
+  ⚠️ 无 async 字段同步执行、timeout 单位毫秒 5000）；Qwen 注入 10 事件
+  （timeout 秒＋async:true 零阻塞＋shell 显式 powershell 避开三态不确定性）；
+  状态机映射表＋4 个 Gemini 差异事件（state/mod.rs）；HOOKS_AGENTS 3→5 家
+- 涉及：src-tauri/src/collector/{gemini,qwen,engine,claude_code,mod}.rs、
+  state/{mod,service}.rs、lib.rs、src/shared/types.ts、
+  docs/{01-RESEARCH,04-EXPANSION,03-TASKS}.md
+- 验收：✅ cargo test 61/61 全绿（新增 6：两家解析/增量/hooks 往返装卸）；
+  ✅ cargo check 零告警；✅ npm run build；✅ 所有者 dev 验收通过（2026-09-23）；
+  ⬜ `test_real_gemini`/`test_real_qwen` 对账留待装机（清单 01-RESEARCH §13.3）
+
 ## 待议区（看板外想法，不擅自实施）
 
 - **零用量会话不在会话窗口显示**（M1-10 有意边界；**2026-09-21 所有者拍板收尾**）：

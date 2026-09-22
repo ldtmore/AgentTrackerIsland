@@ -84,9 +84,11 @@ pub trait AgentAdapter: Send + Sync {
 pub mod claude_code;
 pub mod codex;
 pub mod engine;
+pub mod gemini;
 pub mod hook_events;
 pub mod kimi;
 pub mod opencode;
+pub mod qwen;
 pub mod zcode;
 
 /// 由模型名推断供应商（启发式，小而够用）

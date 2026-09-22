@@ -252,6 +252,78 @@
 5. 进程 exe 名（opencode.exe / mimo.exe / mimocode.exe）
 6. 两家可达状态集按 §2.7（04-EXPANSION）回写
 
+## 13. 各 Agent 数据面勘察（P2，2026-09-23，M2-11 开工前源码级核实）
+
+> 本节承接 04-EXPANSION §1.2 矩阵的逐家细节；核实方式 = GitHub 源码逐文件核对
+> （zod schema 字段级＋hookRegistry 执行器语义级）；**所有者本机未装两家 CLI，
+> 真实样本对账（test_real_gemini / test_real_qwen，均 #[ignore]）留待装机后补跑**。
+> 两轮调研：先数据面（会话落盘/token 口径），后 hooks 字段级协议（所有者拍板
+> M2-11 扩大范围含 hooks 注入）。
+
+### ⚠️ 纠正 04-EXPANSION §1.2 的旧记录（三处）
+
+1. **「Qwen 与 Gemini 同一适配器换根参数直接覆盖」不成立**：Qwen Code fork 基线
+   是 gemini-cli **v0.8.2**，官方 README 明示**自 v0.1 起停止同步、独立演进**
+   （现 v0.24.4 vs 上游 v0.60.0）——两家落盘结构已大幅分叉（目录/文件名/记录
+   schema/控制行机制全不同）。M2-11 实施为**两份独立适配器**，仅共享 token 拆分
+   口径小函数（强行 Family 参数化违反 YAGNI）。
+2. **Gemini「无 hooks」不成立**：现有 **11 种 CC 式 hooks**（settings.json `hooks`
+   键，PascalCase 事件名）；Qwen 亦有 **22 种**（几乎全 CC 同名）。
+3. **Gemini chats 已 JSONL 化**：旧记录「单 JSON 对象」过时——现 `session-*.jsonl`
+   追加写入，且 token 元数据后到时**同 id 消息整条重 append**；目录名由 sha256
+   hash 改为 `~/.gemini/projects.json` 注册表分配的可读 slug（旧目录自动迁移）。
+
+### 13.1 Gemini CLI（google-gemini/gemini-cli v0.60.0，2026-09-23 核实）
+
+| 项 | 结论（源码确证） |
+|---|---|
+| 会话落盘 | `~/.gemini/tmp/<项目slug>/chats/session-<本地时间>-<id前8>.jsonl`（JSONL 追加）；子代理嵌套 `chats/<父sessionId>/<子sessionId>.jsonl`（本期不采，装机核实） |
+| 行结构 | 首行 metadata `{sessionId, projectHash, startTime, lastUpdated, kind, directories, summary?}`＋消息行 `{id, timestamp, type(user/gemini/info/error/warning), content, displayContent?, model?, thoughts?, tokens?, toolCalls?}`＋控制行 `{$set:…}`（标题等，可带 messages 全量数组）/`{$rewindTo: id}`（回滚） |
+| token 落盘 | `tokens:{input,output,cached,thoughts?,tool?,total}`（TokensSummary，input=promptTokenCount 原值）；**官方 /stats 口径 input = prompt − cached**（uiTelemetry.ts 源码确证，cached ⊆ prompt OpenAI 语义）→ 入库前拆分；thoughts 进 reasoning |
+| error 信号 | type:"error" 消息行（displayContent/content 文本）→ UsageRow.error_type 走 recent_error 链路 |
+| hooks | settings.json `hooks` 键：11 事件 PascalCase → `[{matcher?, sequential?, hooks:[{type:"command",command,name?,description?,timeout?,env?}]}]`；**无 async 字段**（同步执行，每次 spawn 一个 PowerShell≈几百 ms）；timeout 单位**毫秒**（默认 60000，超时 taskkill 强杀进程树）；Windows 一律经 PowerShell（`-NoProfile -NonInteractive -Command`）；校验宽松（多余字段无害，zod passthrough）；matcher：BeforeTool/AfterTool 按工具名正则、SessionStart/SessionEnd/PreCompress 按 trigger 精确、其余忽略；exit 0＋stdout/stderr 全空 = 零副作用最干净形态；CLI 自带 `name:command` 去重；⚠️ settings.json 支持 JSONC 注释（stripJsonComments） |
+| hooks stdin | 基础 `{session_id, transcript_path, cwd, hook_event_name, timestamp}`（snake_case）；BeforeAgent＋prompt；AfterAgent＋prompt/prompt_response/stop_hook_active；Before/AfterTool＋tool_name/tool_input(/tool_response)；Notification＋notification_type("ToolPermission")/message |
+| 注入事件集（7） | SessionStart/BeforeAgent/BeforeTool/AfterTool/Notification/AfterAgent/SessionEnd（语义对齐 CC 7 事件；BeforeModel/AfterModel/BeforeToolSelection/PreCompress 无增量价值不注入——同步 hook 有真实 spawn 开销）；条目 `{hooks:[{type,command,timeout:5000}]}`（无 async，毫秒） |
+| OTel outfile | `telemetry.outfile`（env GEMINI_TELEMETRY_OUTFILE）确证存在，默认 `enabled=false`；outfile 时 span/log/metric 三类**混写同一文件**，`safeJsonStringify(data,2)+'\n'` 追加——**pretty 多行 JSON 流，非单行 JSONL**（解析需括号配平）；log 记录属性直接带全部 6 项原始计数（input_token_count 等）；metrics 每 10s 累计导出；`logPrompts` 默认 true（outfile 会带 prompt 文本——若启用只取数字字段，设置页引导关 logPrompts）；默认 otlpEndpoint `http://localhost:4317` grpc |
+| 重定向 | `GEMINI_CLI_HOME` 整根重定向（paths.ts homedir() 源码确证） |
+| 进程 | npm `@google/gemini-cli`，bin=dist/index.js（ESM）；Windows 进程 = node.exe，命令行含 `@google\gemini-cli\dist\index.js`（name 无特征，cmd_keywords 匹配 gemini-cli） |
+| 状态可达 | working=chats mtime 启发式（10a 档）＋hooks 7 事件（11 档）；waiting=Notification(ToolPermission)（hooks 注入后）；error=error 消息行；idle/offline ✅ |
+
+### 13.2 Qwen Code（QwenLM/qwen-code v0.24.4，2026-09-23 核实）
+
+| 项 | 结论（源码确证） |
+|---|---|
+| fork 关系 | 基线 gemini-cli v0.8.2，**自 v0.1 起停止同步**（README 明示）；monorepo 已扩张至约 20 包（daemon/desktop-shell/channels 钉钉飞书微信等） |
+| 会话落盘 | `<runtime>/projects/<sanitizeCwd(项目根)>/chats/<sessionId>.jsonl`（**纯追加消息树**，uuid/parentUuid，形态接近 Claude Code；每行自带 cwd/version/gitBranch）；sanitizeCwd = Windows 小写＋非字母数字转 `-`（不可逆，但行内 cwd 直取无需反解）；文件名即会话 uuid（32~36 位 hex-dash）；源码注释里的 `tmp/<hash>/chats/` 是**陈旧注释**（实际走 getProjectDir()，旧 tmp 路径仅 legacy 兼容读取） |
+| 重定向 | `QWEN_HOME`（全局配置根：settings/oauth/skills）＋`QWEN_RUNTIME_DIR`（运行时输出基目录：tmp/chats/projects，优先级高于 settings 的 runtimeOutputDir——settings 分支本期不读，装机核实）；⚠️ 总纲旧记录「QWEN_DIR」实为项目级目录名常量 `.qwen`，**不是环境变量** |
+| token 落盘 | assistant 行 `usageMetadata:{promptTokenCount, candidatesTokenCount, totalTokenCount, cachedContentTokenCount, thoughtsTokenCount}`（字段名同上游 `@google/genai`）；值按协议**归一化**：OpenAI 兼容（含 DashScope）cached=prompt_tokens_details.cached_tokens ⊆ prompt；Anthropic 协议 prompt=input+cache_read+cache_creation 三者和——**统一按 cached ⊆ prompt 拆分入库**；thoughtsTokenCount 缺失时按思考文本估算（估算值当参考） |
+| 观测 sidecar | ✨ `chats/<sessionId>.runtime.json`（snake_case，schema_version=1：pid/session_id/work_dir/hostname/started_at/qwen_version）——**官方注释明言为 terminal multiplexers/IDE integrations/observability daemons 设计**；原子写、退出/崩溃不删除需自验 pid。本期不采（列装机清单：验证真实形态后可作进程级活跃信号增强） |
+| hooks | settings.json `hooks` 键：22 事件 PascalCase，HookDefinition 数组同 Gemini；**有 async 字段**（true=立即返回零阻塞，并发上限 10）＋`shell:"bash"\|"powershell"`（省略时 Windows 默认可能是 cmd.exe/Git Bash 三态不确定——注入显式 powershell）；timeout 单位**秒**（≥1000 按旧毫秒语义读，默认 60）；判重身份键=name（无 name 用完整 command）；StopFailure/MessageDisplay/SessionDelete 走内置 node 监督脚本 detached 运行不受超时限制；顶层 `disableAllHooks:true` 可整体急停；运行中会话**不热加载** hooks（需重启会话） |
+| hooks stdin | 基础 `{session_id, transcript_path, cwd, hook_event_name, timestamp, permission_mode, (prompt_id), (agent_id)}` 全 snake_case；StopFailure＋`error`（**枚举**：rate_limit/authentication_failed/billing_error/invalid_request/server_error/max_output_tokens/loop_detected/unknown）；PostToolUseFailure＋error 文本/工具名；PermissionRequest＋tool_name/tool_input/permission_mode；Stop＋input_tokens/context_usage 等 |
+| 注入事件集（10） | SessionStart/UserPromptSubmit/PreToolUse/PostToolUse/PostToolUseFailure/Notification/PermissionRequest/Stop/StopFailure/SessionEnd——**全部已在状态机映射表内（零映射改动）**，last_failure/waiting 通道直接复用 Kimi 先例；条目 `{hooks:[{type,command,timeout:10,async:true,shell:"powershell"}]}` |
+| OTel outfile | `telemetry.outfile`（env QWEN_TELEMETRY_OUTFILE）同构（file-exporters.ts 同源）；指标/日志事件名 `qwen-code.*` 前缀；默认建议路径 `.qwen/telemetry.log`；`logPrompts` 默认 true |
+| 进程 | npm `@qwen-code/qwen-code`（bin=qwen→dist/index.js）＋standalone 安装 `%LOCALAPPDATA%\qwen-code\bin\qwen`——两形态命令行都含 qwen-code；node ≥22 |
+| 状态可达 | working=chats mtime 启发式＋hooks 10 事件；waiting=PermissionRequest/Notification（hooks 注入后）；error=StopFailure/PostToolUseFailure（**精确枚举错误类型**，优于通知文本启发式）；idle/offline ✅（runtime.json pid 自验可增强，装机核实） |
+
+### 13.3 待装机核实清单（装机后回写本节并跑 test_real_*）
+
+1. Windows 实际落盘核对：`~\.gemini\tmp\<slug>\chats\session-*.jsonl`（slug 形态、
+   旧 hash 目录迁移痕迹）与 `~\.qwen\projects\<sanitizeCwd>\chats\<uuid>.jsonl`
+2. 真实转录样本对账：Gemini tokens.input 是否 prompt 原值（拆分口径验证，与
+   `/stats` 比对）；同 id 重 append 实证与 `gm:` 幂等重采零重复；`$rewindTo`
+   回滚后历史用量行残留量评估
+3. Qwen：custom_title 行标题的**确切载体字段**（本期顶层 title 宽容提取）；isSidechain
+   子代理行的用量归属；`turn_result` subtype 是否携带可提取的回合失败形态（若可
+   则补转录内 error 信号）；runtime.json 真实形态与 pid 存活验证
+4. Qwen settings 内 `runtimeOutputDir` 分支的使用率（决定是否补读）
+5. Gemini 子代理会话文件（chats/<父id>/<子id>.jsonl）是否补采（用量真实存在，
+   需评估会话列表污染）
+6. hooks 真实触发链：两家注入后 headless 触发（对齐 CC test_real_hooks_e2e）；
+   Gemini 同步 hook 的 spawn 开销实感；Qwen async 并发上限实践
+7. M2-12 前提：OTel outfile 真实样本（pretty JSON 流括号配平解析验证；Gemini
+   混写三类记录、Qwen 命名空间）；logPrompts 关闭引导文案
+8. 两家可达状态集按 §2.7（04-EXPANSION）回写
+
 ---
 
 ## 调研日志
@@ -264,3 +336,4 @@
 | 2026-09-17 | §10 Codex CLI 源码级勘察完成（sessions/*.jsonl + TokenCount 事件），适配器待实测后开发，M1-3 第一步收官 |
 | 2026-09-23 | §11 新增（P1 勘察节）：Codex/Kimi Code 两家源码级核实完成（serde 属性级）；Kimi 记录纠正为新版 kimi-code；M2-6/M2-7 按此实施，真实对账留待装机 |
 | 2026-09-23 | §12 新增（P2 勘察节）：OpenCode/MiMo Code 源码级核实（Schema 字段级+drizzle 表列级）；**重大纠正——OpenCode 主存储已迁 SQLite**（总纲 JSON 记录过时），通道优先级反转为 SQLite 主+SSE 增强；M2-10a 按此实施 |
+| 2026-09-23 | §13 新增（P2 勘察节）：Gemini CLI/Qwen Code 两轮源码级核实（数据面+hooks 字段级）；**三处纠正总纲预想**——同族参数化不成立（fork 已分叉，独立双适配器）、Gemini 无 hooks 不成立（11 事件）、chats 已 JSONL 化（同 id 重 append）；token 口径裁定 cached ⊆ prompt；M2-11 按此实施（主通道+hooks 注入一并，所有者拍板扩大范围） |

@@ -139,11 +139,15 @@ pub fn compute_state(sig: &SessionSignals, now: i64) -> SessionState {
                 "Notification" => SessionState::Waiting,
                 // 干活类事件：回合/工具/子代理进行中，新鲜即 working（看门狗兜底）
                 "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "SessionStart"
-                | "TurnStarted" | "TaskStarted" | "SubagentStart" => {
+                | "TurnStarted" | "TaskStarted" | "SubagentStart"
+                // Gemini 差异集（M2-11）：BeforeAgent↔UserPromptSubmit、
+                // BeforeTool/AfterTool↔Pre/PostToolUse（语义就近映射，留痕原始名）
+                | "BeforeAgent" | "BeforeTool" | "AfterTool" => {
                     if fresh { SessionState::Working } else { SessionState::Idle }
                 }
-                // 回合结束类：Stop（CC/Codex/Kimi）与子代理收尾
-                "Stop" | "SubagentStop" => SessionState::Idle,
+                // 回合结束类：Stop（CC/Codex/Kimi）与子代理收尾；
+                // AfterAgent（Gemini）=每轮最终回复后，同 Stop 语义
+                "Stop" | "SubagentStop" | "AfterAgent" => SessionState::Idle,
                 "SessionEnd" => SessionState::Offline,
                 // —— Codex/Kimi 差异集 ——
                 // 等待批准（Codex 独有事件；Kimi 同名）：等用户决策，琥珀

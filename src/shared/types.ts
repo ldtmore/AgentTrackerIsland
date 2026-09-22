@@ -78,10 +78,12 @@ export const AGENT_DEFS: {
   { id: "kimi-code", label: "Kimi Code", color: "#f472b6" },
   { id: "opencode", label: "OpenCode", color: "#22d3ee" },
   { id: "mimo-code", label: "MiMo Code", color: "#fb923c" },
+  { id: "gemini", label: "Gemini CLI", color: "#4285f4" },
+  { id: "qwen-code", label: "Qwen Code", color: "#a78bfa" },
 ];
 
 /** 支持 hooks 增强档的 Agent（与 Rust 侧 HOOKS_AGENTS 同源，设置页按此渲染行内精确开关） */
-export const HOOKS_AGENTS = ["claude-code", "codex", "kimi-code"];
+export const HOOKS_AGENTS = ["claude-code", "codex", "kimi-code", "gemini", "qwen-code"];
 
 /** Agent 默认身份色（id → 颜色；可被用户自定义覆盖） */
 export const AGENT_COLORS: Record<string, string> = Object.fromEntries(

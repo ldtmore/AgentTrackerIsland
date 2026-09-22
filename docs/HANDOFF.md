@@ -8,7 +8,29 @@
 - **阶段**：阶段 3（实施）进行中，M0 已收尾；M1 进行中（剩余 M1-2/M1-3 等所有者输入）。
   进度：T0–T9、T11 ✅；T10 🟨（ZCode ✅，WT 搁置）；T12 ⏸；T13 ⬜；
   M1-1/M1-3/M1-4/M1-6/M1-7/M1-8/M1-10/M1-11/M1-12 完成，M1-5 划出不做；M1-9 已提交。
-  M2 P0 五项 ✅；**M2 P1 已提交（ef38be9，Codex＋Kimi Code 双适配器）**。
+  M2 P0 五项 ✅；**M2 P1 已提交（ef38be9，Codex＋Kimi Code 双适配器）**；
+  **M2-10a 已提交（bd5e705，OpenCode＋MiMo Code 同族适配器，验收通过）**。
+  **M2-11 已提交（2026-09-23，Gemini CLI＋Qwen Code 双适配器＋hooks 注入，所有者验收通过）**——
+  两轮源码级调研（数据面＋hooks 字段级，详 01-RESEARCH §13）**推翻总纲三处预想**：
+  ①「Qwen 同族参数化换根即用」不成立（fork 基线 v0.8.2 自 v0.1 起停止同步，落盘
+  已大幅分叉）→ **两份独立适配器**（gemini.rs/qwen.rs，仅共享 cached ⊆ prompt
+  拆分口径）；②Gemini「无 hooks」不成立（11 事件 CC 式）＋Qwen 22 事件几乎全 CC
+  同名 → 所有者拍板扩大范围，**hooks 注入一并做**；③Gemini chats 已 JSONL 化
+  （同 id 消息重 append＋$set/$rewindTo 控制行，slug 目录）。
+  实施：Gemini=tmp/*/chats/session-*.jsonl tail＋metadata 头缓存（sessionId 永不变）
+  ＋`gm:{id}` 幂等（重 append 靠库层 UPSERT 后写覆盖）＋$set 只取 summary＋error 行
+  走 recent_error＋GEMINI_CLI_HOME 重定向＋注入 7 事件（无 async、timeout 毫秒 5000）；
+  Qwen=projects/*/chats/*.jsonl 纯追加 tail＋文件名即 uuid＋行内 cwd 直取＋
+  `qw:{uuid}` 幂等＋custom_title 宽容提取＋QWEN_HOME/QWEN_RUNTIME_DIR 双重定向＋
+  注入 10 事件（timeout 秒+async:true+shell powershell，零映射改动全直通状态机）；
+  hooks JSON 注入第三次重复即抽象——CC 注入核心迁 engine.rs 公共化
+  （inject_json_hooks/uninstall_json_hooks 三家共用）；状态机映射表＋4 个 Gemini
+  差异事件；前端 AGENT_DEFS +2（gemini #4285f4/qwen-code #a78bfa）、HOOKS_AGENTS 3→5。
+  验证：cargo test **61/61** 全绿（新增 6）＋check 零告警＋npm build 通过；
+  `test_real_gemini`/`test_real_qwen` 标 #[ignore] **装机后补跑**
+  （清单 01-RESEARCH §13.3：落盘核对/拆分口径对账/custom_title 载体字段/
+  runtime.json/hooks 触发链/OTel outfile 样本；P1/P2 四家装机清单一并待办）。
+  **所有者 dev 验收通过（2026-09-23），随本会话提交。**
   **M2-10a 已提交（2026-09-23，OpenCode＋MiMo Code 同族适配器，所有者验收通过）**——
   源码级调研先行（所有者拍板不装机，详 01-RESEARCH §12）**推翻总纲预想**：
   OpenCode 主存储已迁 SQLite（v1.18.32 `~\.local\share\opencode\opencode.db`，

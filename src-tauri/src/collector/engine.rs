@@ -333,6 +333,141 @@ pub struct ProcessMatch {
     pub cmd_excludes: &'static [&'static str],
 }
 
+// ===== hooks JSON 配置注入器（M2-11 自 claude_code.rs 迁入并公共化） =====
+// 适用：claude-code / gemini / qwen-code 三家的 settings.json（`hooks` 键为
+// 「事件名 → HookDefinition 数组」的 JSON 对象，三家 schema 同构）。
+// Codex/Kimi 走 TOML（toml_edit），不在此列。
+
+/// 当前 Unix 毫秒
+pub(crate) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 原子写（临时文件 + rename）。目标被占用时（典型：编辑器常驻打开 settings.json）
+/// Windows 的 rename 会失败——退避重试三次后放弃并给出可操作的指引（审查 2.1.4）
+pub(crate) fn atomic_write_retry(path: &Path, data: &[u8]) -> anyhow::Result<()> {
+    let tmp = path.with_extension("json.at-tmp");
+    std::fs::write(&tmp, data)?;
+    let mut last_err = None;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        match std::fs::rename(&tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(anyhow::anyhow!(
+        "写入 {} 失败（目标可能被编辑器占用，请关闭正在编辑该文件的程序后重试）：{}",
+        path.display(),
+        last_err.unwrap()
+    ))
+}
+
+/// 清理历史备份，只保留最近 keep 份（审查 2.1.4：备份文件名带毫秒时间戳，
+/// 字典序即时间序；此前无限累积）
+pub(crate) fn prune_backups(path: &Path, keep: usize) {
+    let Some(dir) = path.parent() else { return };
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else { return };
+    let prefix = format!("{name}.bak-at-");
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut baks: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with(&prefix))
+                .unwrap_or(false)
+        })
+        .collect();
+    baks.sort();
+    if baks.len() <= keep {
+        return;
+    }
+    let removed = baks.len() - keep;
+    for stale in baks.iter().take(removed) {
+        let _ = std::fs::remove_file(stale);
+    }
+    log::info!("hooks 备份清理：移除 {removed} 份历史备份，保留最近 {keep} 份");
+}
+
+/// settings.json 注入核心：events 逐事件追加 entry（自家条目按 mark 识别防重复，
+/// 用户已有同名事件则追加不覆盖；事件键非数组的保守跳过）。返回注入条数。
+/// 原子写 + 带时间戳备份（解析成功后才写备份，绝不弄坏用户配置）
+pub(crate) fn inject_json_hooks(
+    path: &Path,
+    events: &[&str],
+    entry: serde_json::Value,
+    mark: &str,
+) -> anyhow::Result<usize> {
+    let raw = std::fs::read_to_string(path)?;
+    let mut s: serde_json::Value = serde_json::from_str(&raw)?;
+    // 备份（带时间戳，不覆盖历史备份）
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("settings.json");
+    let bak = path.with_file_name(format!("{name}.bak-at-{}", now_ms()));
+    std::fs::write(&bak, &raw)?;
+    // 确保 hooks 对象存在
+    if s.get("hooks").and_then(|h| h.as_object()).is_none() {
+        s["hooks"] = serde_json::json!({});
+    }
+    let hooks = s["hooks"].as_object_mut().unwrap();
+    let mut injected = 0usize;
+    for ev in events {
+        let entry_arr = hooks.entry(ev.to_string()).or_insert(serde_json::json!([]));
+        if !entry_arr.is_array() {
+            continue; // 用户配置了非数组结构：不碰，保守跳过
+        }
+        let already = entry_arr.as_array().unwrap().iter().any(|g| {
+            g["hooks"].as_array().map(|hs| hs.iter().any(|h| {
+                h["command"].as_str().map(|c| c.contains(mark)).unwrap_or(false)
+            })).unwrap_or(false)
+        });
+        if already {
+            continue;
+        }
+        entry_arr.as_array_mut().unwrap().push(entry.clone());
+        injected += 1;
+    }
+    atomic_write_retry(path, serde_json::to_string_pretty(&s)?.as_bytes())?;
+    prune_backups(path, 5);
+    Ok(injected)
+}
+
+/// settings.json 卸载核心：移除全部含 mark 的注入条目（含空事件键清理）；
+/// 返回移除条数
+pub(crate) fn uninstall_json_hooks(path: &Path, mark: &str) -> anyhow::Result<usize> {
+    let raw = std::fs::read_to_string(path)?;
+    let mut s: serde_json::Value = serde_json::from_str(&raw)?;
+    let Some(hooks) = s.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
+        return Ok(0);
+    };
+    let mut removed = 0usize;
+    for ev in hooks.keys().cloned().collect::<Vec<_>>() {
+        if let Some(arr) = hooks.get_mut(&ev).and_then(|v| v.as_array_mut()) {
+            let before = arr.len();
+            arr.retain(|g| {
+                !g["hooks"].as_array().map(|hs| hs.iter().any(|h| {
+                    h["command"].as_str().map(|c| c.contains(mark)).unwrap_or(false)
+                })).unwrap_or(false)
+            });
+            removed += before - arr.len();
+            if arr.is_empty() {
+                hooks.remove(&ev);
+            }
+        }
+    }
+    if s["hooks"].as_object().map(|o| o.is_empty()).unwrap_or(true) {
+        s.as_object_mut().unwrap().remove("hooks");
+    }
+    atomic_write_retry(path, serde_json::to_string_pretty(&s)?.as_bytes())?;
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

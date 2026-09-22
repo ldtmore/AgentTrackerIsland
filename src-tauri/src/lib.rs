@@ -171,9 +171,9 @@ fn set_setting(key: String, value: String, store: tauri::State<'_, Arc<Store>>) 
     Ok(())
 }
 
-/// 支持 hooks 增强档的 Agent 清单（M2-6/7）：三家各有独立注入器与事件文件。
+/// 支持 hooks 增强档的 Agent 清单（M2-6/7/11）：五家各有独立注入器与事件文件。
 /// 前端按此渲染 hooks 卡片，命令按 agent 参数化分发
-const HOOKS_AGENTS: &[&str] = &["claude-code", "codex", "kimi-code"];
+const HOOKS_AGENTS: &[&str] = &["claude-code", "codex", "kimi-code", "gemini", "qwen-code"];
 
 /// hooks 安装状态（按 Agent 查询：配置文件中是否存在自家注入条目）
 #[tauri::command]
@@ -184,6 +184,8 @@ fn hooks_status(agent: String) -> Result<bool, String> {
     Ok(match agent.as_str() {
         "codex" => collector::codex::hooks_installed(),
         "kimi-code" => collector::kimi::hooks_installed(),
+        "gemini" => collector::gemini::hooks_installed(),
+        "qwen-code" => collector::qwen::hooks_installed(),
         _ => collector::claude_code::hooks_installed(),
     })
 }
@@ -195,6 +197,8 @@ fn install_hooks(agent: String) -> Result<usize, String> {
     let result = match agent.as_str() {
         "codex" => collector::codex::install_hooks(),
         "kimi-code" => collector::kimi::install_hooks(),
+        "gemini" => collector::gemini::install_hooks(),
+        "qwen-code" => collector::qwen::install_hooks(),
         "claude-code" => collector::claude_code::install_hooks(),
         other => Err(anyhow::anyhow!("不支持的 Agent：{other}")),
     };
@@ -211,6 +215,8 @@ fn uninstall_hooks(agent: String) -> Result<usize, String> {
     let result = match agent.as_str() {
         "codex" => collector::codex::uninstall_hooks(),
         "kimi-code" => collector::kimi::uninstall_hooks(),
+        "gemini" => collector::gemini::uninstall_hooks(),
+        "qwen-code" => collector::qwen::uninstall_hooks(),
         "claude-code" => collector::claude_code::uninstall_hooks(),
         other => Err(anyhow::anyhow!("不支持的 Agent：{other}")),
     };

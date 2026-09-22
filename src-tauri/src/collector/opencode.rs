@@ -259,7 +259,7 @@ impl AgentAdapter for OpenCodeFamilyAdapter {
             })
         })?;
         let mut err_rows = 0usize;
-        let mut out = rows
+        let out = rows
             .filter_map(|x| match x {
                 Ok(v) => Some(v),
                 Err(_) => {
