@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::collector::claude_code::ClaudeCodeAdapter;
+use crate::collector::engine::{HotSignal, ProcessMatch};
 use crate::collector::hook_events;
 use crate::collector::zcode::ZcodeAdapter;
 use crate::collector::{AgentAdapter, provider_from_model};
@@ -102,8 +103,9 @@ pub struct Aggregator {
     glm: Option<GlmProvider>,
     /// 进程枚举复用实例（审查 2.2.4）：避免每 tick 重建 sysinfo 全量快照
     sys: sysinfo::System,
-    /// （zcode 活着， claude 活着）探测缓存
-    probe_cache: (bool, bool),
+    /// （zcode 活着， claude 活着）探测缓存 → M2-4 起为 {agent_id: 是否存活} 表，
+    /// 由各适配器的 process_match 声明驱动
+    probe_cache: HashMap<String, bool>,
     last_probe_ms: i64,
     /// 连续采集失败轮数（degraded 判定输入）
     fail_streak: u32,
@@ -120,10 +122,23 @@ pub struct Aggregator {
 
 impl Aggregator {
     pub fn new(store: Arc<Store>) -> Self {
-        let hook_offset = store
-            .get_setting("hook_events_offset")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
+        // hook 事件消费偏移键（M2-3 per-agent 化）：新键 hook_events_offset:<agent>；
+        // 旧单键 hook_events_offset 首启迁移划归 claude-code（当前唯一有 hooks 的 Agent）
+        const HOOK_OFFSET_PREFIX: &str = "hook_events_offset";
+        let hook_offset = {
+            let key = format!("{HOOK_OFFSET_PREFIX}:claude-code");
+            match store.get_setting(&key) {
+                Some(v) => v.parse().unwrap_or(0),
+                None => match store.get_setting(HOOK_OFFSET_PREFIX) {
+                    Some(old) => {
+                        store.set_setting(&key, &old);
+                        log::info!("[hooks] 消费偏移键迁移：{HOOK_OFFSET_PREFIX} → {key}");
+                        old.parse().unwrap_or(0)
+                    }
+                    None => 0,
+                },
+            }
+        };
         // GLM 凭据优先级：应用设置（token 非空才生效）> 环境变量 > claude-menu
         // suppliers.json；设置页"留空则继续沿用"= token 为空时回落自动发现链
         let (glm, source) = match (
@@ -164,7 +179,7 @@ impl Aggregator {
             last_quota_fetch: 0,
             glm,
             sys: sysinfo::System::new(),
-            probe_cache: (false, false),
+            probe_cache: HashMap::new(),
             last_probe_ms: 0,
             fail_streak: 0,
             last_error: None,
@@ -172,6 +187,12 @@ impl Aggregator {
             last_quota_exhausted: false,
             last_cost_cum: HashMap::new(),
         }
+    }
+
+    /// 汇总各适配器的快轮信号（M2-1）：调度器快轮线程据此高频采样，
+    /// 值变化才唤醒全量 tick——适配器各自声明，本层零 per-agent 分支
+    pub fn hot_signals(&self) -> Vec<HotSignal> {
+        self.adapters.iter().flat_map(|a| a.hot_signals()).collect()
     }
 
     /// 执行一轮采集+融合，返回岛快照
@@ -190,9 +211,9 @@ impl Aggregator {
             match hook_events::read_events(&path, self.hook_offset) {
                 Ok((events, new_off)) => {
                     hook_events_consumed = events.len();
-                    // 偏移无推进时免写库（R9，每 10s 一次的空写没必要）
+                    // 偏移无推进时免写库（R9，每 10s 一次的空写没必要）；M2-3 起键带 agent 命名空间
                     if new_off != self.hook_offset {
-                        self.store.set_setting("hook_events_offset", &new_off.to_string());
+                        self.store.set_setting("hook_events_offset:claude-code", &new_off.to_string());
                     }
                     self.hook_offset = new_off;
                     for ev in events {
@@ -222,7 +243,7 @@ impl Aggregator {
                     );
                     if rotated != self.hook_offset {
                         self.hook_offset = rotated;
-                        self.store.set_setting("hook_events_offset", "0");
+                        self.store.set_setting("hook_events_offset:claude-code", "0");
                     }
                 }
                 Err(e) => {
@@ -233,24 +254,22 @@ impl Aggregator {
             }
         }
 
-        // ② 进程枚举兜底（L0：区分 idle 与 offline；30s 一探，结果缓存复用）
+        // ② 进程枚举兜底（L0：区分 idle 与 offline；30s 一探，结果缓存复用）。
+        //    M2-4 声明化：匹配规则来自各适配器的 process_match，此处零 per-agent 分支
         if now - self.last_probe_ms >= PROBE_INTERVAL_MS {
-            let fresh = probe_processes(&mut self.sys);
+            let proc_matches: Vec<(&'static str, Option<ProcessMatch>)> =
+                self.adapters.iter().map(|a| (a.id(), a.process_match())).collect();
+            let fresh = probe_processes(&mut self.sys, &proc_matches);
             // 存活翻转留痕：offline 误判/状态跳变排障的关键线索
-            //（进程名启发式是已知易错点，见 probe_processes 注释）
-            if fresh != self.probe_cache {
-                log::debug!(
-                    "[进程] 存活探测翻转：zcode {}→{}，claude {}→{}",
-                    self.probe_cache.0,
-                    fresh.0,
-                    self.probe_cache.1,
-                    fresh.1
-                );
+            for (id, v) in &fresh {
+                if self.probe_cache.get(id) != Some(v) {
+                    log::debug!("[进程] {id} 存活探测翻转：{} → {}",
+                        self.probe_cache.get(id).copied().unwrap_or(false), v);
+                }
             }
             self.probe_cache = fresh;
             self.last_probe_ms = now;
         }
-        let (zcode_alive, claude_alive) = self.probe_cache;
 
         // ③ 采集已勾选 Agent 的会话与用量（设置页 agents_enabled：勾选才采集/监控/展示，
         //    不勾选则完全不处理；设置键不存在时默认全部启用——兼容升级与首次运行）
@@ -397,12 +416,8 @@ impl Aggregator {
                 let raw_sid = info.id.split_once(':').map(|(_, s)| s).unwrap_or("");
                 let mut sig = SessionSignals {
                     last_activity_at: info.last_usage_at,
-                    // 进程名匹配是各 Agent 的私有知识：新适配器接入时在此补充映射
-                    process_alive: match agent_id {
-                        "zcode" => zcode_alive,
-                        "claude-code" => claude_alive,
-                        _ => false,
-                    },
+                    // 进程匹配是各 Agent 的私有知识：由适配器 process_match 声明（M2-4）
+                    process_alive: self.probe_cache.get(agent_id).copied().unwrap_or(false),
                     ..Default::default()
                 };
                 // hooks 信号仅 claude-code 有（事件里 session_id 为原始 id）
@@ -572,39 +587,41 @@ fn today_start_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// 进程枚举：返回 （zcode 活着， claude 活着）。
+/// 进程枚举：按各适配器声明的 ProcessMatch 判存活（M2-4 声明化，
+/// 原 zcode/claude 硬编码匹配已迁入各自适配器）。
 /// sys 由调用方持有复用（审查 2.2.4：Windows 上全量刷新进程含命令行读取，开销可观）
-fn probe_processes(sys: &mut sysinfo::System) -> (bool, bool) {
+fn probe_processes(
+    sys: &mut sysinfo::System,
+    matches: &[(&'static str, Option<ProcessMatch>)],
+) -> HashMap<String, bool> {
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-    let mut z = false;
-    let mut c = false;
-    for (_, proc) in sys.processes() {
+    let mut alive: HashMap<String, bool> =
+        matches.iter().map(|(id, _)| (id.to_string(), false)).collect();
+    'outer: for (_, proc) in sys.processes() {
         let n = proc.name().to_string_lossy().to_ascii_lowercase();
-        if n.contains("zcode") {
-            z = true;
-        }
-        // claude CLI 是 npm shim，真实进程名为 node.exe，名字不含 claude（R3），
-        // 须查命令行；claude-menu（菜单工具）、本工具自身、hook-bridge（hook 桥的
-        // node 进程，路径含 ".claude"，寿命 ≤2s）均不算，防止已退出的会话被误判存活；
-        // 原生 exe 形态名字即命中
         let cmd = proc
             .cmd()
             .iter()
             .map(|a| a.to_string_lossy())
             .collect::<String>()
             .to_ascii_lowercase();
-        if (n.contains("claude") || cmd.contains("claude"))
-            && !cmd.contains("claude-menu")
-            && !cmd.contains("agenttrackerisland")
-            && !cmd.contains("hook-bridge")
-        {
-            c = true;
+        for (id, pm) in matches {
+            if alive.get(*id) == Some(&true) {
+                continue; // 已命中：无需重复判定
+            }
+            let Some(pm) = pm else { continue };
+            let hit = pm.name_keywords.iter().any(|k| n.contains(k))
+                || pm.cmd_keywords.iter().any(|k| cmd.contains(k));
+            let excluded = pm.cmd_excludes.iter().any(|k| cmd.contains(k));
+            if hit && !excluded {
+                alive.insert(id.to_string(), true);
+            }
         }
-        if z && c {
-            break;
+        if alive.values().all(|&v| v) {
+            break 'outer; // 全部命中：提前收工
         }
     }
-    (z, c)
+    alive
 }
 
 fn now_ms() -> i64 {

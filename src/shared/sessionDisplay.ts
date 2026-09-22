@@ -74,3 +74,18 @@ export function sortSessions<T extends { state: SessionState; last_activity_at: 
     return (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0);
   });
 }
+
+/** 历史区内部排序（M2-UX-1）：活跃/已结束分流之后「活跃优先」已无语义——
+ *  原实现把底层状态权重（idle=3 / offline=4）带进历史区，导致「进程没开的
+ *  Agent 全体会话被钉死在队尾」（实测 CC 45 个会话被 41 个 idle 型 ZC 压制，
+ *  再被截断挡住 = 用户眼中的"面板漏了 CC"）。改纯最近活动降序；
+ *  同毫秒批量写入时按 token 量降序兜底，防 30s 定时重渲染卡片跳位 */
+export function sortHistory<
+  T extends { last_activity_at: number | null; session_tokens?: number },
+>(list: T[]): T[] {
+  return [...list].sort(
+    (a, b) =>
+      (b.last_activity_at ?? 0) - (a.last_activity_at ?? 0) ||
+      (b.session_tokens ?? 0) - (a.session_tokens ?? 0),
+  );
+}

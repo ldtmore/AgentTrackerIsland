@@ -6,6 +6,7 @@ pub mod provider;
 pub mod state;
 pub mod store;
 
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -1379,19 +1380,94 @@ fn tray_menu_action(app: tauri::AppHandle, action: String) -> Result<(), String>
     }
 }
 
-/// 后台聚合线程：10s tick → 快照广播给前端（02-DESIGN §2.3 调度）。
+/// 相邻两轮 tick 的最小间隔（毫秒）：快轮风暴下 tick 也不得快于该值；
+/// 护栏丢弃的唤醒不补偿，至多一个调度周期后自然到期（04-EXPANSION M2-1）
+const MIN_TICK_GAP_MS: u64 = 250;
+/// 快轮采样周期（毫秒）：恒定 1s 逐信号 stat/浅枚举，成本微秒级无需预算
+const HOT_POLL_MS: u64 = 1000;
+
+/// 后台聚合调度（M2-1 调度器骨架，替代原固定 10s sleep；04-EXPANSION §2.4）：
+///   主环：recv_timeout 唤醒——快轮命中立即 tick，否则按自适应间隔
+///   （有会话工作中/等待 1s；有会话但全空闲 5s；无会话 10s）；
+///   快轮线程：1s 采样各适配器 HotSignal，采样值变化才投递唤醒
+///   （channel 容量 1，try_send 满即丢，天然合并风暴）；
+///   广播去重：快照内容签名（generated_at 除外）未变化则跳过 emit，
+///   1s 节拍下前端零无效重渲染。
 /// tick 全程 catch_unwind（审查 1.1）：单轮 panic 不允许杀死线程造成岛永久
 /// 静默冻结——panic 已由全局钩子落盘，线程降级续跑，快照带 degraded 标志
 fn spawn_aggregator(app: tauri::AppHandle, store: Arc<Store>) {
     std::thread::spawn(move || {
         let mut agg = Aggregator::new(store);
+        // 快轮信号在 agg 被移入主环前取出（信号是自足的声明，不依赖 agg 存活）
+        let signals = agg.hot_signals();
+        // 容量 1 的同步通道：try_send 满即丢，天然合并唤醒风暴
+        let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
+        {
+            // 快轮线程：恒定 1s 采样；last 初始全 None，「从无到有」首现即唤醒
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let mut last: Vec<Option<crate::collector::engine::SignalValue>> =
+                    vec![None; signals.len()];
+                loop {
+                    std::thread::sleep(Duration::from_millis(HOT_POLL_MS));
+                    for (i, s) in signals.iter().enumerate() {
+                        let v = s.sample();
+                        if v != last[i] {
+                            let _ = tx.try_send(());
+                        }
+                        last[i] = v;
+                    }
+                }
+            });
+        }
+        let mut last_sig: Option<u64> = None;
+        let mut last_tick = std::time::Instant::now();
+        // 初始按"无会话"档进入：首轮立即 tick，随后由快照驱动档位切换
+        let (mut any_active, mut has_sessions) = (false, false);
         loop {
+            let interval = if any_active {
+                Duration::from_millis(1000)
+            } else if has_sessions {
+                Duration::from_millis(5000)
+            } else {
+                Duration::from_millis(10000)
+            };
+            let wake_at = last_tick + interval;
+            let now = std::time::Instant::now();
+            if wake_at > now {
+                // 快轮命中提前唤醒 / 到期自然唤醒，二者先到先算
+                let _ = rx.recv_timeout(wake_at - now);
+            }
+            if last_tick.elapsed() < Duration::from_millis(MIN_TICK_GAP_MS) {
+                continue;
+            }
+            last_tick = std::time::Instant::now();
             let result =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| agg.tick()));
             match result {
-                Ok(snap) => {
-                    // 前端未监听时 emit 也只是无接收者，不报错
-                    let _ = app.emit("island-snapshot", &snap);
+                Ok(mut snap) => {
+                    // 档位驱动：有会话工作中/等待 → 1s 快档；其余按有无会话降档
+                    any_active = snap
+                        .sessions
+                        .iter()
+                        .any(|s| matches!(s.state, crate::state::SessionState::Working | crate::state::SessionState::Waiting));
+                    has_sessions = !snap.sessions.is_empty();
+                    // 广播签名去重：内容不变不 emit（generated_at 不参与签名）
+                    snap.generated_at = 0;
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    serde_json::to_string(&snap).unwrap_or_default().hash(&mut hasher);
+                    let sig = hasher.finish();
+                    if last_sig != Some(sig) {
+                        last_sig = Some(sig);
+                        snap.generated_at = now_ms();
+                        log::debug!(
+                            "[聚合] 广播快照（签名更新，下轮档位：{}ms，会话 {}）",
+                            if any_active { 1000 } else if has_sessions { 5000 } else { 10000 },
+                            snap.sessions.len()
+                        );
+                        // 前端未监听时 emit 也只是无接收者，不报错
+                        let _ = app.emit("island-snapshot", &snap);
+                    }
                 }
                 Err(payload) => {
                     log::error!(
@@ -1400,9 +1476,16 @@ fn spawn_aggregator(app: tauri::AppHandle, store: Arc<Store>) {
                     );
                 }
             }
-            std::thread::sleep(Duration::from_secs(10));
         }
     });
+}
+
+/// 当前 Unix 毫秒（广播时间戳回填用）
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

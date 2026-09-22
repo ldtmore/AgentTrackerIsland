@@ -23,7 +23,7 @@ pub struct SessionInfo {
 /// rows 是常规用量流水；cost_snapshots 是 CC 转录 cost-state 行携带的
 /// 会话级累计快照（按会话×归一化模型取最大值），供 service 层重算后台差值；
 /// titles 是 CC 转录 ai-title 行携带的会话标题（后写覆盖=最新），供会话元数据兜底
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct CollectOutput {
     pub rows: Vec<UsageRow>,
     pub cost_snapshots: Vec<CostSnapshot>,
@@ -46,8 +46,8 @@ pub struct CostSnapshot {
 
 /// Agent 适配器抽象：实现者只读不改目标 Agent 的任何数据（红线①）
 ///
-/// M0 采集模型为"定时轮询水位增量"（外层调度器驱动），watch 实时事件源
-/// 是 M1 优化项——见 docs/02-DESIGN.md §2.1 备注。
+/// M0 采集模型为"定时轮询水位增量"；M2 起为「引擎+声明」模型：
+/// 机制（枚举/增量读/节流/快轮探测）在 engine.rs，适配器只声明参数与解析。
 pub trait AgentAdapter: Send + Sync {
     /// Agent 标识：'zcode' | 'claude-code' | ...
     fn id(&self) -> &'static str;
@@ -58,9 +58,23 @@ pub trait AgentAdapter: Send + Sync {
     /// 增量采集用量：返回 started_at 严格大于 watermark 的调用记录
     /// （cost_snapshots 仅 CC 有，ZCode 源库无 cost-state 对应物，返回空）
     fn collect_usage(&self, watermark_ts: i64) -> anyhow::Result<CollectOutput>;
+
+    /// 快轮信号声明（M2-1）：调度器以 1~2s 高频探测这些目标的采样值，
+    /// 值变化才唤醒全量 tick——「回合起点」的亚 10 秒感知来源。
+    /// 默认空 = 该 Agent 不参与快轮（仍随常规 tick 被扫描）
+    fn hot_signals(&self) -> Vec<engine::HotSignal> {
+        vec![]
+    }
+
+    /// 进程匹配规则声明（M2-4）：进程枚举按此判定该 Agent 是否存活；
+    /// None = 不参与进程探测（对应状态机的 process_alive=false 兜底）
+    fn process_match(&self) -> Option<engine::ProcessMatch> {
+        None
+    }
 }
 
 pub mod claude_code;
+pub mod engine;
 pub mod hook_events;
 pub mod zcode;
 

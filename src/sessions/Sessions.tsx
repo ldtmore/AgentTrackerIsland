@@ -10,6 +10,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import SearchSelect from "../shared/SearchSelect";
 import {
@@ -220,6 +221,17 @@ export default function Sessions() {
     const t = setTimeout(() => setKeyword(search.trim()), 300);
     return () => clearTimeout(t);
   }, [search]);
+
+  // M2-UX-1：岛面板历史区筛选中点「查看更多会话」→ 带 Agent 预筛选跳转。
+  // 窗口常驻隐藏（关闭即 hide 不销毁），监听常挂；空负载视作清除筛选
+  useEffect(() => {
+    const un = listen<string | null>("sessions-prefilter", (e) =>
+      setAgent(e.payload || null),
+    );
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
 
   /** 拉取一页（o=偏移）；筛选变更拉第一页，翻页拉目标页 */
   const fetchPage = useCallback(

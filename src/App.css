@@ -623,8 +623,9 @@ body,
   text-align: left;
 }
 
-.history-toggle:hover {
-  background: var(--surface-hover);
+/* 折叠头不再自带 hover 背景（M2-UX-1 并入 .history-row 行级热区），仅随行提亮文字 */
+.history-row:hover .history-toggle,
+.history-row.menu-open .history-toggle {
   color: var(--text-3);
 }
 
@@ -646,6 +647,132 @@ body,
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ===== 历史区 Agent 筛选器（M2-UX-1）：标题行内嵌触发器 + 内联展开菜单。
+   交互分工：折叠头=点击展开列表；筛选器=纯 hover 展开（选完即关，移出
+   触发器+菜单整体区域 200ms 宽限自关——见 Panel.tsx FILTER_* 常量） ===== */
+
+/* 标题行：整体 hover 热区（行级背景）；菜单展开期间以 .menu-open 保持高亮，
+   防「指针移入菜单后行熄灭、菜单悬空」的视觉断裂 */
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
+  border-radius: 8px;
+  transition: background 0.12s ease;
+}
+
+.history-row:hover,
+.history-row.menu-open {
+  background: var(--surface-hover);
+}
+
+.history-row .history-toggle {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+/* 筛选触发器三态：默认低调（text-4）→ 行悬浮增强（text-2）→ 自身悬浮
+   强调色+背景（专属效果，强于行级）；筛选激活（.active）常显强调色，
+   不依赖 hover 即可感知「当前非全量」；.open=菜单展开中 */
+.history-filter {
+  flex: none;
+  border: none;
+  background: none;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text-4);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.history-row:hover .history-filter,
+.history-filter.open {
+  color: var(--text-2);
+}
+
+.history-filter:hover {
+  background: var(--surface-hover);
+  color: var(--accent);
+}
+
+.history-filter.active,
+.history-filter.active:hover {
+  color: var(--accent);
+}
+
+/* 筛选菜单：内联展开块（不做浮层——面板滚动容器 overflow 会裁剪绝对定位，
+   内联块随内容生长零裁剪风险）；max-height 内部滚动，14+ 家可扩展；
+   入场淡入+微移：把「卡片被下推」变成有意的展开动画 */
+.history-menu {
+  margin: 2px 10px 4px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-height: 264px;
+  overflow-y: auto;
+  animation: history-menu-in 0.14s ease;
+}
+
+@keyframes history-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.history-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text-3);
+  cursor: pointer;
+  text-align: left;
+}
+
+.history-menu-row:hover {
+  background: var(--surface-hover);
+}
+
+.history-menu-row.on {
+  background: var(--surface-hover);
+  color: var(--text-1);
+}
+
+.history-menu-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.history-menu-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-menu-count {
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
 }
 
 /* 「查看更多会话」溢出链接（M1-10 收口）：活跃区/历史区超出上限时出现，

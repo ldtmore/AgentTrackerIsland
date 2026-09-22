@@ -5,16 +5,12 @@
 //! Claude Code JSONL 的时间戳是 ISO 8601，需转 Unix 毫秒；usage 字段为 snake_case。
 
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
+use super::engine::{body_after_partial, mtime_ms, GlobWalker, HotSignal, IncrementalFileReader, ProcessMatch};
 use super::{AgentAdapter, CollectOutput, CostSnapshot, SessionInfo, provider_from_model};
 use crate::store::UsageRow;
-
-/// 单文件增量回退字节量：与 service 层 60s 水位余量配对，覆盖"行写入顺序
-/// 与时间戳乱序"的边缘；回读的旧行靠调用内去重 + 自库幂等键兜底，不会重复
-const BACKTRACK_BYTES: u64 = 64 * 1024;
 
 /// 转录根目录（%USERPROFILE%\.claude\projects）
 fn projects_root() -> Option<PathBuf> {
@@ -94,9 +90,11 @@ fn normalize_cost_model(model: &str) -> String {
 
 pub struct ClaudeCodeAdapter {
     root: PathBuf,
-    /// per-file 增量游标（审查 1.3）：路径 → （上次采集时的 mtime_ms， 已消费字节偏移）。
-    /// 仅内存态，重启后首轮回读全量、由行级水位过滤裁剪——与旧实现一致
-    offsets: Mutex<HashMap<PathBuf, (i64, u64)>>,
+    /// 目录枚举走树器（M2-3 机制迁移至 engine）：`**/*.jsonl` + 目录 mtime 剪枝缓存，
+    /// 仅内存态，重启后首轮全量重枚举——与旧实现一致
+    walker: Mutex<GlobWalker>,
+    /// 单文件增量游标（M2-3 机制迁移至 engine）：mtime 过滤/64KB 回退/重建归零
+    reader: Mutex<IncrementalFileReader>,
     /// cwd 提取缓存（审查 2.2.3）：路径 → （mtime_ms， 项目目录）。转录头部 cwd
     /// 恒定，旧实现每 tick 对每文件重读 8KB；缓存后仅 mtime 变化时重读
     cwd_cache: Mutex<HashMap<PathBuf, (i64, Option<String>)>>,
@@ -111,46 +109,30 @@ impl ClaudeCodeAdapter {
     pub fn with_root(root: PathBuf) -> Self {
         Self {
             root,
-            offsets: Mutex::new(HashMap::new()),
+            walker: Mutex::new(GlobWalker::default()),
+            reader: Mutex::new(IncrementalFileReader::default()),
             cwd_cache: Mutex::new(HashMap::new()),
         }
     }
 
     /// 锁中毒自恢复（与 store 同策略，审查 1.1：单次 panic 不放大为连锁失败）
-    fn lock_offsets(&self) -> MutexGuard<'_, HashMap<PathBuf, (i64, u64)>> {
-        self.offsets.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn lock_walker(&self) -> MutexGuard<'_, GlobWalker> {
+        self.walker.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_reader(&self) -> MutexGuard<'_, IncrementalFileReader> {
+        self.reader.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn lock_cwd(&self) -> MutexGuard<'_, HashMap<PathBuf, (i64, Option<String>)>> {
         self.cwd_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// 遍历所有转录文件（projects/{项目编码目录}/{sessionId}.jsonl）
+    /// 遍历所有转录文件（projects/{项目编码目录}/{sessionId}.jsonl）。
+    /// M2-3：枚举改走 GlobWalker（`**/*.jsonl` 递归 + 目录 mtime 剪枝缓存），
+    /// 原两级 read_dir 手写循环的行为由模式等价覆盖；根不存在返回空（未装静默降级，红线④）
     fn transcript_files(&self) -> Vec<PathBuf> {
-        let mut out = vec![];
-        let Ok(dirs) = std::fs::read_dir(&self.root) else {
-            return out; // Claude Code 未装：静默降级（红线④）
-        };
-        for d in dirs.filter_map(|x| x.ok()) {
-            let Ok(files) = std::fs::read_dir(d.path()) else { continue };
-            for f in files.filter_map(|x| x.ok()) {
-                let p = f.path();
-                if p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                    out.push(p);
-                }
-            }
-        }
-        out
-    }
-
-    /// 文件 mtime（Unix 毫秒）；取不到返回 0
-    fn mtime_ms(p: &PathBuf) -> i64 {
-        p.metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0)
+        self.lock_walker().list(&self.root, "**/*.jsonl")
     }
 
     /// 从转录文件头部提取首个带 cwd 的行，得到真实项目路径（R2）。
@@ -189,12 +171,38 @@ impl AgentAdapter for ClaudeCodeAdapter {
         "claude-code"
     }
 
+    /// 快轮信号（M2-1）：①hooks 事件文件（装了增强档：回合起点即时可达，
+    /// 从无到有/内容追加都算变化）；②转录树浅枚举（未装 hooks 的降级信号源）
+    fn hot_signals(&self) -> Vec<HotSignal> {
+        vec![
+            HotSignal::File(Arc::new(|| super::hook_events::events_file_path())),
+            HotSignal::DirScan {
+                root: self.root.clone(),
+                ext: Some(".jsonl"),
+                depth: 2,
+                max_files: 400,
+            },
+        ]
+    }
+
+    /// 进程匹配（M2-4 声明化，自 service.rs probe_processes 注释迁移）：
+    /// claude CLI 是 npm shim，真实进程名 node.exe 不含 claude，须兼查命令行；
+    /// claude-menu（菜单工具）、本工具自身、hook-bridge（node 进程寿命 ≤2s）均不算，
+    /// 防止已退出的会话被误判存活
+    fn process_match(&self) -> Option<ProcessMatch> {
+        Some(ProcessMatch {
+            name_keywords: &["claude"],
+            cmd_keywords: &["claude"],
+            cmd_excludes: &["claude-menu", "agenttrackerisland", "hook-bridge"],
+        })
+    }
+
     /// 会话发现：每个 jsonl 文件即一个会话；最近 90 天有修改的才纳入
     fn scan_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
         let cutoff = chrono::Utc::now().timestamp_millis() - 90 * 24 * 3600 * 1000;
         let mut out = vec![];
         for f in self.transcript_files() {
-            let mtime = Self::mtime_ms(&f);
+            let mtime = mtime_ms(&f);
             if mtime < cutoff {
                 continue;
             }
@@ -258,59 +266,29 @@ impl AgentAdapter for ClaudeCodeAdapter {
         let mut titles: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         // 异常统计（2026-09-17 埋点审查）：本轮结束若有异常汇总一条 debug；
         // 正常轮零输出零噪音，持续出现即"采集源异常"的排障线索
-        let (mut err_open, mut err_read, mut bad_lines) = (0usize, 0usize, 0usize);
+        let (mut err_open, mut bad_lines) = (0usize, 0usize);
         for f in self.transcript_files() {
-            let mtime = Self::mtime_ms(&f);
-            if mtime <= watermark_ts {
+            if mtime_ms(&f) <= watermark_ts {
                 continue; // 文件未变，必无新行
             }
-            // 打开文件拿当前长度：用于识别"重建后比旧偏移小"的场景（归零重读）
-            let Ok(mut file) = std::fs::File::open(&f) else {
-                err_open += 1;
-                continue;
-            };
-            let total = match file.metadata() {
-                Ok(m) => m.len(),
+            // 增量读（M2-3 机制迁移至 engine）：mtime 未变 None；打开/读失败计数留痕
+            // 后跳过本轮（文件被占用等，下次再试）——与原实现行为一致
+            let (start, text) = match self.lock_reader().changed(&f) {
+                Ok(Some(delta)) => (delta.start, delta.text),
+                Ok(None) => continue,
                 Err(_) => {
                     err_open += 1;
                     continue;
                 }
             };
-            let start = {
-                let map = self.lock_offsets();
-                match map.get(&f).copied() {
-                    Some((m0, _)) if m0 == mtime => continue, // mtime 未变：无新字节（游标保留）
-                    Some((_, off)) if off <= total => off.saturating_sub(BACKTRACK_BYTES),
-                    _ => 0, // 首见，或文件被重建/轮转（比旧偏移小）：全量重读
-                }
-            };
-            let text = {
-                let mut buf = Vec::new();
-                if start > 0 && file.seek(SeekFrom::Start(start)).is_err() {
-                    err_read += 1;
-                    continue;
-                }
-                if file.read_to_end(&mut buf).is_err() {
-                    err_read += 1;
-                    continue; // 文件被占用：跳过本轮，下次再试
-                }
-                String::from_utf8_lossy(&buf).into_owned()
-            };
-            // 记录新游标 = 文件当前全长度（每轮都读到尾）
-            self.lock_offsets().insert(f.clone(), (mtime, total));
             let file_session = f
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_string();
-            // 起点落在半行中间（回退导致）：跳过该残行，从下一个换行起解析
-            let body = if start == 0 {
-                text.as_str()
-            } else {
-                match text.find('\n') {
-                    Some(i) => &text[i + 1..],
-                    None => continue, // 无完整新行
-                }
+            // 起点落在半行中间（回退导致）：跳过该残行，从下一个换行起解析（M2-3 助手迁移）
+            let Some(body) = body_after_partial(&text, start) else {
+                continue; // 无完整新行
             };
             for line in body.lines() {
                 let Ok(j) = serde_json::from_str::<TranscriptLine>(line) else {
@@ -416,10 +394,11 @@ impl AgentAdapter for ClaudeCodeAdapter {
             }
         }
         // 本轮异常汇总：坏行持续出现 = Claude Code 升级改了 JSONL 格式或文件损坏，
-        // 若无此留痕，用量会"静默归零"（2026-09-17 埋点审查补的最大盲点）
-        if err_open + err_read + bad_lines > 0 {
+        // 若无此留痕，用量会"静默归零"（2026-09-17 埋点审查补的最大盲点）。
+        // M2-3 起打开/读失败统一由 engine 的 Err 通道返回，计数合并
+        if err_open + bad_lines > 0 {
             log::debug!(
-                "[claude-code] 采集异常统计：打开失败 {err_open}，读失败 {err_read}，坏行 {bad_lines}"
+                "[claude-code] 采集异常统计：文件打开/读取失败 {err_open}，坏行 {bad_lines}"
             );
         }
         let mut rows: Vec<UsageRow> = dedup.into_values().collect();

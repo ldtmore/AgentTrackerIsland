@@ -11,8 +11,10 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import type { IslandSnapshot, SessionView, Thresholds } from "../shared/types";
 import {
+  AGENT_DEFS,
   agentColor,
   errorReason,
   fmtCountdownCN,
@@ -20,7 +22,7 @@ import {
   fmtTokens,
   quotaLevel,
 } from "../shared/types";
-import { AGENT_BADGE, cardTitle, displayState, sortSessions } from "../shared/sessionDisplay";
+import { AGENT_BADGE, cardTitle, displayState, sortHistory, sortSessions } from "../shared/sessionDisplay";
 import Tip from "../shared/Tip";
 import { ChipIcon, FolderIcon, ReportIcon } from "../shared/icons";
 
@@ -30,16 +32,30 @@ const ACTIVE_LIMIT = 12;
 /** 历史区展开后的卡片上限（同样溢出直达会话窗口） */
 const HISTORY_LIMIT = 20;
 
+/** Agent 筛选菜单：悬浮展开延迟（毫秒）。0=立即跟手；实测误触多可调 100 做意图检测 */
+const FILTER_OPEN_DELAY_MS = 0;
+/** Agent 筛选菜单：移出触发器+菜单整体区域后的宽限时长（毫秒）——
+ *  覆盖「从触发器斜移进下方菜单」的路径，防止闪关（业界 hover 菜单标准做法） */
+const FILTER_CLOSE_DELAY_MS = 200;
+
 /** 打开会话窗口（溢出链接与标题行入口共用） */
 function openSessions() {
   invoke("show_sessions_window").catch(() => {});
 }
 
-/** 「查看更多会话」溢出链接（所有者拍板文案；hover 提示完整语义） */
-function MoreLink({ hidden }: { hidden: number }) {
+/** 「查看更多会话」溢出链接（所有者拍板文案；hover 提示完整语义）。
+ *  M2-UX-1：历史区筛选中跳转时带 Agent 预筛选（emit 全局事件，
+ *  会话窗口监听后自动选中该 Agent——面板筛选体验在窗口内闭环） */
+function MoreLink({ hidden, agent }: { hidden: number; agent?: string | null }) {
+  const open = () => {
+    if (agent) {
+      emit("sessions-prefilter", agent).catch(() => {});
+    }
+    openSessions();
+  };
   return (
     <Tip content="点击查看更多会话数据">
-      <button className="more-link" onClick={openSessions}>
+      <button className="more-link" onClick={open}>
         查看更多会话
         {hidden > 0 && <span className="history-latest">还有 {hidden} 个</span>}
       </button>
@@ -110,39 +126,154 @@ function SessionCard({ s }: { s: SessionView }) {
   );
 }
 
-/** 历史区（P2）：默认折叠一行摘要，点击展开历史卡片（展开后设上限，
- *  超出显示「查看更多会话」直达会话窗口——M1-10 收口） */
-function HistorySection({ list }: { list: SessionView[] }) {
-  const [open, setOpen] = useState(false); // 默认折叠（用户拍板）
+/** 历史区（P2 折叠 + M2-UX-1 筛选器）：折叠头**点击**展开/收起历史卡片；
+ *  标题行右端 Agent 筛选器为**纯 hover 交互**且**仅展开态可见**（渐进披露：
+ *  收起态筛选是死路——看不见列表的筛选没有意义；收起时自动清除筛选）——
+ *  悬浮即展开菜单、点选即应用并关闭、移出触发器+菜单整体区域宽限 200ms
+ *  自动收起（Esc 兜底）。与岛「悬停展开面板」的 hover 基因一致；列表纯
+ *  最近活动降序（分流后活跃优先无语义）；筛选是临时意图：面板收起随
+ *  组件卸载自动复位 */
+function HistorySection({ all }: { all: SessionView[] }) {
+  const [open, setOpen] = useState(false); // 默认折叠（用户拍板）：点击折叠头切换
+  const [filterOpen, setFilterOpen] = useState(false); // 筛选菜单展开（hover 驱动）
+  const [agent, setAgent] = useState<string | null>(null); // 当前筛选（null=全部）
+  const blockRef = useRef<HTMLDivElement>(null); // 行+菜单整体：hover 桥接判定域
+  const closeTimer = useRef<number | undefined>(undefined);
+  const openTimer = useRef<number | undefined>(undefined);
+
+  // Esc 兜底关闭（hover 无键盘入口，至少保证可退出）
+  useEffect(() => {
+    if (!filterOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFilterOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [filterOpen]);
+
+  // 卸载清理：面板收起时组件卸载，未到期的开/关计时一并作废
+  useEffect(() => {
+    return () => {
+      window.clearTimeout(closeTimer.current);
+      window.clearTimeout(openTimer.current);
+    };
+  }, []);
+
+  /** 取消在途关闭计时：宽限期内回到区域内（含移入菜单）即撤销关闭 */
+  const cancelClose = () => window.clearTimeout(closeTimer.current);
+
+  /** 悬浮触发器：取消在途关闭计时，按延迟常量展开菜单 */
+  const openMenu = () => {
+    cancelClose();
+    window.clearTimeout(openTimer.current);
+    if (FILTER_OPEN_DELAY_MS > 0) {
+      openTimer.current = window.setTimeout(() => setFilterOpen(true), FILTER_OPEN_DELAY_MS);
+    } else {
+      setFilterOpen(true);
+    }
+  };
+
+  /** 移出整体区域：宽限后关闭；宽限期内回到区域内（含移入菜单）则取消 */
+  const armClose = () => {
+    window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => setFilterOpen(false), FILTER_CLOSE_DELAY_MS);
+  };
+
+  // 按 Agent 聚合已结束计数，条目按计数降序（常用自浮，无字母序沉底问题）
+  const counts = new Map<string, number>();
+  for (const s of all) counts.set(s.agent, (counts.get(s.agent) ?? 0) + 1);
+  const menuAgents = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+
+  const list = sortHistory(agent ? all.filter((s) => s.agent === agent) : all);
   const latest = list[0];
   const latestText = latest
     ? `${cardTitle(latest.title, latest.project_dir, latest.id)} · ${fmtRelative(latest.last_activity_at)}`
     : "";
+  const agentLabel = (id: string) =>
+    AGENT_DEFS.find((a) => a.id === id)?.label ?? AGENT_BADGE[id] ?? id;
+  /** 点选菜单项：应用筛选并立即关闭（选完即关） */
+  const pick = (id: string | null) => {
+    setAgent(id);
+    setFilterOpen(false);
+  };
+
+  /** 折叠头点击：展开/收起历史卡片。收起时同步清除筛选并关闭菜单——
+   *  筛选器仅在展开态可见（渐进披露），收起态若残留筛选会形成
+   *  「看得到计数却改不了筛选」的反向死角（M2-UX-1 交互细化） */
+  const toggleOpen = () => {
+    if (open) {
+      setAgent(null);
+      setFilterOpen(false);
+    }
+    setOpen(!open);
+  };
   return (
-    <>
-      <Tip
-        content={
-          <div className="tip-breakdown">
-            <div>已结束的历史会话，默认收起</div>
-            <div className="tip-dim">点击展开 / 收起列表</div>
-          </div>
-        }
-      >
-        <button className="history-toggle" onClick={() => setOpen((v) => !v)}>
-          <span className={`chevron${open ? " chevron-open" : ""}`}>▸</span>
-          已结束 {list.length} 个
-          {!open && latestText && <span className="history-latest">最近：{latestText}</span>}
-        </button>
-      </Tip>
+    <div ref={blockRef} onMouseEnter={cancelClose} onMouseLeave={armClose}>
+      <div className={`history-row${filterOpen ? " menu-open" : ""}`}>
+        <Tip
+          content={
+            <div className="tip-breakdown">
+              <div>已结束的历史会话，默认收起</div>
+              {agent ? (
+                <div className="tip-dim">
+                  当前筛选：仅 {agentLabel(agent)}，命中 {list.length} / 共 {all.length} 个
+                </div>
+              ) : (
+                <div className="tip-dim">共 {all.length} 个 · 点击展开 / 收起列表</div>
+              )}
+            </div>
+          }
+        >
+          <button className="history-toggle" onClick={toggleOpen}>
+            <span className={`chevron${open ? " chevron-open" : ""}`}>▸</span>
+            已结束 {list.length} 个{agent && <span> · 仅 {agentLabel(agent)}</span>}
+            {!open && latestText && <span className="history-latest">最近：{latestText}</span>}
+          </button>
+        </Tip>
+        {open && (
+          <button
+            className={`history-filter${agent ? " active" : ""}${filterOpen ? " open" : ""}`}
+            aria-expanded={filterOpen}
+            aria-label="按 Agent 筛选已结束会话"
+            onMouseEnter={openMenu}
+          >
+            {agent ? AGENT_BADGE[agent] ?? agentLabel(agent) : "全部"} ▾
+          </button>
+        )}
+      </div>
+      {filterOpen && (
+        <div className="history-menu">
+          <button
+            className={`history-menu-row${agent === null ? " on" : ""}`}
+            onClick={() => pick(null)}
+          >
+            <span className="history-menu-name">全部 Agent</span>
+            <span className="history-menu-count">{all.length}</span>
+          </button>
+          {menuAgents.map(([id, n]) => (
+            <button
+              key={id}
+              className={`history-menu-row${agent === id ? " on" : ""}`}
+              onClick={() => pick(id)}
+            >
+              <span className="history-menu-dot" style={{ background: agentColor(id) }} />
+              <span className="history-menu-name">{agentLabel(id)}</span>
+              <span className="history-menu-count">{n}</span>
+            </button>
+          ))}
+        </div>
+      )}
       {open && (
         <>
           {list.slice(0, HISTORY_LIMIT).map((s) => (
             <SessionCard key={s.id} s={s} />
           ))}
-          {list.length > HISTORY_LIMIT && <MoreLink hidden={list.length - HISTORY_LIMIT} />}
+          {list.length > HISTORY_LIMIT && (
+            <MoreLink hidden={list.length - HISTORY_LIMIT} agent={agent} />
+          )}
         </>
       )}
-    </>
+    </div>
   );
 }
 
@@ -309,7 +440,7 @@ export default function Panel({
           <SessionCard key={s.id} s={s} />
         ))}
         {active.length > ACTIVE_LIMIT && <MoreLink hidden={active.length - ACTIVE_LIMIT} />}
-        {history.length > 0 && <HistorySection list={history} />}
+        {history.length > 0 && <HistorySection all={history} />}
         {snap.sessions.length === 0 && (
           <div className="panel-empty">暂无会话记录</div>
         )}

@@ -455,6 +455,92 @@
 - NSIS 安装包 → 归正式发布阶段（WORKFLOW 构建打包纪律）
 - 悬浮球形态 → 不做（M1-6 贴边自动隐藏已覆盖其价值，详见 M1-5 条目）
 
+## M2 任务序列（2026-09-22 启动，总纲见 [04-EXPANSION](04-EXPANSION.md)；M1-3 Codex 接入由 M2-6 吸收升级）
+
+### M2-1 调度器骨架：唤醒环＋自适应档位＋快轮＋广播去重 ✅（2026-09-23 所有者 dev 验收通过）
+
+- 内容：`spawn_aggregator` 固定 10s sleep 改 `recv_timeout` 唤醒环；自适应档位
+  （工作中/等待 1s｜有会话全空闲 5s｜无会话 10s）；快轮线程 1s 采样各适配器
+  `HotSignal`（hook 事件文件/当日日志/转录树浅枚举），值变化投递唤醒
+  （channel 容量 1 合并风暴，MIN_TICK_GAP_MS=250 护栏）；广播签名去重
+  （内容哈希含 sessions/island/quotas/today_*，generated_at 除外，不变不 emit）
+- 涉及：src-tauri/src/lib.rs（spawn_aggregator 重写＋now_ms 助手）、collector/mod.rs（trait 增 hot_signals/process_match 默认方法）、collector/engine.rs（新建：HotSignal/SignalValue 采样器）
+- 验收（04-EXPANSION M2-1）：✅ CC/ZCode 发消息后 ≤2s 岛变呼吸绿（日志时间戳验证）；✅ 空闲 10 分钟 CPU<1%；✅ 签名去重生效无每秒快照风暴（2026-09-23 所有者验收）
+
+### M2-2 ZCode 活动信号升级 ✅（2026-09-23 所有者 dev 验收通过）
+
+- 内容：`rollout/model-io-sess_*.jsonl` per-session mtime 纳入 scan_sessions 的
+  last_usage_at（取与库内 MAX(started_at) 较大者）；当日日志 `zcode-日期.jsonl`
+  作为快轮信号（路径按日现算，跨零点自动切换）
+- 涉及：collector/zcode.rs（rollout_mtimes + scan 增强 + hot_signals）
+- 验收：✅ 长回答（>90s）生成期间保持 working 不掉 idle（2026-09-23 所有者验收）
+
+### M2-3 引擎抽取与迁移 ✅（2026-09-23 所有者 dev 验收通过）
+
+- 内容：新建 collector/engine.rs（GlobWalker 递归枚举＋目录 mtime 剪枝缓存、
+  IncrementalFileReader 64KB 回退增量读、ScanBudget 节流、open_sqlite_readonly、
+  ProcessMatch）；CC 适配器瘦身（枚举/增量读迁出，解析/cwd 缓存保留）；
+  ZCode 适配器接入 ScanBudget（scan/collect 各 2s 预算，缓存返回）＋只读打开迁移；
+  hook 消费偏移键 per-agent 化（`hook_events_offset` → `hook_events_offset:claude-code`，
+  首启自动迁移）。对外 CollectOutput/SessionInfo/幂等键结构不变
+- 涉及：collector/engine.rs（新建）、collector/mod.rs、collector/claude_code.rs、
+  collector/zcode.rs、state/service.rs（偏移键迁移）、store（无 schema 变更）
+- 验收：✅ 升级前后真实数据逐分项一致（2026-09-22 当日对账：aggregator 87 会话/CC 分项
+  正常；7 天水位/偏移稳定性随 M2-5 观察期一并确认）；✅ 重启后水位/偏移行为不变
+
+### M2-4 进程匹配声明化 ✅（2026-09-22 代码完成）
+
+- 内容：`probe_processes` 的 zcode/claude 硬编码匹配迁入各适配器
+  `process_match()` 声明（ProcessMatch{name/cmd_keywords + cmd_excludes}），
+  service 层零 per-agent 分支，probe_cache 改 {agent_id: 存活} 表——
+  14 家接入的硬前提（04-EXPANSION §2.6），新 Agent 声明即接入
+- 涉及：collector/mod.rs、claude_code.rs、zcode.rs、state/service.rs
+
+### M2-5 P0.5 评估（notify 事件驱动） ⬜
+
+- 判据（量化，04-EXPANSION M2-5）：快轮档达成 ≤2s 首信号延迟的前提下，
+  仅当「空闲期 CPU>2%」或「用户主观仍觉迟滞」才启动 notify；否则降 backlog
+
+### M2-UX-1 面板历史区可见性治理：纯时间序＋Agent 筛选器 ✅（2026-09-23 所有者 dev 验收通过）
+
+- 背景（所有者报障「面板漏了 CC 会话」）：后端扫描正常（tick 摘要 42 ZC＋45 CC=87），
+  根因是展示层——①sortSessions 把底层状态权重（idle=3/offline=4）带进历史区，
+  ZCode 进程常开→其 idle 型历史会话（41 个）整体压制 CC 的 offline 型（45 个），
+  与最近活动无关地钉死队尾；②历史区截断 20 条，CC 全部在截断线后 → 用户观感"漏了 CC"。
+  会话窗口可见是因为走 SQL「今日」查询（仅 3 条），两处数据源本身都完整
+- 改动：
+  ① `sessionDisplay.ts` 新增 `sortHistory`（历史区分流后纯最近活动降序，
+     同毫秒按 token 兜底防跳位）；`sortSessions` 不动（活跃区语义保留，窗口不受影响）
+  ② `Panel.tsx` 历史区标题行内嵌 Agent 筛选器（「全部 ▾」触发 → 内联展开菜单：
+     按会话数降序=常用自浮、徽标色点+实时计数、max-height 内部滚动 14+ 家可扩展；
+     筛选中标题行回显「仅 CC ✕」、Tooltip 对账口径同步「命中 N/共 M」；
+     点击外部/Esc 关闭；面板收起随卸载自动复位）；「查看更多会话」带 Agent
+     预筛选跳转（emit sessions-prefilter）
+  ③ `Sessions.tsx` 监听预筛选事件自动选中对应 Agent（闭环）
+  ④ `engine.rs` GlobWalker 加固（随行修复）：read_dir 瞬态失败不缓存空结果
+     （旧实现每轮直读失败只影响当轮；带缓存的空结果会造成目录 mtime 不变
+     期间的永久失明）——纯 Rust 侧健壮性回归
+- 设计评审结论（2026-09-23 所有者拍板）：筛选器形态=标题行内嵌+内联菜单
+  （否决横向 chips：380px 宽度 14 家必溢出；否决纯徽标点击：鸡生蛋——
+  沉底的卡看不见就没得点）；排序差异本身保留（面板状态优先 vs 窗口列排序
+  是 M1-10 有意设计，服务不同场景）
+- 涉及：src/shared/sessionDisplay.ts、src/island/Panel.tsx、src/sessions/Sessions.tsx、
+  src/App.css、src-tauri/src/collector/engine.rs
+- **交互升级（2026-09-23 所有者拍板）**：筛选菜单从点击展开改为**纯 hover 交互**——
+  悬浮触发器即展开、点选即应用并关闭、移出触发器+菜单整体区域 200ms 宽限自关
+  （Esc 兜底）；折叠头保持点击展开列表不动；标题行改整体 hover 热区（行级背景），
+  触发器三态（默认低调/行悬浮增强/自身悬浮强调色），筛选激活常显强调色；
+  菜单入场淡入+微移动画（推卡片变有意动画）；触发器 .open/.active 态 +
+  aria-expanded（键盘不可达为已声明取舍）。实现参数：FILTER_OPEN_DELAY_MS=0
+  （误触多可调 100）、FILTER_CLOSE_DELAY_MS=200
+- **交互细化二（2026-09-23 所有者拍板）**：筛选触发器**仅历史区展开态可见**
+  （渐进披露——收起态筛选是「看不见列表的筛选」，选完还得再展开=死路）；
+  配套规则：**收起历史区自动清除筛选并关闭菜单**（防「看得到计数却改不了
+  筛选」的反向死角），与「面板收起自动复位」哲学一致
+- 验收：✅ 面板历史区展开后 CC/ZC 混排可见（不再 ZC 钉尾）；✅ 筛选仅 CC
+  命中 45；✅ 「查看更多」跳转后会话窗口已预选 CC；✅ 活跃区不受筛选影响；
+  ✅ hover 展开/宽限关闭/选完即关手感符合交互规格（2026-09-23 所有者验收）
+
 ## 待议区（看板外想法，不擅自实施）
 
 - **零用量会话不在会话窗口显示**（M1-10 有意边界；**2026-09-21 所有者拍板收尾**）：
