@@ -622,6 +622,48 @@
 - 验收：✅ CC hooks 装卸往返回归通过；✅ 桥脚本缺省参数向后兼容；
   ✅ cargo test 49/49 全绿；⬜ Codex/Kimi hooks 实机触发链留待装机
 
+### M2-10a OpenCode + MiMo Code 适配器（同族 SQLite 通道）✅（2026-09-23 所有者验收通过）
+
+- 背景（源码调研推翻总纲预想，详 01-RESEARCH §12）：OpenCode 主存储**已迁 SQLite**
+  （v1.18.32 实测 `~\.local\share\opencode\opencode.db`，JSON storage 仅剩边缘用途）；
+  MiMo Code 为 OpenCode fork 确证（`~\.local\share\mimocode\mimocode.db`，
+  `MIMOCODE_HOME` 重定向）。通道优先级反转：**只读 SQLite 为主通道（零用户配置），
+  SSE 降为 opt-in 增强档**（M2-10b 装机后实施——端口发现/事件流实测为前提）
+- 内容：`collector/opencode.rs` 新建——`OpenCodeFamilyAdapter` **同族参数化**（两家
+  共用一 struct，差异仅 agent id/数据根解析/db 文件名，SQL 与 data JSON 解析
+  零复制粘贴）：session 表 scan（title/directory/agent/model）+ message 表水位
+  增量（`json_extract(data,'$.role')='assistant'` 行提取 tokens 五项+cost+model，
+  `oc:`/`mc:msg_{id}` 幂等键）+ `$.error` 行喂 error_type 走现有 recent_error 链路
+  + `-wal` 文件快轮信号（WAL 写入先落 wal，主 db mtime 不动）+ 进程匹配声明；
+  自库零迁移、无 hooks（两家无 CC 式 hooks 体系）
+- 涉及：src-tauri/src/collector/{opencode,mod}.rs、state/service.rs、
+  src/shared/types.ts、docs/{01-RESEARCH,04-EXPANSION,03-TASKS}.md
+- 验收：⬜ 合成样本单测（临时库灌样本：用量提取/水位增量/幂等/重定向/错误行）；
+  ⬜ cargo test 全绿 + npm build；⬜ `test_real_opencode`/`test_real_mimo`
+  对账留待装机（清单 01-RESEARCH §12.3）
+
+### M2-UX-2 设置页 Agent 监控卡片网格改版 ✅（2026-09-23 所有者验收通过，含色条两轮迭代与间距对齐）
+
+- 背景：所有者两项指示——删掉 Claude Desktop 选项；六家展示方式升级（方案 A 卡片
+  网格获拍板，列数改为纯宽度自适应＋4 列封顶）
+- 内容：①AGENT_DEFS 删 claude-desktop 行＋implemented 字段（引用仅 Settings 一处
+  死分支，一并清）；②Agent 监控章节渲染重写为**双列卡片网格**：`auto-fill +
+  minmax(min(280px,100%),1fr)` 容器 1280px 封顶——实测分档 1000px→3 列/
+  760px→2 列/520px→1 列，极端窄自动退单列不截断；③checkbox→Switch（语义归位）；
+  **身份色收敛为「色点＋开关」对角呼应**（设计两轮迭代：全高色带→短色条均因与
+  卡片圆角/色点扎堆不协调被所有者否掉，终版按「去掉一件饰品」减法原则删色条，
+  启用开关点亮时经 `.st-agent-on` 局部覆写 `--accent` 随身份色，每卡仅两个
+  同色元素且皆有语义）＋**自绘色点**取色入口（原生 color input 隐藏为点击代理，
+  hover 微放大提示可点）；④副标题=真实采集方式三态文案
+  （已注入/未注入约 90 秒精度/进程与文件启发式/未启用）；⑤整卡可点切换启用
+  （开关/色点/精确开关 stopPropagation 隔离）＋键盘可达（Enter/空格＋focus-visible）
+- 涉及：src/shared/types.ts、src/Settings.tsx、src/settings.css
+- 验证：✅ npm run build；✅ 浏览器渲染自查（vite #settings 直开）：深浅双主题
+  （浅色经 data-theme 强制切换验证）×1/2/3/4 列四档宽度截图逐一核对，列数分档
+  与 textClipped=false 全部断言通过；交互 DOM 级验证（点卡切换 aria-pressed
+  联动、副标题变「未启用」、精确开关不误触卡片）；⬜ 真机主题切换联动待所有者
+  dev 验收（直开环境主题保存链路不可达属预期）
+
 ## 待议区（看板外想法，不擅自实施）
 
 - **零用量会话不在会话窗口显示**（M1-10 有意边界；**2026-09-21 所有者拍板收尾**）：

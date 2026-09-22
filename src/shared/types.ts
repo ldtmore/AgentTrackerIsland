@@ -65,19 +65,19 @@ export interface Thresholds {
   danger: number;
 }
 
-/** 可监控的 Agent 定义（设置页选择项；implemented=false 表示适配器待开发，勾选暂不采集） */
+/** 可监控的 Agent 定义（设置页选择项；均有已实装的适配器） */
 export const AGENT_DEFS: {
   id: string;
   label: string;
   /** 系统默认身份色（用户可在设置页自定义） */
   color: string;
-  implemented: boolean;
 }[] = [
-  { id: "zcode", label: "ZCode", color: "#34d399", implemented: true },
-  { id: "claude-code", label: "Claude Code", color: "#f59e0b", implemented: true },
-  { id: "codex", label: "Codex", color: "#38bdf8", implemented: true },
-  { id: "kimi-code", label: "Kimi Code", color: "#f472b6", implemented: true },
-  { id: "claude-desktop", label: "Claude Desktop", color: "#a78bfa", implemented: false },
+  { id: "zcode", label: "ZCode", color: "#34d399" },
+  { id: "claude-code", label: "Claude Code", color: "#f59e0b" },
+  { id: "codex", label: "Codex", color: "#38bdf8" },
+  { id: "kimi-code", label: "Kimi Code", color: "#f472b6" },
+  { id: "opencode", label: "OpenCode", color: "#22d3ee" },
+  { id: "mimo-code", label: "MiMo Code", color: "#fb923c" },
 ];
 
 /** 支持 hooks 增强档的 Agent（与 Rust 侧 HOOKS_AGENTS 同源，设置页按此渲染行内精确开关） */

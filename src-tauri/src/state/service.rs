@@ -18,6 +18,7 @@ use crate::collector::codex::CodexAdapter;
 use crate::collector::engine::{HotSignal, ProcessMatch};
 use crate::collector::hook_events;
 use crate::collector::kimi::KimiCodeAdapter;
+use crate::collector::opencode::OpenCodeFamilyAdapter;
 use crate::collector::zcode::ZcodeAdapter;
 use crate::collector::{AgentAdapter, provider_from_model};
 use crate::store::UsageRow;
@@ -185,6 +186,10 @@ impl Aggregator {
                 Box::new(ClaudeCodeAdapter::new()),
                 Box::new(CodexAdapter::new()),
                 Box::new(KimiCodeAdapter::new()),
+                // OpenCode 同族两实例（M2-10a）：同一 struct 不同 FamilyProfile，
+                // 差异仅 agent id/数据根/db 文件名（01-RESEARCH §12）
+                Box::new(OpenCodeFamilyAdapter::opencode()),
+                Box::new(OpenCodeFamilyAdapter::mimo_code()),
             ],
             hook_offsets,
             last_quota_fetch: 0,

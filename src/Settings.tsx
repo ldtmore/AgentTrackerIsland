@@ -585,56 +585,87 @@ export default function Settings() {
 
       <Section
         title="Agent 监控"
-        desc="勾选才采集与展示；「精确」开关注入 hooks 增强档（实时上报状态）；颜色用于岛分块与徽标"
+        desc="点击卡片启用或停用监控；「精确」注入 hooks 实时上报状态；色点决定岛分块与徽标的颜色"
       >
+        {/* 卡片网格（2026-09-23 改版）：列数随窗口宽度自适应（1~4 列封顶，样式层控制） */}
         <div className="st-agents">
           {AGENT_DEFS.map((a) => {
             const checked = agents.includes(a.id);
-            // 精确状态开关（M2-6/7 行级整合）：仅支持 hooks 的三家有；
-            // 未勾选（不监控谈不上精确）或装卸进行中时禁用
+            // 精确状态开关（M2-6/7 行级整合延续）：仅支持 hooks 的三家有；
+            // 未启用（不监控谈不上精确）或装卸进行中时禁用
             const hasHooks = HOOKS_AGENTS.includes(a.id);
             const hooksOnFor = hooksOn[a.id] ?? false;
             const hooksBusyFor = hookBusy[a.id] ?? false;
+            // 副标题=当前真实采集方式（文案描述现状而非装饰：已注入/启发式精度/未启用）
+            const status = !checked
+              ? "未启用"
+              : hasHooks && hooksOnFor
+                ? "精确状态·hooks 已注入"
+                : hasHooks
+                  ? "未注入 hooks·约 90 秒精度"
+                  : "进程与文件启发式";
             return (
-              <div key={a.id} className="st-agent">
-                <label className="st-agent-check">
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(e) => toggleAgent(a.id, e.target.checked)}
-                  />
-                  {a.label}
-                  {!a.implemented && <span className="st-agent-todo">（适配器开发中）</span>}
-                </label>
-                {hasHooks && (
-                  <label
-                    className={`st-agent-hooks${checked ? "" : " st-agent-hooks-off"}`}
-                    title={
-                      checked
-                        ? "注入 hooks：Agent 实时上报状态（工作中/等待输入）；未注入时按进程启发式推断，约 90 秒精度。装卸均自动备份配置文件"
-                        : "先勾选启用该 Agent 监控，再注入 hooks"
-                    }
-                  >
-                    <span className="st-agent-hooks-label">精确</span>
-                    <Switch
-                      checked={hooksOnFor}
-                      disabled={!checked || hooksBusyFor}
-                      small
-                      onChange={() => toggleHooks(a.id)}
-                    />
-                  </label>
-                )}
-                <input
-                  type="color"
-                  className="st-agent-color"
-                  title={checked ? "自定义颜色" : "勾选后可自定义颜色"}
-                  value={effColor(a.id)}
-                  disabled={!checked}
-                  onChange={(e) =>
-                    setAgentColors((prev) => ({ ...prev, [a.id]: e.target.value }))
+              <div
+                key={a.id}
+                className={`st-agent${checked ? " st-agent-on" : ""}`}
+                style={{ "--agent-color": effColor(a.id) } as React.CSSProperties}
+                onClick={() => toggleAgent(a.id, !checked)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    toggleAgent(a.id, !checked);
                   }
-                  onBlur={onColorBlur}
-                />
+                }}
+                role="button"
+                tabIndex={0}
+                aria-pressed={checked}
+                title={checked ? "点击停用该 Agent 的监控" : "点击启用该 Agent 的监控"}
+              >
+                <div className="st-agent-name">
+                  {/* 自绘色点=取色入口：原生 color input 隐藏为点击代理（精致形态） */}
+                  <span
+                    className="st-agent-dot"
+                    title={checked ? "自定义颜色" : "启用后可自定义颜色"}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="color"
+                      aria-label={`${a.label} 颜色`}
+                      value={effColor(a.id)}
+                      disabled={!checked}
+                      onChange={(e) =>
+                        setAgentColors((prev) => ({ ...prev, [a.id]: e.target.value }))
+                      }
+                      onBlur={onColorBlur}
+                    />
+                  </span>
+                  {a.label}
+                  <span className="st-agent-switch" onClick={(e) => e.stopPropagation()}>
+                    <Switch checked={checked} onChange={(v) => toggleAgent(a.id, v)} />
+                  </span>
+                </div>
+                <div className="st-agent-status">
+                  <span className="st-agent-status-text">{status}</span>
+                  {hasHooks && (
+                    <span
+                      className={`st-agent-hooks${checked ? "" : " st-agent-hooks-off"}`}
+                      title={
+                        checked
+                          ? "注入 hooks：Agent 实时上报状态（工作中/等待输入）；未注入时按进程启发式推断，约 90 秒精度。装卸均自动备份配置文件"
+                          : "先启用该 Agent 监控，再注入 hooks"
+                      }
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <span className="st-agent-hooks-label">精确</span>
+                      <Switch
+                        checked={hooksOnFor}
+                        disabled={!checked || hooksBusyFor}
+                        small
+                        onChange={() => toggleHooks(a.id)}
+                      />
+                    </span>
+                  )}
+                </div>
               </div>
             );
           })}

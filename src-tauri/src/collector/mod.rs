@@ -86,6 +86,7 @@ pub mod codex;
 pub mod engine;
 pub mod hook_events;
 pub mod kimi;
+pub mod opencode;
 pub mod zcode;
 
 /// 由模型名推断供应商（启发式，小而够用）
@@ -106,6 +107,8 @@ pub fn provider_from_model(model: &str) -> Option<String> {
         Some("moonshot".into())
     } else if p.starts_with("qwen") {
         Some("alibaba".into())
+    } else if p.starts_with("mimo") {
+        Some("xiaomi".into())
     } else {
         None
     }

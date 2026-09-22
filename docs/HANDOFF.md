@@ -7,22 +7,32 @@
 
 - **阶段**：阶段 3（实施）进行中，M0 已收尾；M1 进行中（剩余 M1-2/M1-3 等所有者输入）。
   进度：T0–T9、T11 ✅；T10 🟨（ZCode ✅，WT 搁置）；T12 ⏸；T13 ⬜；
-  M1-1/M1-3/M1-4/M1-6/M1-7/M1-8/M1-10/M1-11 完成，M1-5 划出不做；M1-9 已提交（8cb5248，看板已补记）。
-  M2 P0 五项 ✅（M2-1~4 + M2-UX-1，2026-09-23 所有者验收）。
-  **M2 P1 已提交（8c24ba2，2026-09-23，Codex＋Kimi Code 双适配器，所有者 dev 验收通过）**——
-  所有者拍板**不装机**，先行网络源码级调研（serde 属性级，详 01-RESEARCH §11）后实施：
-  ①M2-6 Codex 适配器（rollout tail＋token_usage_record/互斥退路＋缓存拆分＋hooks 注入器）；
-  ②M2-7 Kimi Code 适配器（**纠正总纲旧版记录**：按新版 kimi-code 实施，
-  wire.jsonl usage.record＋内容指纹幂等＋state.json 元数据＋TOML hooks 注入器；
-  状态机新增 last_failure 信号位＋Codex/Kimi 差异事件映射）；
-  ③hooks 链路多 Agent 泛化（事件文件 per-agent＋桥脚本 argv 参数化＋消费循环泛化）；
-  ④M2-8 前端登记（AGENT_DEFS 两家转正；hooks 开关**行级整合**——所有者拍板
-  方案 A：Agent 勾选行内嵌「精确」小号开关，与勾选/颜色同行管完单 Agent 配置，
-  「数据与维护」恢复纯运维两行；lib.rs 命令带参）；
-  ⑤M2-9 索引复查（EXPLAIN 全命中，无需 0005）。
-  验证：cargo test 49/49 全绿（新增两家合成样本单测＋hooks 装卸往返）、npm build 通过。
-  **待所有者 dev 验收**；`test_real_codex`/`test_real_kimi` 已写好标 #[ignore]，
-  **装机后补跑**（对账＋usageScope 双计验证＋hooks 实机触发链，清单 01-RESEARCH §11.3）。
+  M1-1/M1-3/M1-4/M1-6/M1-7/M1-8/M1-10/M1-11/M1-12 完成，M1-5 划出不做；M1-9 已提交。
+  M2 P0 五项 ✅；**M2 P1 已提交（ef38be9，Codex＋Kimi Code 双适配器）**。
+  **M2-10a 已提交（2026-09-23，OpenCode＋MiMo Code 同族适配器，所有者验收通过）**——
+  源码级调研先行（所有者拍板不装机，详 01-RESEARCH §12）**推翻总纲预想**：
+  OpenCode 主存储已迁 SQLite（v1.18.32 `~\.local\share\opencode\opencode.db`，
+  JSON storage 仅剩边缘用途）；MiMo 为 OpenCode fork 确证（`MIMOCODE_HOME` 重定向，
+  `~\.local\share\mimocode\mimocode.db`）。通道优先级反转：**只读 SQLite 为主通道，
+  SSE（`/event`，session.next.step.ended 带 usage）降为 opt-in 增强档=M2-10b
+  （装机后实施，端口发现/事件流实测为前提）**。
+  实施：`collector/opencode.rs` 新建 `OpenCodeFamilyAdapter` 同族参数化（两家一 struct，
+  差异仅 FamilyProfile 常量：agent id/数据根/db 文件名/重定向变量/进程关键词，SQL 与
+  data JSON 解析零复制粘贴）；session 表 scan + message 表水位增量（**按 time_updated
+  而非 created**——流式行原地更新可重采，`oc:`/`mc:msg_{id}` 幂等）+ error 行走
+  recent_error 链路 + **-wal 文件快轮信号**（WAL 主库 mtime 不动）；前端 AGENT_DEFS
+  +2 行（opencode 青色/mimo-code 橙色）；无 hooks（两家无 CC 式体系）、自库零迁移。
+  验证：cargo test 55/55 全绿（新增 7 单测：合成样本提取/水位增量/幂等/MIMOCODE_HOME
+  回落/xdg 两分支/截断防多字节 panic）、npm build 通过；
+  `test_real_opencode`/`test_real_mimo` 已写好标 #[ignore] **装机后补跑**
+  （清单 01-RESEARCH §12.3：落盘路径/真实样本对账/聚合列交叉验证/端口发现/进程名；
+  P1 两家 Codex/Kimi 的装机清单 §11.3 一并待办）。
+  **待所有者 dev 验收**。
+  **M2-UX-2 设置页 Agent 监控卡片网格改版（2026-09-23 所有者插单，验收通过）**——
+  删 Claude Desktop 选项＋implemented 死代码；六家改双列卡片网格（列数纯宽度
+  自适应 1~4 列封顶，实测 1000→3 列/760→2 列/520→1 列无截断）：checkbox→Switch、
+  左缘身份色带＋自绘色点取色、副标题=真实采集方式文案、整卡可点＋事件隔离；
+  深浅双主题四档宽度截图自查通过，详 03-TASKS M2-UX-2。
   M2-5（notify 评估）按量化判据观察一周后定。
   **M2-UX-1 面板历史区可见性治理（2026-09-23 代码完成待 dev 验收）**——
   所有者报障「面板漏了 CC 会话」：后端扫描正常（42 ZC＋45 CC=87），根因是

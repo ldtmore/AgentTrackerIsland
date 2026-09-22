@@ -199,6 +199,59 @@
 2. Kimi：usageScope='session' 行是单请求还是累计快照（双计验证）；wire 行 time 缺失率；hooks 20 事件真实 stdin 样本；`~/.kimi-code` 实际落盘结构核对
 3. 两家可达状态集按 §2.7（04-EXPANSION）回写
 
+## 12. 各 Agent 数据面勘察（P2，2026-09-23，M2-10 开工前源码级核实）
+
+> 本节承接 04-EXPANSION §1.2 矩阵的逐家细节；核实方式 = GitHub 源码逐文件核对
+> （zod/effect Schema 字段级，drizzle 表列级）；**所有者本机未装两家 CLI，真实样本
+> 对账（test_real_opencode / test_real_mimo，均 #[ignore]）留待装机后补跑**。
+
+### ⚠️ 纠正 04-EXPANSION §1.2 的旧记录
+
+原记录「OpenCode = 本地 storage（逐实体 JSON 文件）」「MiMo 项目配置目录 `.mimocode`、
+环境变量 `MIMOCODE_CONFIG_DIR`」均已过时：OpenCode 主存储已迁移 SQLite（v2 存储层
+`@opencode/v2/storage/Database`），JSON storage（`data/storage/`）仅剩会话回滚、导入
+等边缘用途，旧数据由 `json-migration` 自动迁移；MiMo 数据根重定向是 `MIMOCODE_HOME`
+（shared/src/global.ts 源码确证）。通道优先级随之反转：**只读 SQLite 为主通道
+（零用户配置，红线④），SSE 降为 opt-in 实时增强档（M2-10b，装机后实施）**。
+
+### 12.1 OpenCode（anomalyco/opencode v1.18.32，2026-09-23 核实）
+
+| 项 | 结论（源码确证） |
+|---|---|
+| 仓库 | 2026 年由 sst/opencode 迁至 **anomalyco/opencode**（旧地址自动跳转）；最新 v1.18.32（2026-09-21 发布）；monorepo 大拆分（core/schema/server/protocol 等独立包） |
+| 主存储 | SQLite v2：`~/.local/share/opencode/opencode.db`（稳定渠道）或 `opencode-<channel>.db`；**Windows 无特判**——xdg-basedir npm 包只认 `XDG_DATA_HOME` 环境变量，缺省直拼 `~/.local/share`（global.ts 源码确证） |
+| session 表 | drizzle `session`：id/project_id/directory/title/agent/version + `model` JSON 列 `{id,providerID,variant?}` + **cost 与 tokens 五项会话级累计列**（`tokens_input/output/reasoning/cache_read/cache_write`，迁移 `20260510033149_session_usage` 从 message 行聚合而来——聚合缓存，非真源）+ Timestamps（time_created/time_updated，Unix 毫秒） |
+| message 表 | drizzle `message`：id（`msg_` 前缀，ascending 有序）/session_id/`data` JSON 列 + Timestamps；assistant 行 data：`{tokens:{input,output,reasoning,cache:{read,write}}, cost, model:{providerID,id}, agent, error?, finish?, time:{created,completed?}}`（packages/schema/src/session-message.ts）；time.created 为 ISO UTC 字符串（DateTimeUtcFromMillis 编码侧=毫秒） |
+| 用量口径 | cache.read/write 是**独立分项**（Anthropic 语义，非 OpenAI 子集）→ 四项互斥直取，无需拆分；幂等键 `oc:msg_{message_id}` 天然唯一 |
+| 错误信号 | assistant 行 `data.error` 非空 = 本步失败（UnknownError{message}）→ 填 UsageRow.error_type 走现有 recent_error 链路 |
+| SSE | `opencode serve` 默认绑 **127.0.0.1、端口 0（随机）**；`GET /event`（text/event-stream），事件包装 `{id,type,properties}`；**`session.next.step.ended` 直接带 cost＋tokens 五项**（durable v2）、`step.failed` 带 error、`prompted`=回合起点；10s 心跳 `server.heartbeat`；按 instance.directory 过滤；Basic 鉴权可选（`OPENCODE_SERVER_PASSWORD` 未设即无鉴权，server/auth.ts） |
+| 端口发现 | **无固定端口、无端口落盘文件**（serve 打印 stdout；TUI 内嵌 server worker 按需起，cli/tui/worker.ts；桌面 sidecar 同）——10b 的核心装机核实点 |
+| hooks | 无 CC 式 hooks 体系（有 plugin 体系，packages/plugin）→ 不接入，SQLite 通道+进程探测已覆盖 |
+| 进程 | npm `opencode` 启动器；常驻进程 exe 名装机核实 |
+
+### 12.2 MiMo Code（XiaomiMiMo/MiMo-Code v0.1.15，2026-09-23 核实）
+
+| 项 | 结论（源码确证） |
+|---|---|
+| 内核关系 | OpenCode fork 确证：`packages/opencode` 同构；fork 基线在「SQLite 存储迁移之后、core 包大拆分之前」（有 storage/db.ts 无独立 core 包） |
+| 数据根 | `MIMOCODE_HOME`（须绝对路径，shared/src/global.ts）→ `{data,cache,config,state}` 四子目录；缺省 XDG → Windows `~/.local/share/mimocode`；⚠️ 纠正总纲旧记录（`.mimocode`/`MIMOCODE_CONFIG_DIR` 当前源码不存在） |
+| db | `data/mimocode.db`（或 `mimocode-<channel>.db`；环境变量 `MIMOCODE_DB` 可指定文件名，db.ts:33-41） |
+| session 表 | 同构 OpenCode 但**无 cost/tokens 聚合列**（fork 基线早于 `20260510` 迁移）→ 用量必须逐行取 message；directory/title/agent/model 字段同构 |
+| message 表 | `data` JSON 列同构；assistant 行字段平铺（zod schema，session/message-v2.ts）：`{modelID, providerID, cost, tokens:{total?,input,output,reasoning,cache:{read,write}}, parentID, error?, path:{cwd,root}, time:{created,completed?}}`；另有 part 表 `step-finish` 部件带同构 tokens（不采，message 行已足） |
+| 幂等键 | `mc:msg_{message_id}`（MessageID 同 `msg_` 前缀体系） |
+| SSE | 同款 `mimo serve`（bin 名 `mimo`，npm `@mimo-ai/cli`）+ `/event` + `SERVER_PASSWORD` 鉴权；10b 一并核实 |
+| 只读背书 | 官方自带 `storage/read-sqlite.ts` 只读读取层，注释明说供外部读 `opencode.db`——佐证只读 SQLite 通道是官方认可的外部观测姿势 |
+| 进程 | `mimo`（npm shim）/官方二进制 exe 名装机核实 |
+
+### 12.3 待装机核实清单（装机后回写本节并跑 test_real_*）
+
+1. Windows 实际落盘：`~\.local\share\opencode\opencode.db` / `~\.local\share\mimocode\mimocode.db`（xdg 推断确证位）
+2. 真实 message data JSON 样本对账（分项 token 与官方 /stats 对齐；`oc:`/`mc:` 幂等重采零重复）
+3. OpenCode session 累计列 vs message 行聚合交叉对账（双口径互验，漂移早期报警）
+4. M2-10b 前提：serve 端口发现（stdout 解析？TUI 内嵌 server 是否可订阅）、`/event` 真实事件流样本、directory 过滤行为
+5. 进程 exe 名（opencode.exe / mimo.exe / mimocode.exe）
+6. 两家可达状态集按 §2.7（04-EXPANSION）回写
+
 ---
 
 ## 调研日志
@@ -210,3 +263,4 @@
 | 2026-09-17 | §9 报表页选型完成（echarts@6.1.0 直用+按需引入+lazy 分割），M1-1 开工 |
 | 2026-09-17 | §10 Codex CLI 源码级勘察完成（sessions/*.jsonl + TokenCount 事件），适配器待实测后开发，M1-3 第一步收官 |
 | 2026-09-23 | §11 新增（P1 勘察节）：Codex/Kimi Code 两家源码级核实完成（serde 属性级）；Kimi 记录纠正为新版 kimi-code；M2-6/M2-7 按此实施，真实对账留待装机 |
+| 2026-09-23 | §12 新增（P2 勘察节）：OpenCode/MiMo Code 源码级核实（Schema 字段级+drizzle 表列级）；**重大纠正——OpenCode 主存储已迁 SQLite**（总纲 JSON 记录过时），通道优先级反转为 SQLite 主+SSE 增强；M2-10a 按此实施 |

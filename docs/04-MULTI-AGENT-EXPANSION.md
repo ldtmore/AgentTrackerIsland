@@ -54,8 +54,8 @@
 | 🅰 已接 | ZCode | `~\.zcode\cli\{db\db.sqlite, log\zcode-日期.jsonl, rollout\model-io-sess_*.jsonl}` | 无（自有工具，可加 hooks） | sqlite model_usage | 已运行（P0 补日志活动信号） |
 | 🅱 富 | **Codex** | `~\.codex\sessions\YYYY\MM\DD\rollout-{ISO时间戳}-{UUID}.jsonl`（CODEX_HOME 可重定向；**2026-09-23 源码核实**，详 01-RESEARCH §11.1） | **hooks 12 事件与 CC 几乎同名**（多 PermissionRequest/PreCompact/PostCompact/SubagentStart/SubagentStop/Interrupt）；载体=config.toml `[hooks]` 段（`[[hooks.<Event>]]`→MatcherGroup→handler，deny_unknown_fields）+ hooks.json 双载体（源码核实）；legacy notify（agent-turn-complete，JSON 走末位 argv）；OTel | `token_usage_record` 行 `response_id` 幂等（snake_case TokenUsage；⚠️ cached 是 input 子集，已按互斥口径拆分）；`event_msg→token_count` 退路 | FileTail + HookBridge ✅ M2-6 |
 | 🅱 富 | **Kimi Code** | `~\.kimi-code\sessions\<wd_key>\<sid>\{state.json, agents\<agentId>\wire.jsonl}`（**2026-09-23 源码核实，纠正本表旧版记录**：主线是 TS 的 kimi-code，旧 Python kimi-cli 已归档；KIMI_CODE_HOME 重定向，旧 KIMI_SHARE_DIR 已不生效；详 01-RESEARCH §11.2） | **hooks 20 事件**（CC 同名超集 + TurnStarted/PermissionRequest/PostToolUseFailure/StopFailure/Interrupt/SessionHeartbeat 等），stdin JSON，TOML 顶层 `[[hooks]]`（仅 event/matcher/command/timeout 四字段） | wire.jsonl `usage.record` 行（camelCase 四字段 inputOther/output/inputCacheRead/inputCacheCreation；行无官方 id → 内容指纹幂等；⚠️ usageScope 语义装机核实） | FileTail + HookBridge ✅ M2-7 |
-| 🅱 富 | **OpenCode** | 本地 storage（逐实体 JSON 文件） | **官方 HTTP 服务 + `/event` SSE 全局事件流**（`opencode serve`）——14 家唯一官方 push API | 会话记录内 | LocalHttp（首选）或 FileTail（退路） |
-| 🅱 富 | **MiMo Code**（小米） | **OpenCode 内核二次开发**（核心包即 `packages/opencode/`）；项目配置目录 `.mimocode`，兼容读取 `~\.claude` 命令；全局数据目录装机核实 | 沿用 OpenCode 能力（serve/SSE 待装机核实）；另有 plugin 体系（`packages/plugin/`） | 同 OpenCode（storage JSON） | LocalHttp 或 FileTail（与 OpenCode 共用引擎，**同源复用**） |
+| 🅱 富 | **OpenCode** | **主存储已迁 SQLite**（2026-09-23 源码核实，**纠正本表旧版记录**：`~\.local\share\opencode\opencode.db`，Windows 无 XDG 特判；drizzle message 表 data JSON 列带 tokens 五项+cost，session 表另有聚合列；JSON storage 仅剩回滚/导入边缘用途；详 01-RESEARCH §12.1） | 无 CC 式 hooks（plugin 体系不适用观测）；`opencode serve` 的 `/event` SSE（`session.next.step.ended` 带 usage，127.0.0.1 默认+随机端口→**端口发现是装机核实点**） | message 行 `tokens{input,output,reasoning,cache.read,cache.write}`+cost，`msg_` id 幂等；cache 为独立分项语义 | SqliteTail 主通道 ✅ M2-10a + LocalHttp SSE 增强档（M2-10b 装机后） |
+| 🅱 富 | **MiMo Code**（小米） | **OpenCode fork 确证**（基线=SQLite 化后、core 拆分前）；`~\.local\share\mimocode\mimocode.db`（**2026-09-23 源码核实，纠正旧记录**：重定向是 `MIMOCODE_HOME`，非 `.mimocode`/`MIMOCODE_CONFIG_DIR`）；session 表无聚合列，用量逐行取 message | 沿用 OpenCode 能力（`mimo serve`/SSE 同款，装机核实）；另有 plugin 体系 | message data JSON 平铺 `{modelID,providerID,cost,tokens{...}}`，`msg_` id 幂等 | **与 OpenCode 同一适配器参数化复用** ✅ M2-10a（差异仅 agent id/数据根/db 文件名）+ SSE 增强档 M2-10b |
 | 🅲 中 | **Gemini CLI** | `~\.gemini\tmp\<project-hash>\chats\`（会话）+ 同目录 `logs.json` + `checkpoint-*.json` | **无 hooks**；OTel（`settings.json`：`otlpEndpoint` 默认 `localhost:4317`，或 **`outfile` 遥测直接落文件**——优先采用，免端口） | OTel metrics 含 token | FileTail + OtelSink(outfile) |
 | 🅲 中 | **Qwen Code**（千问） | `~\.qwen\`——**Gemini CLI 官方 fork，目录同构**（源码核实：`QWEN_DIR` + `tmp/` 项目哈希目录，sessionService 同源） | 同 Gemini（无 hooks；OTel 同款配置体系） | 同 Gemini | **与 Gemini 同一适配器参数化复用**（换根路径即可） |
 | 🅲 中 | **OpenClaw** | `~\.openclaw\agents\<agentId>\agent\openclaw-agent.sqlite`（session rows + append-only 转录树 + token counters；旧版 `sessions/*.json` 为遗留迁移源，不用管） | 无 CC 式 hooks（Gateway 有 HTTP 端点） | sqlite | SqliteTail |
@@ -143,7 +143,7 @@
 #### 2.3.4 可选通道（P2 后按需启用）
 
 - **OtelSink**：优先支持「outfile 模式」（Gemini 遥测落文件，我们 tail 该文件，零端口零侵入）；OTLP gRPC receiver（localhost:4317，端口可配）仅作 opt-in 增强，默认关。两者都属红线④的增强档：Agent 未配置时走文件/启发式降级，不允许「未配置就不可用」。
-- **LocalHttp**：订阅本地 Agent 的 push API（OpenCode `opencode serve` 的 `/event` SSE）。约束：只连本机回环、只订阅不指令（红线①：我们是订阅者不是控制者）、Agent 未开 serve 时静默降级到文件 tail。
+- **LocalHttp**：订阅本地 Agent 的 push API（OpenCode `opencode serve` 的 `/event` SSE）。约束：只连本机回环、只订阅不指令（红线①：我们是订阅者不是控制者）、Agent 未开 serve 时静默降级（OpenCode/MiMo 降级到 SQLite 水位主通道，2026-09-23 通道反转后修订）。
 
 ### 2.4 调度器设计（实时性的落点）
 
@@ -197,7 +197,8 @@
 | ZCode | ✅ 日志活动信号（P0 补强后） | ❌ 无信号源 | ✅ model_usage.error_type | ✅ | sqlite 档现状 |
 | Codex | ✅ hooks | ✅ **PermissionRequest**（hooks 独有事件） | ⚠️ 有限——无通知类 hook，依赖 rollout 内错误痕迹（装机核实） | ✅ | hooks 12 事件 |
 | Kimi Code | ✅ hooks | ✅ Notification | ✅ **StopFailure/PostToolUseFailure**（信号最精确） | ✅ | hooks 20 事件（新版 kimi-code，2026-09-23 核实） |
-| OpenCode | ✅ SSE/启发式 | ⚠️ SSE 权限类事件装机核实 | ⚠️ 同上 | ✅ | push API |
+| OpenCode | ✅ db mtime 启发式（10a）+ SSE | ⚠️ SSE 权限类事件装机核实（10b） | ✅ message 行 error 字段（10a 即有） | ✅ | SqliteTail 主通道 + push API 增强档 |
+| MiMo Code | ✅ 同 OpenCode（同族 10a） | ⚠️ 同上 | ✅ 同 OpenCode | ✅ | 同族参数化复用 |
 | Gemini / Qwen | ✅ 启发式/OTel | ❌ 无 hooks | ⚠️ OTel metrics 待查 | ✅ | 文件+OTel |
 | OpenClaw/Hermes/Copilot | ✅ 启发式 | ❌ | ⚠️ 各家库内错误字段装机核实 | ✅ | sqlite 档 |
 | Cursor/Windsurf | ⚠️ 弱启发式 | ❌ | ❌ | ✅ 进程探测 | 实验性档 |
@@ -253,7 +254,7 @@
 
 | 任务 | 内容 | 验收 |
 |------|------|------|
-| M2-10 OpenCode + MiMo Code 适配器（同内核） | OpenCode：首选 LocalHttp 订阅 `opencode serve` SSE（回环、只订阅），未开 serve 降级 storage 文件 tail。MiMo Code：OpenCode 内核（源码核实），适配器与 OpenCode **同族参数化**——全局数据目录与 serve 能力装机核实后复用同一通道与解析，差异仅根路径 | 两个 Agent 各自两种通道可观测；同族适配器参数差异仅配置项，无复制粘贴代码 |
+| M2-10 OpenCode + MiMo Code 适配器（同内核） | **2026-09-23 源码调研后拆两步（详 01-RESEARCH §12）**：主存储实为 SQLite（原定 JSON tail 通道不存在）→ **M2-10a（先行）**：`OpenCodeFamilyAdapter` 同族参数化（差异仅 agent id/数据根/db 文件名），只读 SQLite 水位通道（ZCode 同款），消息行 usage 解析+`msg_` id 幂等+error 行喂状态机；**M2-10b（装机后）**：LocalHttp SSE 实时增强档（opt-in，`session.next.*` 事件带 usage；端口发现/事件流实测为前提） | 10a：两家状态+用量全可用，同族适配器参数差异仅配置项，无复制粘贴代码；10b：SSE 订阅可观测（亚秒实时） |
 | M2-11 Gemini + Qwen Code 适配器（同 fork 族） | Gemini：`~\.gemini\tmp\<hash>\chats\` + `logs.json` tail（无 hooks，走启发式）；OTel **outfile 模式**接入（设置页引导用户配置 `settings.json` 的 telemetry.outfile 指向自家目录，我们 tail）。Qwen Code：`~\.qwen\` 同构目录，**同一适配器换根路径参数直接覆盖** | 两家无 OTel 时状态可用（启发式）；配置 outfile 后用量/状态升级；Qwen 与 Gemini 共用解析代码 |
 | M2-12 OtelSink 骨架 | outfile 轮询解析落地（OTLP receiver 留 backlog） | Gemini 用量与 Gemini CLI `/stats` 对账 |
 
