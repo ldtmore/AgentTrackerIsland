@@ -262,6 +262,30 @@ select.st-input option {
   transform: translateX(16px);
 }
 
+/* 行内小号开关（Agent 行精确状态，M2-8）：38×22 全尺寸在勾选行内偏大 */
+.st-switch-sm {
+  width: 30px;
+  height: 18px;
+  border-radius: 9px;
+}
+
+.st-switch-sm .st-switch-thumb {
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+}
+
+.st-switch-sm.st-switch-on .st-switch-thumb {
+  transform: translateX(12px);
+}
+
+/* 禁用态（busy 装卸中 / Agent 未勾选）：置灰且不可点 */
+.st-switch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* ===== 背景不透明度滑块：原生 range 染主题强调色，右侧定宽数值回显 ===== */
 
 .st-slider {
@@ -388,6 +412,8 @@ select.st-input option {
 }
 
 .st-agent-check {
+  /* 占满剩余宽度：把精确开关+色块推成右对齐组，各行开关垂直对齐（行级整合 M2-8） */
+  flex: 1;
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -403,6 +429,25 @@ select.st-input option {
 
 .st-agent-todo {
   font-size: 10px;
+  color: var(--text-4);
+}
+
+/* 行内精确状态开关（M2-6/7）：小字标签 + 开关，右对齐组的首位；
+   未勾选 Agent 时整组置灰（不监控谈不上精确），开关自身另有 disabled 态 */
+.st-agent-hooks {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 8px;
+}
+
+.st-agent-hooks-label {
+  font-size: 10px;
+  color: var(--text-3);
+  cursor: default;
+}
+
+.st-agent-hooks-off .st-agent-hooks-label {
   color: var(--text-4);
 }
 

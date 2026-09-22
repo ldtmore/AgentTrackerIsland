@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use super::engine::{body_after_partial, mtime_ms, GlobWalker, HotSignal, IncrementalFileReader, ProcessMatch};
+use super::engine::{body_after_partial, iso_to_ms, mtime_ms, GlobWalker, HotSignal, IncrementalFileReader, ProcessMatch};
 use super::{AgentAdapter, CollectOutput, CostSnapshot, SessionInfo, provider_from_model};
 use crate::store::UsageRow;
 
@@ -175,7 +175,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
     /// 从无到有/内容追加都算变化）；②转录树浅枚举（未装 hooks 的降级信号源）
     fn hot_signals(&self) -> Vec<HotSignal> {
         vec![
-            HotSignal::File(Arc::new(|| super::hook_events::events_file_path())),
+            HotSignal::File(Arc::new(|| super::hook_events::events_file_path("claude-code"))),
             HotSignal::DirScan {
                 root: self.root.clone(),
                 ext: Some(".jsonl"),
@@ -428,12 +428,7 @@ fn row_total(r: &UsageRow) -> i64 {
         + r.cache_creation_tokens.unwrap_or(0)
 }
 
-/// ISO 8601（如 2026-09-16T06:46:19.159Z）→ Unix 毫秒；解析失败返回 None
-fn iso_to_ms(s: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|d| d.timestamp_millis())
-}
+/// ISO → 毫秒助手已提升至 engine::iso_to_ms（M2-6 Codex 复用同名格式）
 
 /// 当前 Unix 毫秒
 fn now_ms() -> i64 {
@@ -445,8 +440,9 @@ fn now_ms() -> i64 {
 
 // ===== hooks 安装/卸载（增强档，设置页一键装卸；02-DESIGN §4） =====
 
-/// 桥脚本源码编译进二进制，安装时写出到家目录（单一已知位置，用户可审计）
-const BRIDGE_SOURCE: &str = include_str!("../../hook-bridge/hook-bridge.js");
+/// 桥脚本源码编译进二进制，安装时写出到家目录（单一已知位置，用户可审计）。
+/// M2-6/7 起三家（claude-code/codex/kimi-code）共用同一份脚本（argv 区分 agent）
+pub(crate) const BRIDGE_SOURCE: &str = include_str!("../../hook-bridge/hook-bridge.js");
 /// 注入标记（卸载时按此识别自家条目）
 const BRIDGE_MARK: &str = "hook-bridge.js";
 /// 覆盖状态机全部迁移的事件清单
@@ -483,7 +479,13 @@ pub fn install_hooks() -> anyhow::Result<usize> {
     }
     std::fs::write(&bridge, BRIDGE_SOURCE)?;
     let settings = claude_settings_path().ok_or_else(|| anyhow::anyhow!("无法定位 settings.json"))?;
-    let cmd = format!("node \"{}\"", bridge.to_string_lossy().replace('\\', "/"));
+    // 第二参数是 Agent 标识：桥脚本按它把事件写入各自的 events/<agent>.jsonl
+    // （M2-6/7 桥脚本参数化，一份脚本服务多家；缺省参数即 claude-code，行为不变）
+    let cmd = format!(
+        "node \"{}\" {}",
+        bridge.to_string_lossy().replace('\\', "/"),
+        "claude-code"
+    );
     let injected = inject_into_settings(&settings, &cmd)?;
     log::info!("hooks 安装完成：注入 {injected} 个事件，桥脚本 {}", bridge.display());
     Ok(injected)
@@ -633,7 +635,7 @@ mod tests {
         }"#).unwrap();
 
         // 注入：7 个事件（Stop 已存在→追加不覆盖）
-        let n = inject_into_settings(&settings, "node \"C:/x/.claude/hooks/hook-bridge.js\"").unwrap();
+        let n = inject_into_settings(&settings, "node \"C:/x/.claude/hooks/hook-bridge.js\" claude-code").unwrap();
         assert_eq!(n, 7);
         let s1: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
@@ -642,7 +644,7 @@ mod tests {
         assert_eq!(s1["statusLine"]["type"], "command", "其他配置不受影响");
 
         // 重复注入：防重复，0 条
-        let n2 = inject_into_settings(&settings, "node \"C:/x/.claude/hooks/hook-bridge.js\"").unwrap();
+        let n2 = inject_into_settings(&settings, "node \"C:/x/.claude/hooks/hook-bridge.js\" claude-code").unwrap();
         assert_eq!(n2, 0);
 
         // 卸载：回到与原文件等价（自家条目全清，用户 hooks 原样保留）
@@ -719,7 +721,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_secs(3));
 
         // 3) 事件文件落盘且可消费
-        let evfile = crate::collector::hook_events::events_file_path().unwrap();
+        let evfile = crate::collector::hook_events::events_file_path("claude-code").unwrap();
         let (events, offset) = crate::collector::hook_events::read_events(&evfile, 0).unwrap();
         let fresh: Vec<_> = events.iter().filter(|e| e.session_id != "manual-test").collect();
         println!("捕获事件（{} 条，偏移 {}）：{:?}", fresh.len(), offset,

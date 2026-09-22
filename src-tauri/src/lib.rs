@@ -171,28 +171,51 @@ fn set_setting(key: String, value: String, store: tauri::State<'_, Arc<Store>>) 
     Ok(())
 }
 
-/// hooks 安装状态（检查 settings.json 中是否存在自家注入条目）
+/// 支持 hooks 增强档的 Agent 清单（M2-6/7）：三家各有独立注入器与事件文件。
+/// 前端按此渲染 hooks 卡片，命令按 agent 参数化分发
+const HOOKS_AGENTS: &[&str] = &["claude-code", "codex", "kimi-code"];
+
+/// hooks 安装状态（按 Agent 查询：配置文件中是否存在自家注入条目）
 #[tauri::command]
-fn hooks_status() -> bool {
-    collector::claude_code::hooks_installed()
+fn hooks_status(agent: String) -> Result<bool, String> {
+    if !HOOKS_AGENTS.contains(&agent.as_str()) {
+        return Err(format!("不支持的 Agent：{agent}"));
+    }
+    Ok(match agent.as_str() {
+        "codex" => collector::codex::hooks_installed(),
+        "kimi-code" => collector::kimi::hooks_installed(),
+        _ => collector::claude_code::hooks_installed(),
+    })
 }
 
-/// 安装 hooks（增强档：精确状态）。
-/// async 标记：文件 IO 移出主线程，不阻塞事件循环（Tauri 语义，审查 2.2.1）
+/// 安装 hooks（增强档：精确状态）。async 标记：文件 IO 移出主线程，
+/// 不阻塞事件循环（Tauri 语义，审查 2.2.1）
 #[tauri::command(async)]
-fn install_hooks() -> Result<usize, String> {
-    // 失败留痕：settings.json 被占用等失败原因只在错误链里，前端 toast 转瞬即逝
-    collector::claude_code::install_hooks().map_err(|e| {
-        log::error!("hooks 注入失败：{e:#}");
+fn install_hooks(agent: String) -> Result<usize, String> {
+    let result = match agent.as_str() {
+        "codex" => collector::codex::install_hooks(),
+        "kimi-code" => collector::kimi::install_hooks(),
+        "claude-code" => collector::claude_code::install_hooks(),
+        other => Err(anyhow::anyhow!("不支持的 Agent：{other}")),
+    };
+    // 失败留痕：配置文件被占用等失败原因只在错误链里，前端 toast 转瞬即逝
+    result.map_err(|e| {
+        log::error!("[{agent}] hooks 注入失败：{e:#}");
         e.to_string()
     })
 }
 
-/// 卸载 hooks（还原 settings.json）；async 标记理由同上
+/// 卸载 hooks（还原配置文件）；async 标记理由同上
 #[tauri::command(async)]
-fn uninstall_hooks() -> Result<usize, String> {
-    collector::claude_code::uninstall_hooks().map_err(|e| {
-        log::error!("hooks 卸载失败：{e:#}");
+fn uninstall_hooks(agent: String) -> Result<usize, String> {
+    let result = match agent.as_str() {
+        "codex" => collector::codex::uninstall_hooks(),
+        "kimi-code" => collector::kimi::uninstall_hooks(),
+        "claude-code" => collector::claude_code::uninstall_hooks(),
+        other => Err(anyhow::anyhow!("不支持的 Agent：{other}")),
+    };
+    result.map_err(|e| {
+        log::error!("[{agent}] hooks 卸载失败：{e:#}");
         e.to_string()
     })
 }

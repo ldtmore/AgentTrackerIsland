@@ -31,6 +31,14 @@ pub struct CollectOutput {
     pub titles: Vec<(String, String)>,
 }
 
+impl CollectOutput {
+    /// 链式填充 rows（cost_snapshots/titles 保持默认空——Codex/Kimi 采集用）
+    pub fn with_rows(mut self, rows: Vec<UsageRow>) -> Self {
+        self.rows = rows;
+        self
+    }
+}
+
 /// 一条 cost-state 累计快照：某会话某模型的官方总账累计（含 assistant 与后台调用）
 #[derive(Debug, Clone)]
 pub struct CostSnapshot {
@@ -74,8 +82,10 @@ pub trait AgentAdapter: Send + Sync {
 }
 
 pub mod claude_code;
+pub mod codex;
 pub mod engine;
 pub mod hook_events;
+pub mod kimi;
 pub mod zcode;
 
 /// 由模型名推断供应商（启发式，小而够用）

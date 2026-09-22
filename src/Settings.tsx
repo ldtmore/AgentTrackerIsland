@@ -14,7 +14,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
-import { AGENT_COLORS, AGENT_DEFS } from "./shared/types";
+import { AGENT_COLORS, AGENT_DEFS, HOOKS_AGENTS } from "./shared/types";
 import { asThemeMode, useTheme, type ThemeMode } from "./shared/theme";
 import {
   ISLAND_OPACITY_DEFAULT,
@@ -102,14 +102,28 @@ function Row({
   );
 }
 
-/** 滑动开关：状态由开/关位置表达，标题文案保持固定 */
-function Switch({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+/** 滑动开关：状态由开/关位置表达，标题文案保持固定；small 为行内小号变体（Agent 行精确开关），disabled 用于 busy/前置条件不满足 */
+function Switch({
+  checked,
+  onChange,
+  disabled,
+  title,
+  small,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+  title?: string;
+  small?: boolean;
+}) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
-      className={`st-switch${checked ? " st-switch-on" : ""}`}
+      className={`st-switch${small ? " st-switch-sm" : ""}${checked ? " st-switch-on" : ""}`}
+      disabled={disabled}
+      title={title}
       onClick={() => onChange(!checked)}
     >
       <span className="st-switch-thumb" />
@@ -193,8 +207,9 @@ export default function Settings() {
   const [thresholdError, setThresholdError] = useState("");
   // 数据保留周期（未设置时后端按 1 年清理，前端默认值与之对齐）
   const [cleanupDays, setCleanupDays] = useState(CLEANUP_DEFAULT_DAYS);
-  const [hooksOn, setHooksOn] = useState(false);
-  const [hookBusy, setHookBusy] = useState(false); // 注入/卸载进行中，防连点
+  // hooks 安装状态（M2-6/7 多 Agent：agent id → 是否已注入；三家各自独立）
+  const [hooksOn, setHooksOn] = useState<Record<string, boolean>>({});
+  const [hookBusy, setHookBusy] = useState<Record<string, boolean>>({}); // 各家注入/卸载进行中，防连点
   // 开发者模式（缺省=关；开启后 Rust 端即时切到 Debug 级日志，免重启）
   const [devMode, setDevMode] = useState(false);
   const [autoStart, setAutoStart] = useState(false);
@@ -270,7 +285,7 @@ export default function Settings() {
             /* 解析失败用默认色 */
           }
         }
-        setHooksOn(await invoke("hooks_status"));
+        await refreshHooksStatus();
         setAutoStart(await invoke("autostart_get"));
       } catch {
         /* 加载失败保持默认值 */
@@ -446,20 +461,37 @@ export default function Settings() {
     if (e.key === "Enter") (e.target as HTMLInputElement).blur();
   };
 
-  /** hooks 注入/卸载：本地文件操作，带 busy 态防连点 */
-  const toggleHooks = async () => {
-    setHookBusy(true);
+  /** hooks 注入/卸载（M2-6/7 起按 Agent 独立装卸）：本地文件操作，busy 态记录到各家防连点 */
+  const toggleHooks = async (agent: string) => {
+    setHookBusy((prev) => ({ ...prev, [agent]: true }));
     try {
-      if (hooksOn) await invoke("uninstall_hooks");
-      else await invoke("install_hooks");
-      const on = await invoke<boolean>("hooks_status");
-      setHooksOn(on);
-      showToast(on ? "已注入 hooks：实时精确状态已启用" : "已卸载 hooks：回到启发式状态", "ok");
+      if (hooksOn[agent]) await invoke("uninstall_hooks", { agent });
+      else await invoke("install_hooks", { agent });
+      const on = await invoke<boolean>("hooks_status", { agent });
+      setHooksOn((prev) => ({ ...prev, [agent]: on }));
+      showToast(
+        on ? "已注入 hooks：实时精确状态已启用" : "已卸载 hooks：回到启发式状态",
+        "ok",
+      );
     } catch (e) {
       showToast(`操作失败：${e}`, "error");
     } finally {
-      setHookBusy(false);
+      setHookBusy((prev) => ({ ...prev, [agent]: false }));
     }
+  };
+
+  /** 逐家查询 hooks 安装状态（并行；单家失败不影响其他家显示） */
+  const refreshHooksStatus = async () => {
+    const results = await Promise.all(
+      HOOKS_AGENTS.map(async (agent) => {
+        try {
+          return [agent, await invoke<boolean>("hooks_status", { agent })] as const;
+        } catch {
+          return [agent, false] as const;
+        }
+      }),
+    );
+    setHooksOn(Object.fromEntries(results));
   };
 
   /** 开机自启：先切换 UI 再落命令，失败回滚并提示 */
@@ -551,10 +583,18 @@ export default function Settings() {
         </Row>
       </Section>
 
-      <Section title="Agent 监控" desc="勾选才采集与展示，颜色用于岛分块与徽标">
+      <Section
+        title="Agent 监控"
+        desc="勾选才采集与展示；「精确」开关注入 hooks 增强档（实时上报状态）；颜色用于岛分块与徽标"
+      >
         <div className="st-agents">
           {AGENT_DEFS.map((a) => {
             const checked = agents.includes(a.id);
+            // 精确状态开关（M2-6/7 行级整合）：仅支持 hooks 的三家有；
+            // 未勾选（不监控谈不上精确）或装卸进行中时禁用
+            const hasHooks = HOOKS_AGENTS.includes(a.id);
+            const hooksOnFor = hooksOn[a.id] ?? false;
+            const hooksBusyFor = hookBusy[a.id] ?? false;
             return (
               <div key={a.id} className="st-agent">
                 <label className="st-agent-check">
@@ -566,6 +606,24 @@ export default function Settings() {
                   {a.label}
                   {!a.implemented && <span className="st-agent-todo">（适配器开发中）</span>}
                 </label>
+                {hasHooks && (
+                  <label
+                    className={`st-agent-hooks${checked ? "" : " st-agent-hooks-off"}`}
+                    title={
+                      checked
+                        ? "注入 hooks：Agent 实时上报状态（工作中/等待输入）；未注入时按进程启发式推断，约 90 秒精度。装卸均自动备份配置文件"
+                        : "先勾选启用该 Agent 监控，再注入 hooks"
+                    }
+                  >
+                    <span className="st-agent-hooks-label">精确</span>
+                    <Switch
+                      checked={hooksOnFor}
+                      disabled={!checked || hooksBusyFor}
+                      small
+                      onChange={() => toggleHooks(a.id)}
+                    />
+                  </label>
+                )}
                 <input
                   type="color"
                   className="st-agent-color"
@@ -679,7 +737,7 @@ export default function Settings() {
         </Row>
       </Section>
 
-      <Section title="数据与维护" desc="历史数据清理与 Claude Code 状态接入">
+      <Section title="数据与维护" desc="历史数据清理与程序日志">
         <Row title="统计数据保留时长" desc="应用启动时按周期清理历史用量 / 快照 / 事件">
           <select
             className="st-input st-input-sm"
@@ -696,15 +754,6 @@ export default function Settings() {
               </option>
             ))}
           </select>
-        </Row>
-        <Row
-          title="Claude Code 精确状态"
-          badge={<Badge on={hooksOn} text={hooksOn ? "已启用" : "未启用"} />}
-          desc="启用：hooks 实时上报（工作中 / 等待输入） / 未启用：按进程启发式推断，约 90 秒精度。注入 / 卸载均自动备份 settings.json"
-        >
-          <button type="button" className="st-btn" disabled={hookBusy} onClick={toggleHooks}>
-            {hookBusy ? "处理中…" : hooksOn ? "卸载还原" : "注入 hooks"}
-          </button>
         </Row>
         <Row
           title="开发者模式"

@@ -52,8 +52,8 @@
 |------|-------|------------------------------|-------------|---------|---------|
 | 🅰 已接 | Claude Code | `~\.claude\projects\**\*.jsonl` | hooks 7 事件 + statusline + OTel | 转录 usage + cost-state | 已运行 |
 | 🅰 已接 | ZCode | `~\.zcode\cli\{db\db.sqlite, log\zcode-日期.jsonl, rollout\model-io-sess_*.jsonl}` | 无（自有工具，可加 hooks） | sqlite model_usage | 已运行（P0 补日志活动信号） |
-| 🅱 富 | **Codex** | `~\.codex\sessions\YYYY\MM\DD\rollout-{ISO时间戳}-{UUID}.jsonl` | **hooks 12 事件与 CC 几乎同名**（多 PermissionRequest/PreCompact/PostCompact/SubagentStart/SubagentStop/Interrupt）；hooks 是一等配置实体（源码定位 `codex-rs/config/src/hook_config.rs` + `hooks/src/schema.rs`，支持 hooks JSON 与 config 文件两种载体，具体格式 P1 装机核实）；legacy notify（agent-turn-complete）；OTel | rollout 行内 token 记录（字段名接入时核实） | FileTail + HookBridge |
-| 🅱 富 | **Kimi Code** | `~\.kimi\sessions\<work-dir-hash>\<sid>\{context.jsonl, wire.jsonl, state.json}` | **hooks 13 事件**（CC 同名 + PostToolUseFailure/StopFailure/Notification），stdin JSON，TOML 配置（`[[hooks]]`）；存储位置受 `KIMI_SHARE_DIR` 环境变量影响 | wire/context 行内 | FileTail + HookBridge |
+| 🅱 富 | **Codex** | `~\.codex\sessions\YYYY\MM\DD\rollout-{ISO时间戳}-{UUID}.jsonl`（CODEX_HOME 可重定向；**2026-09-23 源码核实**，详 01-RESEARCH §11.1） | **hooks 12 事件与 CC 几乎同名**（多 PermissionRequest/PreCompact/PostCompact/SubagentStart/SubagentStop/Interrupt）；载体=config.toml `[hooks]` 段（`[[hooks.<Event>]]`→MatcherGroup→handler，deny_unknown_fields）+ hooks.json 双载体（源码核实）；legacy notify（agent-turn-complete，JSON 走末位 argv）；OTel | `token_usage_record` 行 `response_id` 幂等（snake_case TokenUsage；⚠️ cached 是 input 子集，已按互斥口径拆分）；`event_msg→token_count` 退路 | FileTail + HookBridge ✅ M2-6 |
+| 🅱 富 | **Kimi Code** | `~\.kimi-code\sessions\<wd_key>\<sid>\{state.json, agents\<agentId>\wire.jsonl}`（**2026-09-23 源码核实，纠正本表旧版记录**：主线是 TS 的 kimi-code，旧 Python kimi-cli 已归档；KIMI_CODE_HOME 重定向，旧 KIMI_SHARE_DIR 已不生效；详 01-RESEARCH §11.2） | **hooks 20 事件**（CC 同名超集 + TurnStarted/PermissionRequest/PostToolUseFailure/StopFailure/Interrupt/SessionHeartbeat 等），stdin JSON，TOML 顶层 `[[hooks]]`（仅 event/matcher/command/timeout 四字段） | wire.jsonl `usage.record` 行（camelCase 四字段 inputOther/output/inputCacheRead/inputCacheCreation；行无官方 id → 内容指纹幂等；⚠️ usageScope 语义装机核实） | FileTail + HookBridge ✅ M2-7 |
 | 🅱 富 | **OpenCode** | 本地 storage（逐实体 JSON 文件） | **官方 HTTP 服务 + `/event` SSE 全局事件流**（`opencode serve`）——14 家唯一官方 push API | 会话记录内 | LocalHttp（首选）或 FileTail（退路） |
 | 🅱 富 | **MiMo Code**（小米） | **OpenCode 内核二次开发**（核心包即 `packages/opencode/`）；项目配置目录 `.mimocode`，兼容读取 `~\.claude` 命令；全局数据目录装机核实 | 沿用 OpenCode 能力（serve/SSE 待装机核实）；另有 plugin 体系（`packages/plugin/`） | 同 OpenCode（storage JSON） | LocalHttp 或 FileTail（与 OpenCode 共用引擎，**同源复用**） |
 | 🅲 中 | **Gemini CLI** | `~\.gemini\tmp\<project-hash>\chats\`（会话）+ 同目录 `logs.json` + `checkpoint-*.json` | **无 hooks**；OTel（`settings.json`：`otlpEndpoint` 默认 `localhost:4317`，或 **`outfile` 遥测直接落文件**——优先采用，免端口） | OTel metrics 含 token | FileTail + OtelSink(outfile) |
@@ -196,7 +196,7 @@
 | Claude Code | ✅ hooks/启发式 | ✅ Notification | ✅ 限流消息/最近错误 | ✅ | 现状全量 |
 | ZCode | ✅ 日志活动信号（P0 补强后） | ❌ 无信号源 | ✅ model_usage.error_type | ✅ | sqlite 档现状 |
 | Codex | ✅ hooks | ✅ **PermissionRequest**（hooks 独有事件） | ⚠️ 有限——无通知类 hook，依赖 rollout 内错误痕迹（装机核实） | ✅ | hooks 12 事件 |
-| Kimi Code | ✅ hooks | ✅ Notification | ✅ **StopFailure/PostToolUseFailure**（信号最精确） | ✅ | hooks 13 事件 |
+| Kimi Code | ✅ hooks | ✅ Notification | ✅ **StopFailure/PostToolUseFailure**（信号最精确） | ✅ | hooks 20 事件（新版 kimi-code，2026-09-23 核实） |
 | OpenCode | ✅ SSE/启发式 | ⚠️ SSE 权限类事件装机核实 | ⚠️ 同上 | ✅ | push API |
 | Gemini / Qwen | ✅ 启发式/OTel | ❌ 无 hooks | ⚠️ OTel metrics 待查 | ✅ | 文件+OTel |
 | OpenClaw/Hermes/Copilot | ✅ 启发式 | ❌ | ⚠️ 各家库内错误字段装机核实 | ✅ | sqlite 档 |

@@ -32,10 +32,17 @@ pub struct HookEvent {
     pub message: Option<String>,
 }
 
-/// 事件文件默认路径：%LOCALAPPDATA%\AgentTrackerIsland\events\claude-code.jsonl
-pub fn events_file_path() -> Option<PathBuf> {
+/// 事件根目录：%LOCALAPPDATA%\AgentTrackerIsland\events
+/// （每家 Agent 一个事件文件，互不干扰——04-EXPANSION §2.3.3）
+pub fn events_dir() -> Option<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA")?;
-    Some(PathBuf::from(local).join("AgentTrackerIsland").join("events").join("claude-code.jsonl"))
+    Some(PathBuf::from(local).join("AgentTrackerIsland").join("events"))
+}
+
+/// 事件文件路径（按 Agent 隔离）：%LOCALAPPDATA%\AgentTrackerIsland\events\<agent>.jsonl。
+/// claude-code 的文件名与多 Agent 化之前一致，历史事件文件自然沿用（零迁移）
+pub fn events_file_path(agent: &str) -> Option<PathBuf> {
+    Some(events_dir()?.join(format!("{agent}.jsonl")))
 }
 
 /// 增量读取：返回（新事件， 新偏移）。

@@ -706,17 +706,26 @@ body,
   color: var(--accent);
 }
 
-/* 筛选菜单：内联展开块（不做浮层——面板滚动容器 overflow 会裁剪绝对定位，
-   内联块随内容生长零裁剪风险）；max-height 内部滚动，14+ 家可扩展；
-   入场淡入+微移：把「卡片被下推」变成有意的展开动画 */
+/* 筛选菜单：portal 浮层（挂 body + fixed 定位，坐标由 Panel 两段式测量给定，
+   不受会话区滚动容器 overflow 裁剪、也不推挤下方卡片布局——M2-UX-1 交互细化四）；
+   玻璃配方实面板一档 + 投影：盖住下方卡片清晰可读，深浅主题随变量自适应；
+   宽 190px 右缘对齐触发器；max-height 内部滚动，14+ 家可扩展；
+   入场淡入+微移（定位完成才播，隐藏测量阶段置 none） */
 .history-menu {
-  margin: 2px 10px 4px;
+  position: fixed;
+  width: 190px;
   padding: 4px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: linear-gradient(
+    180deg,
+    rgba(var(--panel-rgb), calc(var(--panel-alpha) + 0.18)),
+    rgba(var(--panel-rgb), calc(var(--panel-alpha) + 0.10))
+  );
+  border: 1px solid var(--border-strong);
   border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
   max-height: 264px;
   overflow-y: auto;
+  z-index: 9000; /* 高于面板内容，低于 Tip 气泡（9999） */
   animation: history-menu-in 0.14s ease;
 }
 

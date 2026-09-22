@@ -14,15 +14,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::collector::claude_code::ClaudeCodeAdapter;
+use crate::collector::codex::CodexAdapter;
 use crate::collector::engine::{HotSignal, ProcessMatch};
 use crate::collector::hook_events;
+use crate::collector::kimi::KimiCodeAdapter;
 use crate::collector::zcode::ZcodeAdapter;
 use crate::collector::{AgentAdapter, provider_from_model};
 use crate::store::UsageRow;
 use crate::provider::glm::GlmProvider;
 use crate::provider::ProviderAdapter;
 use crate::state::{
-    aggregate, compute_state, ERROR_FRESH_MS, IslandState, SessionSignals, SessionState,
+    aggregate, compute_state, is_failure_event, ERROR_FRESH_MS, IslandState, SessionSignals,
+    SessionState,
 };
 use crate::store::Store;
 
@@ -96,8 +99,9 @@ pub struct Aggregator {
     /// Agent 适配器注册表（审查 3.6）：新增 Agent = 实现 trait 后在此登记，
     /// 采集主循环不出现 per-agent if-else
     adapters: Vec<Box<dyn AgentAdapter>>,
-    /// hook 事件文件的消费偏移（持久化于 app_settings）
-    hook_offset: u64,
+    /// hook 事件文件的消费偏移（M2-6/7 多 Agent 泛化）：agent id → 偏移；
+    /// 持久化于 app_settings 键 `hook_events_offset:<agent>`
+    hook_offsets: HashMap<String, u64>,
     /// 上次额度刷新成功时间
     last_quota_fetch: i64,
     glm: Option<GlmProvider>,
@@ -123,9 +127,10 @@ pub struct Aggregator {
 impl Aggregator {
     pub fn new(store: Arc<Store>) -> Self {
         // hook 事件消费偏移键（M2-3 per-agent 化）：新键 hook_events_offset:<agent>；
-        // 旧单键 hook_events_offset 首启迁移划归 claude-code（当前唯一有 hooks 的 Agent）
+        // 旧单键 hook_events_offset 首启迁移划归 claude-code（历史唯一有 hooks 的 Agent）。
+        // M2-6/7 起按适配器逐家初始化（Codex/Kimi 无历史键即从 0 起）
         const HOOK_OFFSET_PREFIX: &str = "hook_events_offset";
-        let hook_offset = {
+        let claude_offset = {
             let key = format!("{HOOK_OFFSET_PREFIX}:claude-code");
             match store.get_setting(&key) {
                 Some(v) => v.parse().unwrap_or(0),
@@ -139,6 +144,7 @@ impl Aggregator {
                 },
             }
         };
+        let hook_offsets: HashMap<String, u64> = HashMap::from([("claude-code".into(), claude_offset)]);
         // GLM 凭据优先级：应用设置（token 非空才生效）> 环境变量 > claude-menu
         // suppliers.json；设置页"留空则继续沿用"= token 为空时回落自动发现链
         let (glm, source) = match (
@@ -174,8 +180,13 @@ impl Aggregator {
         }
         Self {
             store,
-            adapters: vec![Box::new(ZcodeAdapter::new()), Box::new(ClaudeCodeAdapter::new())],
-            hook_offset,
+            adapters: vec![
+                Box::new(ZcodeAdapter::new()),
+                Box::new(ClaudeCodeAdapter::new()),
+                Box::new(CodexAdapter::new()),
+                Box::new(KimiCodeAdapter::new()),
+            ],
+            hook_offsets,
             last_quota_fetch: 0,
             glm,
             sys: sysinfo::System::new(),
@@ -205,21 +216,30 @@ impl Aggregator {
         let mut hook_events_consumed = 0usize;
         let mut collect_stats: Vec<String> = vec![];
 
-        // ① hooks 事件增量（claude-code；文件不存在=未安装增强档，静默降级）
-        let mut last_hooks: HashMap<String, (String, i64, Option<String>)> = HashMap::new();
-        if let Some(path) = hook_events::events_file_path() {
-            match hook_events::read_events(&path, self.hook_offset) {
+        // ① hooks 事件增量（M2-6/7 多 Agent 泛化）：按适配器逐家消费各自事件文件
+        //    （events/<agent>.jsonl，桥脚本按 agent 落盘）；文件不存在 = 该家未安装
+        //    增强档，静默降级（红线④）。结构：（agent id → （原始会话 id → 最新事件））
+        let mut last_hooks: HashMap<&'static str, HashMap<String, (String, i64, Option<String>)>> =
+            HashMap::new();
+        for ad in &self.adapters {
+            let agent_id = ad.id();
+            let Some(path) = hook_events::events_file_path(agent_id) else { continue };
+            let offset = self.hook_offsets.get(agent_id).copied().unwrap_or(0);
+            match hook_events::read_events(&path, offset) {
                 Ok((events, new_off)) => {
-                    hook_events_consumed = events.len();
-                    // 偏移无推进时免写库（R9，每 10s 一次的空写没必要）；M2-3 起键带 agent 命名空间
-                    if new_off != self.hook_offset {
-                        self.store.set_setting("hook_events_offset:claude-code", &new_off.to_string());
+                    hook_events_consumed += events.len();
+                    // 偏移无推进时免写库（R9，每 10s 一次的空写没必要）
+                    if new_off != offset {
+                        self.store.set_setting(
+                            &format!("hook_events_offset:{agent_id}"),
+                            &new_off.to_string(),
+                        );
                     }
-                    self.hook_offset = new_off;
+                    self.hook_offsets.insert(agent_id.to_string(), new_off);
                     for ev in events {
                         // 原始事件审计落库 status_events(02-DESIGN §3，R7)
                         self.store.insert_status_event(
-                            "claude-code",
+                            agent_id,
                             Some(ev.session_id.as_str()),
                             &ev.hook,
                             &serde_json::to_string(&ev).unwrap_or_default(),
@@ -227,6 +247,8 @@ impl Aggregator {
                         );
                         // 每会话保留最新事件
                         last_hooks
+                            .entry(agent_id)
+                            .or_default()
                             .entry(ev.session_id.clone())
                             .and_modify(|e| {
                                 if ev.ts >= e.1 {
@@ -238,18 +260,18 @@ impl Aggregator {
                     // 轮转：仅当本轮已全部消费且超限；归零后回写偏移（审查 1.2）
                     let rotated = hook_events::rotate_if_large(
                         &path,
-                        self.hook_offset,
+                        new_off,
                         hook_events::MAX_EVENT_FILE_BYTES,
                     );
-                    if rotated != self.hook_offset {
-                        self.hook_offset = rotated;
-                        self.store.set_setting("hook_events_offset:claude-code", "0");
+                    if rotated != new_off {
+                        self.hook_offsets.insert(agent_id.to_string(), rotated);
+                        self.store.set_setting(&format!("hook_events_offset:{agent_id}"), "0");
                     }
                 }
                 Err(e) => {
-                    log::warn!("hook 事件文件读取失败（本轮按无事件处理）：{e:#}");
+                    log::warn!("[{agent_id}] hook 事件文件读取失败（本轮按无事件处理）：{e:#}");
                     had_error = true;
-                    last_err = Some(format!("hook 事件读取失败：{e:#}"));
+                    last_err = Some(format!("[{agent_id}] hook 事件读取失败：{e:#}"));
                 }
             }
         }
@@ -420,11 +442,18 @@ impl Aggregator {
                     process_alive: self.probe_cache.get(agent_id).copied().unwrap_or(false),
                     ..Default::default()
                 };
-                // hooks 信号仅 claude-code 有（事件里 session_id 为原始 id）
-                if agent_id == "claude-code" {
-                    if let Some((hook, ts, msg)) = last_hooks.get(raw_sid) {
+                // hooks 信号（M2-6/7 泛化）：装了 hooks 的家均可消费（事件里
+                // session_id 为原始会话 id，与自库命名空间 id 的后缀对齐）
+                if let Some(per_agent) = last_hooks.get(agent_id) {
+                    if let Some((hook, ts, msg)) = per_agent.get(raw_sid) {
                         sig.last_hook = Some((hook.clone(), *ts));
                         sig.notification_message = msg.clone();
+                        // 失败类事件（Kimi StopFailure/PostToolUseFailure）喂数据给
+                        // 状态机 error 判定（04-EXPANSION §2.7 新信号位，比通知
+                        // 文本启发式精确；CC 等无失败事件的家恒 None 不受影响）
+                        if is_failure_event(hook) {
+                            sig.last_failure = Some((*ts, hook.clone()));
+                        }
                     }
                 }
                 if let Some(&ts) = recent_errors.get(info.id.as_str()) {

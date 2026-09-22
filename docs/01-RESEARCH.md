@@ -155,6 +155,52 @@
 
 ---
 
+## 11. 各 Agent 数据面勘察（P1，2026-09-23，M2-6/M2-7 开工前源码级核实）
+
+> 本节承接 04-EXPANSION §1.2 矩阵的逐家细节；核实方式 = GitHub 源码逐文件核对
+> （serde 属性级别）；**所有者本机未装两家 CLI，真实样本对账（test_real_codex /
+> test_real_kimi，均 #[ignore]）留待装机后补跑**，解析器对未知格式宽松忽略。
+
+### 11.1 Codex CLI（openai/codex，main 分支，2026-09-23 核实）
+
+| 项 | 结论（源码确证） |
+|---|---|
+| 会话文件 | `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<UTC时间戳>-<thread_uuid>.jsonl`（本地日期分区）；revert 变体 `..._<rollout_id>` 归并回主 thread；归档在 `archived_sessions/`（不采） |
+| CODEX_HOME | 重定向目标必须已存在且是目录（官方 find_codex_home 同规则），异常回落 `~/.codex` |
+| 行 envelope | `{timestamp: RFC3339 毫秒字符串, ordinal?, type, payload}`（item flatten 平铺）；type 12 种（session_meta/response_item/event_msg/turn_context/token_usage_record/compacted 等） |
+| TokenUsage | snake_case 无 rename：`input_tokens / cached_input_tokens / cache_write_input_tokens / output_tokens / reasoning_output_tokens / total_tokens` |
+| 用量双通路 | ①`token_usage_record` 行（新版权威记账，payload.response_id 作幂等键）②`event_msg→token_count`（info.last_token_usage 单次量 / total_token_usage 会话累计）。**适配器取①为主，①缺失退②，同轮增量互斥防双计**；total_token_usage 是累计快照绝不可按行入库 |
+| ⚠️ 缓存口径 | OpenAI 的 cached_input_tokens 是 input_tokens **子集**（Anthropic 的 cache_read 是独立分项）——按四项互斥口径拆分 `input -= cached`（装机对账验证点） |
+| 模型名 | session_meta **无 model**；随 `turn_context` 行逐 turn 更新（per-file 缓存承接增量） |
+| hooks | config.toml 顶层 `hooks` 段（HooksToml：12 事件 flatten + state）；形状 `[[hooks.<Event>]]`（Vec<MatcherGroup>）→ `[[hooks.<Event>.hooks]]`（type="command"/command/commandWindows/timeout 秒/async/statusMessage，deny_unknown_fields）；事件 PascalCase ×12（CC 同名超集 + PermissionRequest/PreCompact/PostCompact/SubagentStart/SubagentStop/Interrupt）；stdin snake_case JSON（session_id/hook_event_name/cwd/transcript_path）；命令经 cmd /C 执行；user 级 = `$CODEX_HOME/config.toml` |
+| 进程 | npm 包 `@openai/codex` 只是启动器，常驻进程为原生 `codex.exe`（win32-x64 平台包） |
+| legacy notify | config.toml `notify = [argv...]`，kebab-case JSON 追加为最后一个 argv（`agent-turn-complete`）；hooks 的降级补充，暂不接入 |
+
+### 11.2 Kimi Code CLI（MoonshotAI/kimi-code v2.0.2，2026-09-23 核实）
+
+> ⚠️ **纠正 04-EXPANSION §1.2 的旧版记录**：原记录（`~/.kimi/sessions/<md5>/…/
+> {context.jsonl, wire.jsonl, state.json}`、13 hooks、KIMI_SHARE_DIR）是旧版
+> Python kimi-cli（已归档）的格式。当前主线为 TypeScript 的 **kimi-code**，按新版实现。
+
+| 项 | 结论（源码+文档确证） |
+|---|---|
+| 数据根 | `~/.kimi-code`（`KIMI_CODE_HOME` 重定向整个数据根；旧 KIMI_SHARE_DIR 新版运行时完全不读，仅旧数据迁移时参考） |
+| 会话结构 | `sessions/<wd_key>/<sid>/{state.json, agents/<agentId>/wire.jsonl, tasks/…}`；wd_key = `wd_<basename_slug>_<sha256前12>`（不可逆，cwd 明文在 state.json 与 `session_index.jsonl`）；context.jsonl 已不存在 |
+| 用量行 | wire.jsonl `type:"usage.record"`（durable 落盘），字段 **camelCase**：`{agentId, model, usage:{inputOther, output, inputCacheRead, inputCacheCreation}, usageScope?('session'\|'turn'), time: Unix 毫秒}`；**无 reasoning 独立字段** |
+| 幂等键 | wire 行无官方 id → source_id = 内容指纹 `kr:{agentId}:{time}:{四项}`（同毫秒同用量碰撞合并，误差可忽略）；⚠️ usageScope 语义未实证（若 session 行是累计快照会双计）——按「每请求一行」假设实施，装机对账验证 |
+| 会话元数据 | state.json（SessionMeta v2，camelCase）：title/titleKind/createdAt/updatedAt(ms)/cwd/archived/lastTurnReason 等；无 running/idle 显式状态字段 |
+| hooks | `~/.kimi-code/config.toml` 顶层 `[[hooks]]` 数组，**仅允许 event/matcher/command/timeout 四字段**（多余字段配置加载失败）；事件 ×20（CC 同名 + TurnStarted/UserPromptQueued/PermissionRequest/PermissionResult/PostToolUseFailure/StopFailure/Interrupt/TaskStarted/PreCompact/PostCompact/SessionHeartbeat）；stdin snake_case（hook_event_name/session_id/session_title/client_type/cwd，无 transcript_path）；失败类事件（StopFailure/PostToolUseFailure）带 errorType/errorMessage——桥脚本归入 message 透传 |
+| 进程 | 官方安装 = `kimi.exe`（Node SEA 单二进制，无需 Node）；npm 安装 = node shim（命令行含 `@moonshot-ai/kimi-code`）；`kimi-legacy` 是旧版改名，进程匹配排除 |
+| 状态精度 | working：TurnStarted/PreToolUse 等 hooks + wire 追加 mtime；waiting：PermissionRequest/Notification；**error：StopFailure/PostToolUseFailure（信号最精确，喂 sig.last_failure）**；SessionHeartbeat 每 60s（仅配置了才有） |
+
+### 11.3 待装机核实清单（装机后回写本节并跑 test_real_*）
+
+1. Codex：token_usage_record 与 token_count 在真实 rollout 的实际共存形态（互斥策略验证）；缓存拆分口径与官方统计对账；hooks 注入后真实触发链
+2. Kimi：usageScope='session' 行是单请求还是累计快照（双计验证）；wire 行 time 缺失率；hooks 20 事件真实 stdin 样本；`~/.kimi-code` 实际落盘结构核对
+3. 两家可达状态集按 §2.7（04-EXPANSION）回写
+
+---
+
 ## 调研日志
 
 | 日期 | 进展 |
@@ -163,3 +209,4 @@
 | 2026-09-16 | §4 轮子盘点完成（全🟢）；§5 确认 Tauri 无现成岛→自建；§6 hooks 改实测策略；§7 GLM 响应格式源码级确认——**阶段 2 调研收官** |
 | 2026-09-17 | §9 报表页选型完成（echarts@6.1.0 直用+按需引入+lazy 分割），M1-1 开工 |
 | 2026-09-17 | §10 Codex CLI 源码级勘察完成（sessions/*.jsonl + TokenCount 事件），适配器待实测后开发，M1-3 第一步收官 |
+| 2026-09-23 | §11 新增（P1 勘察节）：Codex/Kimi Code 两家源码级核实完成（serde 属性级）；Kimi 记录纠正为新版 kimi-code；M2-6/M2-7 按此实施，真实对账留待装机 |

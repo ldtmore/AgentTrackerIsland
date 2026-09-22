@@ -75,9 +75,13 @@ export const AGENT_DEFS: {
 }[] = [
   { id: "zcode", label: "ZCode", color: "#34d399", implemented: true },
   { id: "claude-code", label: "Claude Code", color: "#f59e0b", implemented: true },
-  { id: "codex", label: "Codex", color: "#38bdf8", implemented: false },
+  { id: "codex", label: "Codex", color: "#38bdf8", implemented: true },
+  { id: "kimi-code", label: "Kimi Code", color: "#f472b6", implemented: true },
   { id: "claude-desktop", label: "Claude Desktop", color: "#a78bfa", implemented: false },
 ];
+
+/** 支持 hooks 增强档的 Agent（与 Rust 侧 HOOKS_AGENTS 同源，设置页按此渲染行内精确开关） */
+export const HOOKS_AGENTS = ["claude-code", "codex", "kimi-code"];
 
 /** Agent 默认身份色（id → 颜色；可被用户自定义覆盖） */
 export const AGENT_COLORS: Record<string, string> = Object.fromEntries(

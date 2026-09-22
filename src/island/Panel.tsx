@@ -10,6 +10,7 @@
  * 点击会话卡片的跳转行为由 T10 接入
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import type { IslandSnapshot, SessionView, Thresholds } from "../shared/types";
@@ -35,7 +36,8 @@ const HISTORY_LIMIT = 20;
 /** Agent 筛选菜单：悬浮展开延迟（毫秒）。0=立即跟手；实测误触多可调 100 做意图检测 */
 const FILTER_OPEN_DELAY_MS = 0;
 /** Agent 筛选菜单：移出触发器+菜单整体区域后的宽限时长（毫秒）——
- *  覆盖「从触发器斜移进下方菜单」的路径，防止闪关（业界 hover 菜单标准做法） */
+ *  覆盖「从触发器斜移进下方菜单」的路径，防止闪关（业界 hover 菜单标准做法）。
+ *  菜单宽度在 CSS（.history-menu width:190px）定义，定位按实测尺寸计算 */
 const FILTER_CLOSE_DELAY_MS = 200;
 
 /** 打开会话窗口（溢出链接与标题行入口共用） */
@@ -129,15 +131,18 @@ function SessionCard({ s }: { s: SessionView }) {
 /** 历史区（P2 折叠 + M2-UX-1 筛选器）：折叠头**点击**展开/收起历史卡片；
  *  标题行右端 Agent 筛选器为**纯 hover 交互**且**仅展开态可见**（渐进披露：
  *  收起态筛选是死路——看不见列表的筛选没有意义；收起时自动清除筛选）——
- *  悬浮即展开菜单、点选即应用并关闭、移出触发器+菜单整体区域宽限 200ms
- *  自动收起（Esc 兜底）。与岛「悬停展开面板」的 hover 基因一致；列表纯
- *  最近活动降序（分流后活跃优先无语义）；筛选是临时意图：面板收起随
- *  组件卸载自动复位 */
+ *  悬浮即展开菜单、点选即应用并关闭、移出触发器+菜单区域宽限 200ms 自动
+ *  收起（Esc 兜底）。菜单是 **portal 浮层**（挂 body + fixed 定位，照抄 Tip
+ *  范式：不受会话区滚动容器 overflow 裁剪、不推挤下方卡片布局；会话区滚动
+ *  即自动关闭）。与岛「悬停展开面板」的 hover 基因一致；列表纯最近活动
+ *  降序（分流后活跃优先无语义）；筛选是临时意图：面板收起随组件卸载自动复位 */
 function HistorySection({ all }: { all: SessionView[] }) {
   const [open, setOpen] = useState(false); // 默认折叠（用户拍板）：点击折叠头切换
   const [filterOpen, setFilterOpen] = useState(false); // 筛选菜单展开（hover 驱动）
   const [agent, setAgent] = useState<string | null>(null); // 当前筛选（null=全部）
-  const blockRef = useRef<HTMLDivElement>(null); // 行+菜单整体：hover 桥接判定域
+  const filterBtnRef = useRef<HTMLButtonElement>(null); // 触发器：浮层定位锚点
+  const menuRef = useRef<HTMLDivElement>(null); // 浮层：两段式测量的真实尺寸来源
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null); // null=待测量（隐藏渲染）
   const closeTimer = useRef<number | undefined>(undefined);
   const openTimer = useRef<number | undefined>(undefined);
 
@@ -159,16 +164,55 @@ function HistorySection({ all }: { all: SessionView[] }) {
     };
   }, []);
 
+  // 浮层特有：会话区滚动即关闭（内容滚走菜单不能钉在原地错位）。
+  // capture 监听捕获内部滚动；菜单自身滚动（14+ 家超 max-height）除外
+  useEffect(() => {
+    if (!filterOpen) return;
+    const onScroll = (e: Event) => {
+      if (menuRef.current?.contains(e.target as Node)) return;
+      setFilterOpen(false);
+    };
+    document.addEventListener("scroll", onScroll, true);
+    return () => document.removeEventListener("scroll", onScroll, true);
+  }, [filterOpen]);
+
+  // 浮层两段式定位（照抄 Tip 模式）：先隐藏渲染量真实高度，再定最终坐标——
+  // 右缘对齐触发器右缘、纵向贴下缘 +4px，下方放不下向上翻转，整体夹进视口
+  useLayoutEffect(() => {
+    if (!filterOpen || menuPos) return;
+    const btn = filterBtnRef.current;
+    const menu = menuRef.current;
+    if (!btn || !menu) return;
+    const br = btn.getBoundingClientRect();
+    const mr = menu.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const x = Math.min(Math.max(br.right - mr.width, 8), vw - mr.width - 8);
+    const belowY = br.bottom + 4;
+    const aboveY = br.top - 4 - mr.height;
+    const y =
+      belowY + mr.height <= vh - 8
+        ? belowY
+        : aboveY >= 8
+          ? aboveY
+          : Math.min(belowY, vh - mr.height - 8);
+    setMenuPos({ x, y });
+  }, [filterOpen, menuPos]);
+
   /** 取消在途关闭计时：宽限期内回到区域内（含移入菜单）即撤销关闭 */
   const cancelClose = () => window.clearTimeout(closeTimer.current);
 
-  /** 悬浮触发器：取消在途关闭计时，按延迟常量展开菜单 */
+  /** 悬浮触发器：取消在途关闭计时，按延迟常量展开菜单（每次展开重新测量定位） */
   const openMenu = () => {
     cancelClose();
     window.clearTimeout(openTimer.current);
     if (FILTER_OPEN_DELAY_MS > 0) {
-      openTimer.current = window.setTimeout(() => setFilterOpen(true), FILTER_OPEN_DELAY_MS);
+      openTimer.current = window.setTimeout(() => {
+        setMenuPos(null);
+        setFilterOpen(true);
+      }, FILTER_OPEN_DELAY_MS);
     } else {
+      setMenuPos(null);
       setFilterOpen(true);
     }
   };
@@ -208,7 +252,7 @@ function HistorySection({ all }: { all: SessionView[] }) {
     setOpen(!open);
   };
   return (
-    <div ref={blockRef} onMouseEnter={cancelClose} onMouseLeave={armClose}>
+    <div>
       <div className={`history-row${filterOpen ? " menu-open" : ""}`}>
         <Tip
           content={
@@ -232,37 +276,52 @@ function HistorySection({ all }: { all: SessionView[] }) {
         </Tip>
         {open && (
           <button
+            ref={filterBtnRef}
             className={`history-filter${agent ? " active" : ""}${filterOpen ? " open" : ""}`}
             aria-expanded={filterOpen}
             aria-label="按 Agent 筛选已结束会话"
             onMouseEnter={openMenu}
+            onMouseLeave={armClose}
           >
             {agent ? AGENT_BADGE[agent] ?? agentLabel(agent) : "全部"} ▾
           </button>
         )}
       </div>
-      {filterOpen && (
-        <div className="history-menu">
-          <button
-            className={`history-menu-row${agent === null ? " on" : ""}`}
-            onClick={() => pick(null)}
+      {filterOpen &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="history-menu"
+            style={{
+              left: menuPos?.x ?? -9999,
+              top: menuPos?.y ?? -9999,
+              visibility: menuPos ? "visible" : "hidden",
+              animation: menuPos ? undefined : "none", // 定位完成前不播入场动画（防动画在隐藏阶段播完）
+            }}
+            onMouseEnter={cancelClose}
+            onMouseLeave={armClose}
           >
-            <span className="history-menu-name">全部 Agent</span>
-            <span className="history-menu-count">{all.length}</span>
-          </button>
-          {menuAgents.map(([id, n]) => (
             <button
-              key={id}
-              className={`history-menu-row${agent === id ? " on" : ""}`}
-              onClick={() => pick(id)}
+              className={`history-menu-row${agent === null ? " on" : ""}`}
+              onClick={() => pick(null)}
             >
-              <span className="history-menu-dot" style={{ background: agentColor(id) }} />
-              <span className="history-menu-name">{agentLabel(id)}</span>
-              <span className="history-menu-count">{n}</span>
+              <span className="history-menu-name">全部 Agent</span>
+              <span className="history-menu-count">{all.length}</span>
             </button>
-          ))}
-        </div>
-      )}
+            {menuAgents.map(([id, n]) => (
+              <button
+                key={id}
+                className={`history-menu-row${agent === id ? " on" : ""}`}
+                onClick={() => pick(id)}
+              >
+                <span className="history-menu-dot" style={{ background: agentColor(id) }} />
+                <span className="history-menu-name">{agentLabel(id)}</span>
+                <span className="history-menu-count">{n}</span>
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
       {open && (
         <>
           {list.slice(0, HISTORY_LIMIT).map((s) => (

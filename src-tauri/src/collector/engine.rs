@@ -315,6 +315,15 @@ pub fn mtime_ms(p: &Path) -> i64 {
         .unwrap_or(0)
 }
 
+/// ISO 8601（如 2026-09-16T06:46:19.159Z）→ Unix 毫秒；解析失败返回 None。
+/// Claude Code 与 Codex 的转录行时间戳同为 RFC3339 风格字符串（自
+/// claude_code.rs 提升为公共助手，M2-6 两家复用）
+pub fn iso_to_ms(s: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.timestamp_millis())
+}
+
 /// 进程匹配规则（进程枚举的适配器私有知识，M2-4 声明化）：
 /// 进程名或命令行任一关键词命中，且命令行不含任一排除词，即判该 Agent 存活
 #[derive(Debug, Clone)]

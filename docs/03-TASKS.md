@@ -537,9 +537,90 @@
   （渐进披露——收起态筛选是「看不见列表的筛选」，选完还得再展开=死路）；
   配套规则：**收起历史区自动清除筛选并关闭菜单**（防「看得到计数却改不了
   筛选」的反向死角），与「面板收起自动复位」哲学一致
+- **交互细化三（2026-09-23 所有者反馈）**：①菜单固定窄宽 190px 靠右对齐触发器
+  正下方；②保活域从「整行+菜单」缩小为「触发器+菜单」——指针移到折叠头区域
+  即由 200ms 宽限自动收起菜单，不再常开
+- **交互细化四（2026-09-23 所有者反馈）**：筛选菜单从内联块改为 **portal 浮层**
+  （挂 body + fixed 定位 + 两段式测量翻转，照抄 Tip 范式）——展开不再推挤下方
+  历史卡片（内联块占位是内联方案的固有代价，实测体验差）；玻璃配方实面板一档
+  ＋投影保证盖住卡片可读；会话区滚动即自动关闭（capture 监听，菜单自身滚动除外）；
+  触发器/菜单 200ms 宽限桥接、点选即关等既有交互全部不变
 - 验收：✅ 面板历史区展开后 CC/ZC 混排可见（不再 ZC 钉尾）；✅ 筛选仅 CC
   命中 45；✅ 「查看更多」跳转后会话窗口已预选 CC；✅ 活跃区不受筛选影响；
   ✅ hover 展开/宽限关闭/选完即关手感符合交互规格（2026-09-23 所有者验收）
+
+### M2-6 Codex 适配器 ✅（2026-09-23 代码完成，真实对账待装机）
+
+- 内容：`collector/codex.rs` 新建——`$CODEX_HOME/sessions/**/rollout-*.jsonl` tail
+  （GlobWalker 日期分区+revert 变体归并 thread id）；用量取 `token_usage_record`
+  行（response_id 幂等键），`event_msg→token_count` 作旧文件退路（last_token_usage），
+  **同轮增量两通路互斥防双计**；cached_input_tokens 按 OpenAI 子集语义拆分
+  （input -= cached，对齐四项互斥口径）；model 随 turn_context 行逐 turn 更新
+  （per-file 缓存）；CODEX_HOME 重定向（校验目录存在）；hooks 注入器走 config.toml
+  `[hooks]` 段（toml_edit 保格式+备份+原子写，8 事件，形状按 hook_config.rs serde
+  源码核对）；桥脚本 argv 参数化（一份脚本服务多家）
+- 调研先行（所有者拍板不装机）：openai/codex 源码级核实（serde 属性级），
+  详 01-RESEARCH §11.1
+- 验收：✅ 合成样本单测（解析/互斥/幂等/水位/日期分区/thread id 提取/hooks 装卸往返）；
+  ✅ cargo test 全绿；⬜ `test_real_codex` 对账留待装机（已写好标 #[ignore]）
+
+### M2-7 Kimi Code 适配器 ✅（2026-09-23 代码完成，真实对账待装机）
+
+- 内容：`collector/kimi.rs` 新建——**纠正总纲旧版记录后按新版 kimi-code 实施**
+  （TS v2.0.2；`~/.kimi-code`，KIMI_CODE_HOME 重定向）：`sessions/**/wire.jsonl`
+  tail、`usage.record` 行解析（camelCase 四字段，无 reasoning 独立字段）、
+  行无官方 id → 内容指纹幂等（kr:{agentId}:{time}:{四项}）、state.json 取
+  title/cwd/updatedAt（mtime 缓存）、hooks TOML 注入器（顶层 `[[hooks]]`，
+  12 事件含 StopFailure/PostToolUseFailure）；
+  **状态机扩展**：SessionSignals 新增 last_failure 信号位（失败事件窗口内直接
+  判 error，04-EXPANSION §2.7 唯一数据结构扩展）；事件映射表补差异集
+  （PermissionRequest→Waiting、Interrupt→Idle、TurnStarted/TaskStarted→Working、
+  失败类→Error，未知事件退启发式不变）
+- 调研先行：MoonshotAI/kimi-code 源码+文档核实，详 01-RESEARCH §11.2
+  （含旧版/新版纠正记录）
+- 验收：✅ 合成样本单测（wire 解析/指纹稳定/水位/state.json 元数据/hooks 装卸往返/
+  last_failure→Error 映射）；✅ cargo test 全绿；⬜ `test_real_kimi` 对账留待装机
+  （usageScope 双计验证点已登记 §11.3）
+
+### M2-8 前端登记 ✅（2026-09-23 代码完成；行级整合为所有者拍板二轮改版）
+
+- 内容：`AGENT_DEFS` 新增 codex（#38bdf8，原预占色转正）/kimi-code（#f472b6），
+  两家 implemented: true（岛/面板/会话中心/报表/筛选器全链路数据驱动自动适应）；
+  lib.rs hooks_status/install/uninstall 命令带 agent 参数（不支持的 agent 报错）
+- **二轮改版（所有者拍板「行级整合」，方案 A）**：hooks 三行卡片从「数据与维护」
+  迁出——每个 Agent 勾选行内嵌「精确」小号开关（仅 HOOKS_AGENTS 三家有），
+  行结构 = 勾选+名称+精确开关+色块（check 列 flex:1 使开关+色块右对齐成组，
+  各行垂直对齐）；开关状态常显（注入与否一眼可见），busy/未勾选时禁用置灰
+  （不监控谈不上精确），完整说明收进 hover title；Switch 组件增 small/disabled
+  变体；「数据与维护」恢复纯运维两行（保留时长+开发者模式）
+  - 否决方案 B（章节内分区：视觉两张皮、14 家时章节冗长）与
+    方案 C（渐进披露展开次行：hooks 状态不可见+层级深，过度设计）
+- 涉及：src/shared/types.ts、src/Settings.tsx、src/settings.css、src-tauri/src/lib.rs
+- 验收：✅ npm run build 通过；✅ 浏览器渲染自查（vite #settings 直开：
+  800px/520px 双宽度下三行开关右对齐不挤压，DOM 结构/数据与维护区均符合设计）；
+  ⬜ 设置页行内开关装卸实机操作留待所有者 dev 验收
+
+### M2-9 索引复查 ✅（2026-09-23 完成，结论：无需迁移）
+
+- 内容：EXPLAIN QUERY PLAN 复查（真实库 4607 行）：会话中心聚合内层
+  `SCAN u USING INDEX idx_usage_session`（GROUP BY 走覆盖索引，非表扫描）；
+  today_usage/趋势/分布走 idx_usage_ts 范围查找；详情抽屉流水走 idx_usage_session——
+  重查询均无全表扫描，现有索引已覆盖，**不产出 0005 迁移**；
+  会话量×14 后同构查询计划不变（索引与 agent 维度无关）
+- 验收：✅ EXPLAIN 五类重查询全部命中索引（记录于本条目，无 schema 变更）
+
+### M2-P1 hooks 链路多 Agent 泛化 ✅（2026-09-23 代码完成，M2-6/7 硬前提）
+
+- 内容（04-EXPANSION §2.3.3 落地）：hook_events.rs 事件文件 per-agent 化
+  （`events/<agent>.jsonl`，claude-code 文件名不变零迁移）；桥脚本 argv 接
+  agent 标识（缺省 claude-code 向后兼容旧注入；Kimi errorMessage 归入 message
+  透传）；hook 消费循环按适配器逐家执行（偏移键 `hook_events_offset:<agent>`
+  M2-3 已就绪，逐家轮转）；`sig.last_hook` 去掉 claude-code 硬编码改通用喂给；
+  新增依赖 toml_edit（Kimi/Codex config.toml 保格式注入）
+- 涉及：src-tauri/hook-bridge/hook-bridge.js、collector/{hook_events,claude_code,
+  codex,kimi,mod}.rs、state/{mod,service}.rs、Cargo.toml
+- 验收：✅ CC hooks 装卸往返回归通过；✅ 桥脚本缺省参数向后兼容；
+  ✅ cargo test 49/49 全绿；⬜ Codex/Kimi hooks 实机触发链留待装机
 
 ## 待议区（看板外想法，不擅自实施）
 

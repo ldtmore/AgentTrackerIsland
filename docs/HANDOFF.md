@@ -3,19 +3,26 @@
 > 任何 Agent/人接手前必读（顺序：AGENTS.md → WORKFLOW.md → 本文件 → 03-TASKS.md）
 > 维护规则：每完成一个任务或结束一次会话，更新本文件
 
-## 当前状态（2026-09-22 更新）
+## 当前状态（2026-09-23 更新）
 
 - **阶段**：阶段 3（实施）进行中，M0 已收尾；M1 进行中（剩余 M1-2/M1-3 等所有者输入）。
   进度：T0–T9、T11 ✅；T10 🟨（ZCode ✅，WT 搁置）；T12 ⏸；T13 ⬜；
   M1-1/M1-3/M1-4/M1-6/M1-7/M1-8/M1-10/M1-11 完成，M1-5 划出不做；M1-9 已提交（8cb5248，看板已补记）。
-  **M2 P0 已开工（2026-09-22，总纲 [04-EXPANSION](04-EXPANSION.md)）**——
-  M2-1 调度器骨架（唤醒环＋自适应档位 1s/5s/10s＋快轮线程＋广播签名去重）、
-  M2-2 ZCode 活动信号升级（rollout per-session mtime＋当日日志快轮）、
-  M2-3 引擎抽取迁移（新建 collector/engine.rs：GlobWalker/IncrementalFileReader/
-  ScanBudget；CC/ZCode 迁移为声明+解析；hook 偏移键 per-agent 化自动迁移）、
-  M2-4 进程匹配声明化——代码完成，单测 40/40 全绿，真实数据只读对账通过
-  （aggregator 87 会话/ZCode state=Working/CC 分项对账正常），
-  **待所有者 dev 验收**（手感 ≤2s 变绿/空闲 CPU<1%/无快照风暴）。
+  M2 P0 五项 ✅（M2-1~4 + M2-UX-1，2026-09-23 所有者验收）。
+  **M2 P1 已提交（8c24ba2，2026-09-23，Codex＋Kimi Code 双适配器，所有者 dev 验收通过）**——
+  所有者拍板**不装机**，先行网络源码级调研（serde 属性级，详 01-RESEARCH §11）后实施：
+  ①M2-6 Codex 适配器（rollout tail＋token_usage_record/互斥退路＋缓存拆分＋hooks 注入器）；
+  ②M2-7 Kimi Code 适配器（**纠正总纲旧版记录**：按新版 kimi-code 实施，
+  wire.jsonl usage.record＋内容指纹幂等＋state.json 元数据＋TOML hooks 注入器；
+  状态机新增 last_failure 信号位＋Codex/Kimi 差异事件映射）；
+  ③hooks 链路多 Agent 泛化（事件文件 per-agent＋桥脚本 argv 参数化＋消费循环泛化）；
+  ④M2-8 前端登记（AGENT_DEFS 两家转正；hooks 开关**行级整合**——所有者拍板
+  方案 A：Agent 勾选行内嵌「精确」小号开关，与勾选/颜色同行管完单 Agent 配置，
+  「数据与维护」恢复纯运维两行；lib.rs 命令带参）；
+  ⑤M2-9 索引复查（EXPLAIN 全命中，无需 0005）。
+  验证：cargo test 49/49 全绿（新增两家合成样本单测＋hooks 装卸往返）、npm build 通过。
+  **待所有者 dev 验收**；`test_real_codex`/`test_real_kimi` 已写好标 #[ignore]，
+  **装机后补跑**（对账＋usageScope 双计验证＋hooks 实机触发链，清单 01-RESEARCH §11.3）。
   M2-5（notify 评估）按量化判据观察一周后定。
   **M2-UX-1 面板历史区可见性治理（2026-09-23 代码完成待 dev 验收）**——
   所有者报障「面板漏了 CC 会话」：后端扫描正常（42 ZC＋45 CC=87），根因是

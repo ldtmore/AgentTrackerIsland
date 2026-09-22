@@ -83,8 +83,18 @@ pub struct SessionSignals {
     pub last_activity_at: Option<i64>,
     /// ZCode model_usage 的最近 error_type（毫秒， 字符串）
     pub recent_error: Option<(i64, String)>,
+    /// 失败类 hook 事件的最近时间（M2-7 新信号位：Kimi StopFailure/
+    /// PostToolUseFailure 等）——比通知文本启发式精确，窗口内直接判 error；
+    /// String 存原始事件名留痕（04-EXPANSION §2.7）
+    pub last_failure: Option<(i64, String)>,
     /// Agent 进程是否在运行（L0 兜底）
     pub process_alive: bool,
+}
+
+/// 失败类 hook 事件名（M2-7）：这些事件经 service 层喂入 SessionSignals.last_failure，
+/// 走 error 判定通道；与 compute_state 映射表中的失败分支保持同一清单
+pub fn is_failure_event(hook: &str) -> bool {
+    matches!(hook, "StopFailure" | "PostToolUseFailure")
 }
 
 /// 计算单会话状态（纯函数；now 为当前毫秒）
@@ -105,6 +115,12 @@ pub fn compute_state(sig: &SessionSignals, now: i64) -> SessionState {
             return SessionState::Error;
         }
     }
+    // 失败类 hook 事件（Kimi StopFailure/PostToolUseFailure）：窗口内直接标红
+    if let Some((ts, _)) = sig.last_failure {
+        if now - ts <= ERROR_FRESH_MS {
+            return SessionState::Error;
+        }
+    }
 
     let last_signal = sig
         .last_hook
@@ -114,18 +130,31 @@ pub fn compute_state(sig: &SessionSignals, now: i64) -> SessionState {
         .unwrap_or(i64::MIN);
     let fresh = now.saturating_sub(last_signal) <= WATCHDOG_MS;
 
-    // ② hooks 事件驱动（事件在有效窗口内才可信）
+    // ② hooks 事件驱动（事件在有效窗口内才可信）。
+    //    事件名映射跨 Agent 通用（04-EXPANSION §2.3.3）：CC/Codex/Kimi 的直通集
+    //    同名同语义；差异集按语义就近映射，未知事件退启发式（红线④渐进降级）
     if let Some((hook, ts)) = &sig.last_hook {
         if now - ts <= HOOK_FRESH_MS {
             return match hook.as_str() {
                 "Notification" => SessionState::Waiting,
-                "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "SessionStart" => {
-                    if fresh { SessionState::Working } else { SessionState::Idle } // 看门狗
+                // 干活类事件：回合/工具/子代理进行中，新鲜即 working（看门狗兜底）
+                "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "SessionStart"
+                | "TurnStarted" | "TaskStarted" | "SubagentStart" => {
+                    if fresh { SessionState::Working } else { SessionState::Idle }
                 }
-                "Stop" => SessionState::Idle,
+                // 回合结束类：Stop（CC/Codex/Kimi）与子代理收尾
+                "Stop" | "SubagentStop" => SessionState::Idle,
                 "SessionEnd" => SessionState::Offline,
+                // —— Codex/Kimi 差异集 ——
+                // 等待批准（Codex 独有事件；Kimi 同名）：等用户决策，琥珀
+                "PermissionRequest" => SessionState::Waiting,
+                // 中断（Codex/Kimi）：用户主动打断回合，按回合结束处理（留痕原始名）
+                "Interrupt" => SessionState::Idle,
+                // 失败类（Kimi）：事件本身即失败信号（error 兜底判定还有 last_failure 通道）
+                "StopFailure" | "PostToolUseFailure" => SessionState::Error,
                 _ => {
-                    // 未知事件名：退到启发式
+                    // 未知/忽略类事件（PreCompact/SessionHeartbeat/UserPromptQueued 等）：
+                    // 不驱动状态，退启发式
                     heuristic(sig, now)
                 }
             };
