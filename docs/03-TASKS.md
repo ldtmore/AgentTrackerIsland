@@ -730,6 +730,33 @@
   ✅ cargo check 零告警；⬜ `test_real_otel_gemini`/`test_real_otel_qwen` 对账留待
   装机（清单 01-RESEARCH §13.3 增补项）；✅ 所有者 dev 验收通过（2026-09-23）
 
+### M2-13 OpenClaw 适配器（多 agent 多库 SQLite 档＋zstd 事件流）✅（2026-09-24 代码完成，装机对账留待）
+
+- 背景（源码级调研先行，详 01-RESEARCH §14；所有者拍板本机不装机）：openclaw/openclaw
+  main 分支核实——**三处总纲外新知**：①每 agentId 一库（`<root>/agents/<id>/agent/`
+  openclaw-agent.sqlite，多库枚举，session_key 跨库同名须带 agentId 消歧）；
+  ②转录事件 ≥1KB 转 zstd 是常态（event_zstd BLOB＋event_utf8_bytes 长度校验，
+  Rust 侧引入 zstd crate 解压）；③回合式一次性落盘（无 CC 式流式中间快照，
+  usage 即每回合增量，无双计面）。状态根四候选：OPENCLAW_STATE_DIR（须存在）>
+  ~/.openclaw > ~/.openclaw-<profile> > ~/.clawdbot 旧目录
+- 内容：`collector/openclaw.rs` 新建——多库发现（agents 目录枚举，incognito 哨兵
+  保留名自然排除）＋scan（session_nodes 90 天窗口，display_name>label 标题链，
+  LEFT JOIN 当前窗口取模型列）＋collect（窗口 updated_at>水位-60s 选活跃窗＋
+  per-window seq 水位只解析新增，重启全窗重放靠 `oc:{agent}:{key}:{seq}` 幂等键
+  兜底，官方 assistantIdempotencyKey 存在时 `ocm:{key}` 优先）＋usage 四桶直取
+  （input 落盘前已归一不含缓存，免拆分）＋stopReason=error→错误行（弱信号）/
+  aborted→用户打断不计（对齐 ZCode cancelled）＋DirScan 快轮（每状态根一个，
+  agents 限深 2 枚举 *.sqlite）＋进程匹配声明化；错误行 api_error 精确载体留待装机
+- 涉及：src-tauri/src/collector/{openclaw,mod}.rs、state/service.rs（注册＋OpenClaw
+  无 hooks 不入 HOOKS_AGENTS）、Cargo.toml（zstd 0.13）、src/shared/types.ts（
+  AGENT_DEFS +1 openclaw 龙虾红 #ef4444）、docs/01-RESEARCH（§14 勘察节＋日志）
+- 验证：✅ cargo test **78/78** 全绿（新增 7：状态根解析四候选/多库发现排除哨兵/
+  scan 标题回退链与模型 join/端到端采集含 zstd 解压与官方幂等键/seq 水位增量续读/
+  解码校验含长度不符防坏解压/解析边界含浮点取整与 provider 推断）；
+  ✅ npm run build 通过（echarts chunk 警告为 M1-1 已知现状）；
+  ⬜ `test_real_openclaw` 对账留待装机（清单 01-RESEARCH §14.3 八项）
+- 依赖：无（独立适配器批次）
+
 ## 待议区（看板外想法，不擅自实施）
 
 - **零用量会话不在会话窗口显示**（M1-10 有意边界；**2026-09-21 所有者拍板收尾**）：

@@ -87,6 +87,7 @@ pub mod engine;
 pub mod gemini;
 pub mod hook_events;
 pub mod kimi;
+pub mod openclaw;
 pub mod opencode;
 pub mod otel;
 pub mod qwen;

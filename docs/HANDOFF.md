@@ -3,14 +3,26 @@
 > 任何 Agent/人接手前必读（顺序：AGENTS.md → WORKFLOW.md → 本文件 → 03-TASKS.md）
 > 维护规则：每完成一个任务或结束一次会话，更新本文件
 
-## 当前状态（2026-09-23 更新）
+## 当前状态（2026-09-24 更新）
 
-- **阶段**：阶段 3（实施）进行中，M0 已收尾；M1 进行中（剩余 M1-2/M1-3 等所有者输入）。
-  进度：T0–T9、T11 ✅；T10 🟨（ZCode ✅，WT 搁置）；T12 ⏸；T13 ⬜；
-  M1-1/M1-3/M1-4/M1-6/M1-7/M1-8/M1-10/M1-11/M1-12 完成，M1-5 划出不做；M1-9 已提交。
-  M2 P0 五项 ✅；**M2 P1 已提交（ef38be9，Codex＋Kimi Code 双适配器）**；
-  **M2-10a 已提交（bd5e705，OpenCode＋MiMo Code 同族适配器，验收通过）**；
-  **M2-11 已提交（1423fe6，Gemini CLI＋Qwen Code 双适配器＋hooks 注入，所有者验收通过）**。
+- **阶段**：阶段 3（实施）进行中，M0 已收尾；M1 全部完成（M1-2 搁置等所有者清单）；
+  **M2 P0/P1/P2 全部完成＋M2-13 已提交代码（2026-09-24，OpenClaw 适配器，装机对账留待）**——
+  源码级调研先行（openclaw/openclaw main 逐文件，详 01-RESEARCH §14，所有者拍板
+  本机不装机）**三处总纲外新知**：①每 agentId 一库（`<root>/agents/<id>/agent/`，
+  多库枚举＋session_key 跨库同名须带 agentId 消歧，incognito 哨兵保留名排除）；
+  ②转录事件 ≥1KB 转 zstd 是常态（event_zstd BLOB＋utf8_bytes 长度校验，Rust 侧
+  新增 zstd 0.13 解压）；③回合式一次性落盘（无 CC 式流式中间快照，usage 即每回合
+  增量，无双计面）。实施：`collector/openclaw.rs`——状态根四候选（OPENCLAW_STATE_DIR
+  校验存在＞~/.openclaw＞~/.openclaw-<profile>＞~/.clawdbot 旧目录）＋scan
+  （session_nodes 90 天，display_name>label 标题链，窗口 join 取模型列）＋collect
+  （窗口 updated_at>水位-60s 选活跃窗＋per-window seq 水位只解析新增，重启全窗
+  重放靠 `oc:{agent}:{key}:{seq}` 幂等键兜底，官方 assistantIdempotencyKey 优先
+  `ocm:{key}`）＋usage 四桶直取（input 落盘前已归一不含缓存，免拆分）＋
+  stopReason=error→错误行（弱信号）/aborted→用户打断不计（对齐 ZCode cancelled）＋
+  DirScan 快轮＋进程匹配声明化；前端 AGENT_DEFS +1（openclaw 龙虾红 #ef4444）。
+  验证：cargo test **78/78** 全绿（新增 7）＋npm build 通过；
+  `test_real_openclaw` 标 #[ignore] **装机后补跑**（清单 01-RESEARCH §14.3 八项）。
+  ⏳ 待所有者验收后提交。
   **M2-12 OtelSink 骨架代码完成（2026-09-23，待所有者验收）**——outfile 字段级源码
   调研先行（详 01-RESEARCH §13.4）新确证五点：**Gemini api_response 双记录须按
   event.name 过滤防双计**、Qwen 单记录顶层展开（无 tool 有 response_id/ttft_ms）、
@@ -198,22 +210,22 @@
 
 ## 下一步
 
-1. **M1 进行中**（2026-09-17 启动，顺序：P1 报表→P2 搁置优化→P3 Codex→P4 双主题
-   →P5 形态视进度；Anthropic 额度移 M2，NSIS 归发布）：**M1-6 贴边自动隐藏已验收通过**；
-   **M1-4 双主题已验收通过（2026-09-17）**——主题切换/跟随系统/三窗口即时生效实屏确认；
-   审查后补一处优化：浅色下贴边标签 hover 由提亮改为压暗（白色提亮被钳制无反馈）；
-   审查已知取舍：启动首帧闪变（浅色系统，几十毫秒，不做）、暗色两处 α 微差（不可感知）、
-   ECharts tooltip 白底（M1-1 现状）；
-   **M1-1 报表页代码完成+实例内自验通过**，待所有者过目；**M1-3 Codex 源码级调研完成**
-   （01-RESEARCH §10，适配器待真实样本）；M1-2 等所有者搁置问题清单；
-   **M1-12 数据准确性治理代码完成，待所有者 dev 验收**（验收要点见 03-TASKS M1-12：
-   首启迁移重建、今日数字变小属预期、对账方法见 01-RESEARCH §8.1）
-2. 所有者 M0 遗留 dev 补验（可并入日常使用）：①A1 waiting 场景（hooks+CC 等待输入→岛琥珀）；
-   ②拖拽记忆；③托盘各菜单项；④上轮修复项抽查（GLM 凭据留空保存→重启→额度仍正常）
-3. **M1 收尾态势**：M1-2 等所有者搁置问题清单、M1-3 适配器等真实 Codex 样本，
-   均为所有者输入驱动；期间可随时做：T10 WT 跳转调试（待议区有线索）、
-   待议区技术债（CC 启发式 mtime 噪声等，见待议区 M1-12 遗留观察）；T13 Dogfood 周
-   依赖 T12；**构建打包仅当所有者明确宣布"正式对外发布"时执行**（WORKFLOW 构建打包纪律）
+1. **M2 推进中**（总纲 04-EXPANSION，P0/P1/P2 已全部完成）：
+   **最新＝M2-13 OpenClaw 适配器代码完成（2026-09-24，待所有者验收后提交）**，
+   装机对账 `test_real_openclaw` 留 §14.3 清单；M2-5 notify 评估按量化判据
+   观察一周后回写结论（P0 上线日 2026-09-23 起算）
+2. **装机驱动批次**（所有者装机后集中补跑，清单已备）：`test_real_*` 共 9 项
+   （Codex/Kimi/OpenCode/MiMo/Gemini/Qwen/OTel×2/OpenClaw，见 01-RESEARCH
+   §11.3/§12.3/§13.3/§14.3）＋hooks 实机触发链＋M2-10b SSE 增强档
+3. **P3 三家**（下一批开发任务，照 M2-13 模式源码调研先行）：M2-14 Hermes →
+   M2-15 Copilot CLI（SQLite 档，OpenClaw 多库模式可复用）；M2-16 WorkBuddy
+   勘察定档；逆向档 Cursor/Windsurf 押后
+4. 穿插项：T10 WT 跳转调试（待议区有线索）、CC 未装 hooks 的 mtime 假 working
+   噪声（M1-12 遗留观察）；T13 Dogfood 周依赖 T12；**构建打包仅当所有者明确
+   宣布"正式对外发布"时执行**（WORKFLOW 构建打包纪律）
+环境提示：cargo 带 RUSTUP_HOME/CARGO_HOME/PATH，外网走本机代理 127.0.0.1:6478，
+Bash 显式 cd 到项目目录；**dev 验收提示：Agent 会话曾出现托盘菜单误触（键盘事件），
+人工操作无此风险；启动前确认 agenttrackerisland.exe 无残留、1420 端口空闲**。
 环境提醒：cargo 带 RUSTUP_HOME/CARGO_HOME/PATH，外网走本机代理 127.0.0.1:6478，
 Bash 显式 cd 到项目目录；**dev 验收提示：Agent 会话曾出现托盘菜单误触（键盘事件），
 人工操作无此风险；启动前确认 agenttrackerisland.exe 无残留、1420 端口空闲**。

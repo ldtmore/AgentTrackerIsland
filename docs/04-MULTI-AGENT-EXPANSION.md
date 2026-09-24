@@ -58,7 +58,7 @@
 | 🅱 富 | **MiMo Code**（小米） | **OpenCode fork 确证**（基线=SQLite 化后、core 拆分前）；`~\.local\share\mimocode\mimocode.db`（**2026-09-23 源码核实，纠正旧记录**：重定向是 `MIMOCODE_HOME`，非 `.mimocode`/`MIMOCODE_CONFIG_DIR`）；session 表无聚合列，用量逐行取 message | 沿用 OpenCode 能力（`mimo serve`/SSE 同款，装机核实）；另有 plugin 体系 | message data JSON 平铺 `{modelID,providerID,cost,tokens{...}}`，`msg_` id 幂等 | **与 OpenCode 同一适配器参数化复用** ✅ M2-10a（差异仅 agent id/数据根/db 文件名）+ SSE 增强档 M2-10b |
 | 🅲 中 | **Gemini CLI** | `~\.gemini\tmp\<项目slug>\chats\session-*.jsonl`（**2026-09-23 源码核实，纠正本表旧版记录**：已 JSONL 化＋同 id 消息重 append＋$set/$rewindTo 控制行；目录名由 hash 改为 projects.json 注册表 slug；详 01-RESEARCH §13.1） | **有 hooks 11 事件 CC 式**（纠正「无 hooks」旧记录；settings.json `hooks` 键，无 async 同步执行）；OTel outfile 确证（pretty JSON 流需括号配平） | tokens 落盘 input=prompt 原值，**官方口径 input = prompt − cached**；error 消息行 | FileTail ✅ M2-11 + HookBridge ✅ M2-11（7 事件）+ **OtelSink ✅ M2-12**（outfile 骨架：api_error 行入库，token 行装机对账后定，详 01-RESEARCH §13.4） |
 | 🅲 中 | **Qwen Code**（千问） | `<runtime>\projects\<sanitizeCwd>\chats\<uuid>.jsonl` 纯追加消息树（**2026-09-23 源码核实，纠正「同 Gemini 同构」旧记录**：fork 基线 v0.8.2 自 v0.1 起停止同步，落盘已大幅分叉→独立适配器；`QWEN_HOME`+`QWEN_RUNTIME_DIR` 双重定向；官方观测 sidecar `chats/<sessionId>.runtime.json` 装机核实；详 01-RESEARCH §13.2） | **有 hooks 22 事件**（几乎全 CC 同名；async/shell 字段，timeout 秒） | usageMetadata 归一化后 cached ⊆ prompt 统一拆分；StopFailure.error 精确枚举 | FileTail ✅ M2-11 + HookBridge ✅ M2-11（10 事件）+ **OtelSink ✅ M2-12**（同上，单记录顶层展开形态，详 01-RESEARCH §13.4） |
-| 🅲 中 | **OpenClaw** | `~\.openclaw\agents\<agentId>\agent\openclaw-agent.sqlite`（session rows + append-only 转录树 + token counters；旧版 `sessions/*.json` 为遗留迁移源，不用管） | 无 CC 式 hooks（Gateway 有 HTTP 端点） | sqlite | SqliteTail |
+| 🅲 中 | **OpenClaw** | `~\.openclaw\agents\<agentId>\agent\openclaw-agent.sqlite`（**2026-09-24 源码核实，详 01-RESEARCH §14**：多 agent 多库须目录枚举；会话三层 session_nodes→session_windows→transcript_events，事件 ≥1KB 转 zstd 是常态须解压；usage 四桶 camelCase 落盘前已按「input 不含缓存」归一；状态根 OPENCLAW_STATE_DIR>~\.openclaw>~\.openclaw-<profile>>~\.clawdbot） | 无 CC 式 hooks（Gateway 有 HTTP 端点，LocalHttp 增强档暂不做） | 事件行 usage（回合式一次性落盘无双计面）；session_nodes.status 现成状态信号 | SqliteTail ✅ M2-13 |
 | 🅲 中 | **Hermes**（Nous Research） | `state.db`（SQLite，仓库根含 `hermes_state_guard/lockguard/errors` 专门守护模块，确认是核心持久层；具体路径装机核实）+ session-exports jsonl 能力；源码含 foreign_sessions（跨 Agent 会话读取） | 待核实 | sqlite | SqliteTail |
 | 🅲 中 | **Copilot CLI** | `~\.copilot\session-state\` 会话文件集 + 本地 SQLite session store（官方文档，`/chronicle` 的数据源，含成本数据） | 无公开 hooks | store 内 | FileTail + SqliteTail 双选 |
 | 🅳 穷 | **Cursor** | `state.vscdb`（SQLite，`~\.cursor`）——**社区逆向**（tokenuse、deja-vu registry、agent-tracker 等先例验证可行） | 无 | db 内 | SqliteTail（实验性） |
@@ -200,7 +200,8 @@
 | OpenCode | ✅ db mtime 启发式（10a）+ SSE | ⚠️ SSE 权限类事件装机核实（10b） | ✅ message 行 error 字段（10a 即有） | ✅ | SqliteTail 主通道 + push API 增强档 |
 | MiMo Code | ✅ 同 OpenCode（同族 10a） | ⚠️ 同上 | ✅ 同 OpenCode | ✅ | 同族参数化复用 |
 | Gemini / Qwen | ✅ 启发式＋hooks 干活类事件 | ✅ hooks（Gemini=Notification 权限确认；Qwen=PermissionRequest） | ✅ Gemini=转录 error 行；Qwen=StopFailure/PostToolUseFailure（精确枚举） | ✅ | 文件 tail＋hooks（2026-09-23 纠正「无 hooks」预想，详 01-RESEARCH §13） |
-| OpenClaw/Hermes/Copilot | ✅ 启发式 | ❌ | ⚠️ 各家库内错误字段装机核实 | ✅ | sqlite 档 |
+| OpenClaw | ✅ session_nodes.status（running/done/failed/killed/timeout，库内现成）＋启发式 | ❌ 无权限类信号源 | ✅ 有限——transcript stopReason=error 弱信号（精确载体装机核实 §14.3） | ✅ | sqlite 档（2026-09-24 M2-13 核实） |
+| Hermes/Copilot | ✅ 启发式 | ❌ | ⚠️ 各家库内错误字段装机核实 | ✅ | sqlite 档 |
 | Cursor/Windsurf | ⚠️ 弱启发式 | ❌ | ❌ | ✅ 进程探测 | 实验性档 |
 
 结论与约束：① waiting/error 的覆盖度是各家差异最大的维度，适配器交付时必须在 01-RESEARCH 勘察记录中写明本家可达状态集；② `SessionSignals` 需要为 Kimi 的 `StopFailure/PostToolUseFailure` 新增 `last_failure` 信号位（喂 error 判定，比通知文本启发式精确），这是状态机唯一的数据结构扩展，判定优先级逻辑不变。
@@ -262,7 +263,7 @@
 
 | 任务 | 内容 | 验收 |
 |------|------|------|
-| M2-13 OpenClaw | `openclaw-agent.sqlite` 水位采集（session rows 的 token counters + 转录树增量） | 对账 + 状态可用 |
+| M2-13 OpenClaw | `openclaw-agent.sqlite` 水位采集（session rows 的 token counters + 转录树增量）——**2026-09-24 源码调研后落地**：多 agent 多库枚举＋三层会话结构（session_nodes/windows/transcript_events）＋事件 zstd 解压（01-RESEARCH §14），合成样本 7 单测 | 对账 + 状态可用；`test_real_openclaw` 装机补跑（§14.3 八项清单） |
 | M2-14 Hermes | `state.db` 勘察（表结构装机核实）→ SqliteTail 接入 | 同上 |
 | M2-15 Copilot CLI | `~\.copilot\session-state\` 文件 + sqlite store 二选一（以实测信息密度定） | 同上 |
 

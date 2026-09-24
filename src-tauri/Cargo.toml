@@ -31,6 +31,8 @@ reqwest = { version = "0.13.5", default-features = false, features = ["blocking"
 sysinfo = "0.39.6"
 # TOML 保格式编辑（M2-6/7 hooks 注入器）：保留用户 config.toml 的注释与排版
 toml_edit = "0.23"
+# OpenClaw 转录事件压缩解压（M2-13）：≥1KB 的事件以 zstd 存 transcript_events.event_zstd
+zstd = "0.13"
 windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse"] }
 tauri-plugin-autostart = "2.5.1"
 tauri-plugin-dialog = "2.7.3"

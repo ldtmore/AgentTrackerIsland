@@ -19,6 +19,7 @@ use crate::collector::engine::{HotSignal, ProcessMatch};
 use crate::collector::gemini::GeminiAdapter;
 use crate::collector::hook_events;
 use crate::collector::kimi::KimiCodeAdapter;
+use crate::collector::openclaw::OpenClawAdapter;
 use crate::collector::opencode::OpenCodeFamilyAdapter;
 use crate::collector::qwen::QwenCodeAdapter;
 use crate::collector::zcode::ZcodeAdapter;
@@ -196,6 +197,8 @@ impl Aggregator {
                 // （调研推翻「同族参数化换根即用」预想，01-RESEARCH §13）
                 Box::new(GeminiAdapter::new()),
                 Box::new(QwenCodeAdapter::new()),
+                // OpenClaw（M2-13）：多 agent 多库（每 agentId 一库，目录枚举）
+                Box::new(OpenClawAdapter::new()),
             ],
             hook_offsets,
             last_quota_fetch: 0,

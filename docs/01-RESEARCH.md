@@ -362,6 +362,64 @@ IncrementalFileReader**——重读会重复产出）；截断半条停值起点
 
 ---
 
+## 14. 各 Agent 数据面勘察（P3，2026-09-24，M2-13 OpenClaw 开工前源码级核实）
+
+> 核实方式：openclaw/openclaw main 分支 GitHub 逐文件源码（state/config/sessions
+> 四域 schema、transcript 持久化器、状态目录解析器、用量归一化器）；所有者本机
+> 未装机，全部结论以源码为准，装机实测留 §14.3 清单。
+
+### 14.1 状态目录与多 agent 多库
+
+| 项 | 结论（源码出处） |
+|---|---|
+| 状态根解析 | `resolveStateDir`（config/state-dir.ts）：`OPENCLAW_STATE_DIR` env 非空即重定向（home 相对路径可用）> `~/.openclaw`（新版默认）> `~/.clawdbot`（更名前旧目录，**仅当新版目录不存在时回退**；两者并存时新版优先） |
+| 多 profile | `resolveProfileStateDir`（cli/profile-utils.ts:31-42）：命名 profile 的状态根是 `~/.openclaw-<小写名>` 后缀目录——枚举 `~/.openclaw*` 一并覆盖 |
+| 每 agent 一库 | `resolveOpenClawAgentSqlitePath`（state/openclaw-agent-db.paths.ts:45-67）：`<root>/agents/<agentId>/agent/openclaw-agent.sqlite`——**多 agent 多库**，与 OpenCode 单库不同，须目录枚举；自库会话 id 必须带 agentId 消歧（各库 session_key 同名，如 'main'） |
+| incognito 哨兵 | `incognito-openclaw-agent.sqlite` 同目录保留名（INCOGNITO_AGENT_SQLITE_BASENAME）：内存态进程哨兵，不匹配 `openclaw-agent.sqlite` 文件名自然排除 |
+| agentId 归一 | `normalizeAgentId`（routing/session-key.ts）——大小写归一等；适配器按目录名原样采即可 |
+| schema 版本 | `schema_meta` 表（schema_version/agent_id/app_version）——版本漂移观察点 |
+
+### 14.2 会话三层结构与用量事件面
+
+| 层 | 表/关键列 | 采集语义 |
+|---|---|---|
+| 逻辑会话 | `session_nodes`：session_key PK（跨代稳定）、current_session_id、entry_json（canonical 记录）、status（running/done/failed/killed/timeout，**现成状态信号**）、display_name/label（标题链）、created_at/updated_at/last_activity_at（毫秒；last_activity_at=最近完成回合）、project_id | scan 主表；标题 display_name>label；last_usage=last_activity_at 缺失回退 updated_at |
+| 转录代 | `session_windows`：session_id PK（reset/rollover/fork/rewind/switch/recovery/compaction 时**轮换**）、session_key FK、previous_session_id、model/model_provider 列、started_at/ended_at、status | 用量窗口选择面（updated_at 水位）；模型列可选（聊天通道场景多缺，回退用量流水回填） |
+| 事件流水 | `transcript_events`：(session_id,seq) 主键、event_json 明文 **或** event_zstd 压缩（互斥 CHECK）、event_utf8_bytes（解压后字节数校验）、created_at | collect 增量面；session_id 跨代轮换 → 按窗口 updated_at 选窗 + per-window seq 水位 |
+
+**zstd 压缩策略**（config/sessions/transcript-payload.ts）：事件明文 ≥1024 字节、压缩后节省 ≥max(64B,10%)、不含 `\u`/NUL、非 session header → 转 zstd（level 1）。**assistant 消息带正文通常超 1KB → 压缩是常态**，Rust 侧 `zstd` crate 解压是硬前提；event_utf8_bytes 用于解压长度校验（防坏解压污染用量）。
+
+**用量事件形状**（agents/command/transcript-persistence.ts `persistTextTurnTranscript`）——assistant 消息事件：
+
+```json
+{"type":"message","message":{"role":"assistant",
+  "assistantIdempotencyKey":"…",          // 可选，官方幂等键
+  "content":[{"type":"text","text":"…"}],
+  "api":"anthropic-messages","provider":"anthropic","model":"claude-opus-4-6",
+  "usage":{"input":120,"output":60,"cacheRead":30,"cacheWrite":10,
+           "total":220,"cost":{…},"contextUsage":{…}},
+  "stopReason":"stop|error|aborted","timestamp":1727…}}
+```
+
+- usage 四桶 camelCase，`resolveTranscriptUsage` 落盘前已归一（**input 不含缓存**，直取免拆分）；total 是上下文快照语义（SessionEntry.totalTokens 注释明示 excludes output），不采；
+- **回合式一次性落盘**（finalText 就绪才 append，无 CC 式流式中间快照）→ usage 即每回合增量，无双计面；
+- usage 缺失时 CLI 后端回退全零占位（CLITranscriptUnavailableUsage）——此类回合无统计价值，跳过；stopReason=error 且无 usage → 只作错误行入库（error_type 弱信号「回合失败」，精确错误载体装机核实）；stopReason=aborted 为用户打断，不计错误（对齐 ZCode cancelled_by_user 裁定）；
+- 事件类型 union（config/sessions/session-entry-codec.ts）：message/thinking_level_change/model_change/compaction/reset/branch_summary/custom/custom_message/label/session_info——只消费 `type=="message"`；header=`{"type":"session","id":…}` 跳过；
+- 进程：openclaw gateway 常驻 node 进程（端口 18789 为 docs 通行值，装机核实）；无 CC 式 hooks 文件协议（Gateway HTTP 端点属 LocalHttp 可选增强档，暂不做）。
+
+### 14.3 待装机核实清单（装机后回写本节并跑 test_real_openclaw）
+
+1. 落盘核对：`<root>/agents/*/agent/openclaw-agent.sqlite` 真实路径、库文件/-wal 布局（node:sqlite DatabaseSync 的 journal 模式）
+2. 用量对账：`openclaw status`/sessions 输出（SessionStatus 的 inputTokens/outputTokens/cacheRead/cacheWrite 四项）与自库分项比对
+3. `entry_json` 内 cwd/workspace 载体字段（当前 project_dir 采集为空，前端回退「未知项目」）
+4. stopReason=error 的精确错误载体（error 文本/error code 是否落 message）
+5. aborted 回合的 usage 语义（打断时是否有部分用量入账）
+6. 窗口轮换（compaction/reset）后 usage 跨代归并：usageFamilyKey/usageFamilySessionIds（SessionEntry）是否需要随行采纳
+7. gateway 进程名与端口（18789）实核；`OPENCLAW_STATE_DIR` 语义复核
+8. last_activity_at vs last_interaction_at 语义差（入口路径 last_interaction_at 的写入时机）
+
+---
+
 ## 调研日志
 
 | 日期 | 进展 |
@@ -374,3 +432,4 @@ IncrementalFileReader**——重读会重复产出）；截断半条停值起点
 | 2026-09-23 | §12 新增（P2 勘察节）：OpenCode/MiMo Code 源码级核实（Schema 字段级+drizzle 表列级）；**重大纠正——OpenCode 主存储已迁 SQLite**（总纲 JSON 记录过时），通道优先级反转为 SQLite 主+SSE 增强；M2-10a 按此实施 |
 | 2026-09-23 | §13 新增（P2 勘察节）：Gemini CLI/Qwen Code 两轮源码级核实（数据面+hooks 字段级）；**三处纠正总纲预想**——同族参数化不成立（fork 已分叉，独立双适配器）、Gemini 无 hooks 不成立（11 事件）、chats 已 JSONL 化（同 id 重 append）；token 口径裁定 cached ⊆ prompt；M2-11 按此实施（主通道+hooks 注入一并，所有者拍板扩大范围） |
 | 2026-09-23 | §13.4 新增（M2-12 开工前 outfile 字段级调研）：**Gemini 双记录须按 event.name 过滤防双计**、Qwen 单记录顶层展开、outfile JSON 仅 attributes 可枚举（时间取 event.timestamp）、启用需 enabled+outfile 双前提；OTLP receiver 仍留 backlog；M2-12 按此实施（token 行暂不入库防双计，所有者拍板） |
+| 2026-09-24 | §14 新增（P3 勘察节）：OpenClaw 源码级核实（schema 建表 SQL+转录持久化器+状态根解析器）；**三处总纲外新知**——①多 agent 多库（每 agentId 一库，session_key 跨库同名须带 agentId 消歧）、②事件 ≥1KB 转 zstd 是常态（Rust 侧必须解压+utf8_bytes 校验）、③回合式一次性落盘无双计面（usage 即每回合增量）；input 已归一免拆分；aborted 不计错误对齐 ZCode；M2-13 按此实施（合成样本 7 单测，装机对账留 §14.3） |
