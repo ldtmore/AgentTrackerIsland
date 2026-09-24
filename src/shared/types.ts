@@ -82,7 +82,7 @@ export const AGENT_DEFS: {
   { id: "qwen-code", label: "Qwen Code", color: "#a78bfa" },
   { id: "openclaw", label: "OpenClaw", color: "#ef4444" },
   { id: "hermes", label: "Hermes", color: "#eab308" },
-  { id: "copilot", label: "Copilot CLI", color: "#8b949e" },
+  { id: "copilot", label: "Copilot CLI", color: "#e879f9" },
 ];
 
 /** 支持 hooks 增强档的 Agent（与 Rust 侧 HOOKS_AGENTS 同源，设置页按此渲染行内精确开关） */

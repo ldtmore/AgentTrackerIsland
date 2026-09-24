@@ -2,15 +2,25 @@
    色板全部走 App.css 主题变量（含本次新增的 accent/danger/switch-off），
    深浅双主题下均保证文字与控件的对比度；窗口可调尺寸，布局随宽度流式伸缩 */
 
-.st-root {
+/* 页面外壳（L1 改造）：滚动与根背景挂在全窗层——滚动条贴窗口右缘，
+   内部内容列限宽居中，全屏拉伸时行不至于拉到不可扫读的长度 */
+.st-page {
   box-sizing: border-box;
   height: 100vh;
   overflow-y: auto;
   background: var(--root-bg);
   color: var(--text-1);
+}
+
+/* 内容列：限宽 1080px 居中（微软设置页指南建议 1000～1100px）；
+   Agent 卡片网格随之封顶 3 列 */
+.st-root {
+  box-sizing: border-box;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 14px 16px 20px;
   font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
   font-size: 13px;
-  padding: 14px 16px 20px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -18,20 +28,20 @@
 
 /* 滚动条：与灵动岛展开面板（panel-sessions）同款——6px 细条半透明，
    悬停加亮；轨道透明融入窗口背景 */
-.st-root::-webkit-scrollbar {
+.st-page::-webkit-scrollbar {
   width: 6px;
 }
 
-.st-root::-webkit-scrollbar-track {
+.st-page::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.st-root::-webkit-scrollbar-thumb {
+.st-page::-webkit-scrollbar-thumb {
   background: var(--scroll-thumb);
   border-radius: 3px;
 }
 
-.st-root::-webkit-scrollbar-thumb:hover {
+.st-page::-webkit-scrollbar-thumb:hover {
   background: var(--scroll-thumb-hover);
 }
 
@@ -51,15 +61,26 @@
 
 /* 副标题不换行：窗口最小宽度按最宽一条副标题的实际文字宽度设下限，
    极端收窄时以省略号兜底（正常最小宽度下不会触发） */
+/* 分区头吸顶（L2 改造）：滚动中每节标题钉在窗口顶、随下一节到来被推走，
+   深滚时始终知道自己所在分区。背景用「surface 叠在 root-bg 上」的不透明
+   近似色（--sec-head-bg）——常态下与卡片面视觉无差，吸顶时能实打实盖住
+   穿行的行内容；负外边距抵消卡片内边距，吸顶背景铺满卡片内宽到边框 */
 .st-sec-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: baseline;
   gap: 10px;
   min-width: 0;
+  margin: -12px -14px 0;
+  padding: 12px 14px 6px;
+  background: var(--sec-head-bg);
+  border-radius: 12px 12px 0 0;
 }
 
 .st-sec-title {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text-1);
   flex: none;
@@ -117,11 +138,35 @@
   margin-top: 2px;
 }
 
+/* 描述行尾的 ⓘ 更多说明入口（I2 改造）：功能性标记——悬停出 Tip 气泡承接
+   从描述里挪出来的细节；弱色不与正文抢读，行内基线对齐 */
+.st-row-tip {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  vertical-align: -2px;
+  color: var(--text-4);
+  cursor: help;
+}
+
+.st-row-tip:hover {
+  color: var(--text-2);
+}
+
 /* 校验错误：就近显示在出错行正下方（不用底部/远端提示，保证可见） */
 .st-row-error {
   font-size: 11px;
   color: var(--danger);
   margin-top: 6px;
+}
+
+/* 校验失败时出错输入框的边框标红（I3 改造）：红字定位到行、红框定位到框 */
+.st-input-err {
+  border-color: var(--danger);
+}
+
+.st-input-err:focus {
+  border-color: var(--danger);
 }
 
 .st-row-control {
@@ -249,7 +294,9 @@ select.st-input option {
   height: 16px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  /* 细描边（C2 改造）：浅色身份色（黄/琥珀等）做 on 轨道时，白 thumb 与轨道
+     对比不足，一圈半透明深色描边保证任意 track 色下 thumb 轮廓可辨 */
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(0, 0, 0, 0.12);
   transition: transform 0.18s ease;
 }
 
@@ -398,12 +445,11 @@ select.st-input option {
 
 /* ===== Agent 监控（2026-09-23 卡片网格改版） =====
    列数随容器宽度自适应：auto-fill + 280px 下限（min(280px,100%) 保证极端窄时
-   退单列不截断），容器 1280px 封顶 → 全屏最多 4 列、卡片不无限拉宽 */
+   退单列不截断）；L1 内容列限宽 1080px 后网格随之封顶 3 列 */
 .st-agents {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
   gap: 10px;
-  max-width: 1280px;
   /* 网格无行内 padding：补足与普通设置行（上 padding 10px）一致的标题间距节奏 */
   margin-top: 10px;
 }
@@ -569,5 +615,25 @@ select.st-input option {
   to {
     opacity: 1;
     transform: translate(-50%, 0);
+  }
+}
+
+/* ===== 窄窗适配（L3 改造）：窗口收窄到 640px 以下（最小窗 520px 触发）时，
+   右侧控件统一换到文字下方左对齐——消除描述换行后文字块与控件贴挤的观感；
+   tall 行（API Key）本就下沉，视觉不变 */
+@media (max-width: 639px) {
+  .st-row-main {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .st-row-control {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  /* 下沉后控件与描述之间拉开一行距，与 tall 行的 8px 保持同一节奏 */
+  .st-row-control:not(.st-row-control-tall) {
+    margin-top: 8px;
   }
 }
