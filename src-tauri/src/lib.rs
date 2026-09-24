@@ -70,6 +70,11 @@ struct IslandMotion {
     edge: String,
     /// 是否处于滑出隐藏态
     hidden: bool,
+    /// 启动居中展示待滑回（2026-09-24 启动居中展示）：启动定位把胶囊水平居中
+    /// 展示「启动中…」后置位；前端收到首个数据快照调用 island_boot_settled 时
+    /// 消费（按贴边/自由位回到上次退出状态）；用户拖放（apply_snap）即清除，
+    /// 防止与用户抢窗口
+    boot_pending: bool,
 }
 
 /// 动画标记超时：超过该时长仍未等到落点 Moved 事件则自复位（正常动画约 160~240ms）
@@ -546,6 +551,62 @@ fn island_dock_state(motion: tauri::State<'_, Arc<Mutex<IslandMotion>>>) -> serd
     serde_json::json!({ "edge": m.edge, "hidden": m.hidden })
 }
 
+/// 启动完成回调（2026-09-24 启动居中展示）：前端收到首个数据快照时调用，
+/// 岛从启动居中展示位回到上次退出状态——贴边自动隐藏 → 动画滑回贴边位并
+/// 滑出隐藏（Peek）；贴边不隐藏 → 滑回停靠位（Pill）；自由位 → 滑回记忆坐标。
+/// 仅启动态生效：boot_pending 由 position_island 置位、用户拖放（apply_snap）
+/// 即清除，运行期重复调用为无害 no-op。锁纪律：island_transition/slide_to
+/// 内部会 lock motion，标记消费必须在独立锁块先行（见 island_transition ⚠）
+#[tauri::command]
+fn island_boot_settled(
+    app: tauri::AppHandle,
+    motion: tauri::State<'_, Arc<Mutex<IslandMotion>>>,
+) {
+    {
+        let mut m = motion.lock().unwrap();
+        if !m.boot_pending {
+            return;
+        }
+        m.boot_pending = false;
+    }
+    let edge = motion.lock().unwrap().edge.clone();
+    let store = app.state::<Arc<Store>>();
+    if edge != "none" {
+        // 贴边用户：回到贴边工作态（统一状态机编排，动画过渡非瞬移）
+        let target = if autohide_enabled(&store) {
+            IslandTarget::Peek { jump: false }
+        } else {
+            IslandTarget::Pill { summon: false }
+        };
+        island_transition(&app, target);
+        return;
+    }
+    // 自由位：滑回记忆坐标（夹取进显示器，防换屏/改分辨率后丢到屏幕外）
+    let Some(win) = app.get_webview_window(ISLAND) else {
+        return;
+    };
+    let Ok(Some(mon)) = win.current_monitor() else {
+        return;
+    };
+    let Some(docked) = saved_pos(&store) else {
+        return; // 记忆坐标缺失（异常）：留在居中位，无害降级
+    };
+    let ml = monitor_logical(&mon);
+    let width = island_width(ml.2);
+    let docked = (
+        docked.0.clamp(ml.0, ml.0 + ml.2 - width),
+        docked.1.clamp(ml.1, ml.1 + ml.3 - ISLAND_H),
+    );
+    log::debug!("[岛] 启动完成：居中位滑回记忆位 {docked:?}");
+    slide_to(
+        &win,
+        docked,
+        mon.scale_factor(),
+        &motion,
+        Slide::Out(SLIDE_SHOW_MS),
+    );
+}
+
 /// 用户按下岛（拖拽开始）：取消在播滑动动画与待评估位置，
 /// 避免拖拽循环和滑动动画互相抢窗口（程序化 set_position 会打断系统拖拽）
 #[tauri::command]
@@ -874,6 +935,8 @@ fn apply_snap(
     {
         let mut m = motion.lock().unwrap();
         m.edge = edge.to_string();
+        // 用户在启动居中展示期间拖放 = 主动接管位置，取消"数据就绪后滑回记忆位"
+        m.boot_pending = false;
     }
     store.set_setting("island_pos", &format!("{},{}", docked.0, docked.1));
     store.set_setting("island_edge", edge);
@@ -970,6 +1033,7 @@ pub fn run() {
             island_peek,
             island_refresh,
             island_dock_state,
+            island_boot_settled,
             island_drag_start,
             island_metrics,
             tray_menu_action,
@@ -1024,7 +1088,8 @@ pub fn run() {
             }));
             app.manage(motion.clone());
 
-            // 定位：记忆坐标优先，否则顶部居中
+            // 定位：启动态水平居中展示「启动中…」（数据就绪后经 island_boot_settled
+            // 滑回记忆位）；无记忆坐标时居中位即默认位，原地不动
             position_island(&win, store.as_ref(), &motion);
 
             // 窗口移动事件：程序化滑动的落点被消费忽略；用户拖拽则记录待评估位置
@@ -1105,15 +1170,15 @@ pub fn run() {
                 });
             }
 
-            // 启动恢复：上次贴边 + 自动隐藏开启 → 瞬移滑出（仅露边）；其余按记忆坐标可见。
-            // 走统一转换函数：此时 webview 未挂载，island-dock 事件无接收者，
-            // 前端挂载后经 island_dock_state 拉取补齐首帧状态（原有时序）
-            {
-                let edge = motion.lock().unwrap().edge.clone();
-                if edge != "none" && autohide_enabled(store.as_ref()) {
-                    island_transition(app.handle(), IslandTarget::Peek { jump: true });
-                    log::debug!("[岛] 启动恢复贴边隐藏：edge={edge}");
-                }
+            // 启动恢复（2026-09-24 启动居中展示改版）：贴边自动隐藏用户不再在此
+            // 立即瞬移滑出——原逻辑会在定位后 10ms 内覆盖居中展示（实测 17ms，
+            // 「启动中…」完全不可见）；现启动期保持居中展示，数据就绪后经
+            // island_boot_settled 统一回位（贴边 → Peek 动画滑出；其余 → 滑回
+            // 停靠位/记忆坐标）。此时 webview 未挂载无需发事件：settled 触发时
+            // 前端必然已挂载并监听（它就是快照接收方），island-dock 事件必达
+            let edge = motion.lock().unwrap().edge.clone();
+            if edge != "none" && autohide_enabled(store.as_ref()) {
+                log::debug!("[岛] 启动贴边恢复延后：启动期居中展示，数据就绪后滑出 edge={edge}");
             }
 
             // 设置/会话/报表/关于/托盘菜单窗口：关闭即隐藏（而非销毁），保证托盘可反复唤起
@@ -1165,33 +1230,50 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-/// 岛定位：有记忆坐标用之（逻辑坐标，夹取进显示器防丢失）；否则按主显示器顶部居中。
-/// 必须经 motion 通道移动（slide_to 瞬时档）：否则启动定位产生的 Moved 事件
-/// 会被看护线程误判为"拖放"，把距顶边仅 6px 的岛自动吸附隐藏
+/// 岛启动定位（2026-09-24 启动居中展示）：启动态胶囊一律水平居中于当前显示器
+/// 展示「启动中…」，y 沿用记忆坐标（无记忆则顶部 6px）；首个数据快照就绪后由
+/// island_boot_settled 回到上次退出状态（贴边滑出隐藏/滑回停靠位/自由位滑回
+/// 记忆坐标）。
+/// 窗口在 tauri.conf.json 中不可见出生（visible=false）——否则窗口以默认出生位
+/// （左上角）先可见、定位后才跳居中，闪现可见（用户实测）。因此此处必须同步
+/// set_position 后亮出：slide_to 是异步线程会与 show 竞速，不能用于启动定位。
+/// 定位必须带防误判标记（programmed/animating，同 slide_to Jump 档语义）：
+/// 否则 set_position 产生的 Moved 事件会被看护线程误判为"拖放"，把距顶边
+/// 仅 6px 的岛自动吸附隐藏
 fn position_island(
     win: &tauri::WebviewWindow,
     store: &Store,
     motion: &Arc<Mutex<IslandMotion>>,
 ) {
-    let Ok(Some(mon)) = win.current_monitor() else {
-        return;
-    };
-    let ml = monitor_logical(&mon);
-    let width = island_width(ml.2);
-    let remembered = saved_pos(store);
-    let pos = match remembered {
-        Some(p) => (
-            p.0.clamp(ml.0, ml.0 + ml.2 - width),
-            p.1.clamp(ml.1, ml.1 + ml.3 - ISLAND_H),
-        ),
-        None => (ml.0 + (ml.2 - width) / 2, ml.1 + 6),
-    };
-    log::debug!(
-        "[岛] 启动定位：落点 {:?}（{}）",
-        pos,
-        if remembered.is_some() { "记忆坐标" } else { "默认居中" }
-    );
-    slide_to(win, pos, mon.scale_factor(), motion, Slide::Jump);
+    if let Ok(Some(mon)) = win.current_monitor() {
+        let ml = monitor_logical(&mon);
+        let width = island_width(ml.2);
+        let remembered = saved_pos(store);
+        // 居中展示位：x 恒为屏幕水平中心；y 优先记忆坐标（夹取进显示器防丢失），无则顶部 6px
+        let y = match remembered {
+            Some(p) => p.1.clamp(ml.1, ml.1 + ml.3 - ISLAND_H),
+            None => ml.1 + 6,
+        };
+        let pos = (ml.0 + (ml.2 - width) / 2, y);
+        let to_phys = logical_to_phys(pos, mon.scale_factor());
+        {
+            let mut m = motion.lock().unwrap();
+            // 有记忆坐标才需要"数据就绪后回位"；首次启动居中位即默认位，原地不动
+            m.boot_pending = remembered.is_some();
+            // 同 slide_to Jump 档：声明程序化落点，看护线程据此消费 Moved 事件防误判
+            m.programmed = Some(to_phys);
+            m.animating = Some((std::time::Instant::now(), to_phys));
+        }
+        // 窗口尺寸先对齐自适应宽再定位：conf 出生宽（360）与自适应宽不同，
+        // 不同对齐则展示期胶囊中心偏离屏幕中心（差值 = 宽度差的一半），
+        // 数据就绪 set_size 时还会肉眼可见地微跳一下
+        let _ = win.set_size(tauri::LogicalSize::new(width, ISLAND_H));
+        let _ = win.set_position(tauri::PhysicalPosition::new(to_phys.0, to_phys.1));
+        log::debug!("[岛] 启动定位：居中展示落点 {pos:?}，数据就绪后回位（记忆 {remembered:?}）");
+    }
+    // 统一亮出（conf 出生不可见）：显示器获取失败时以出生位显示兜底——
+    // 可见降级优于永久隐藏（宪法红线④）
+    let _ = win.show();
 }
 
 // ===== 托盘菜单（webview 自绘，M1-9） =====

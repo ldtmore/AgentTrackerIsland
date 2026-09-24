@@ -252,10 +252,18 @@ function IslandApp() {
     };
   }, []);
 
+  // 启动完成信号（2026-09-24 启动居中展示）：首个数据快照到达即通知 Rust 把
+  // 启动态居中展示的胶囊滑回记忆位（上次退出位置）；只发一次，运行期失效为
+  // no-op，invoke 失败不致命（居中位继续用，无功能损失）
+  const bootSettled = useRef(false);
   useEffect(() => {
-    const unlisten = listen<IslandSnapshot>("island-snapshot", (e) =>
-      setSnap(e.payload),
-    );
+    const unlisten = listen<IslandSnapshot>("island-snapshot", (e) => {
+      setSnap(e.payload);
+      if (!bootSettled.current) {
+        bootSettled.current = true;
+        invoke("island_boot_settled").catch(() => {});
+      }
+    });
     return () => {
       unlisten.then((f) => f());
     };

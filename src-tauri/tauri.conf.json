@@ -21,7 +21,8 @@
         "skipTaskbar": true,
         "transparent": true,
         "resizable": false,
-        "shadow": false
+        "shadow": false,
+        "visible": false
       },
       {
         "label": "tray-menu",
