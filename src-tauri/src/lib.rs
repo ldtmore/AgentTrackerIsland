@@ -310,11 +310,18 @@ async fn report_snapshot(
     agent: Option<String>,
     project: Option<String>,
     model: Option<String>,
+    provider: Option<String>,
     store: tauri::State<'_, Arc<Store>>,
 ) -> Result<store::ReportSnapshot, String> {
     run_report(store, move |s| {
-        s.report_snapshot(&range, agent.as_deref(), project.as_deref(), model.as_deref())
-            .ok_or_else(|| format!("未知范围档：{range}"))
+        s.report_snapshot(
+            &range,
+            agent.as_deref(),
+            project.as_deref(),
+            model.as_deref(),
+            provider.as_deref(),
+        )
+        .ok_or_else(|| format!("未知范围档：{range}"))
     })
     .await
 }
@@ -430,12 +437,14 @@ fn open_file_location(path: String) -> Result<(), String> {
 }
 
 /// 显示并聚焦报表窗口（2026-09-18 展示改造：岛面板汇总条的"报表"入口，
-/// 与托盘菜单"报表"同一条路径；窗口为常驻隐藏窗口，只 show 不重建）
+/// 与托盘菜单"报表"同一条路径；窗口为常驻隐藏窗口，只 show 不重建）。
+/// 开窗前同样做屏幕高度钳制（与 show_aux_window 的报表分支同款，勿只改一处）
 #[tauri::command]
 fn show_report_window(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
     match app.get_webview_window("report") {
         Some(w) => {
+            clamp_report_height(&w);
             let _ = (w.show(), w.set_focus());
             Ok(())
         }
@@ -1419,10 +1428,55 @@ fn build_tray(app: &tauri::App) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 显示并聚焦辅助窗口（设置/报表/关于：常驻隐藏窗口，只 show 不重建）
+/// 报表目标高度（逻辑像素，与 tauri.conf.json 的 report.height 同源同值）。
+/// 2026-09-24 定为宽 900 的 4:3（与设置页 800×600 同比例）：默认比屏幕小一档，
+/// 不铺满；想看更多由用户自己拉大/最大化（所有者拍板，撤掉首屏塞热力图的取向）
+const REPORT_DEFAULT_H: f64 = 675.0;
+/// 报表最小高度（逻辑像素，与配置 minHeight 同源；钳制下限）
+const REPORT_MIN_H: f64 = 520.0;
+
+/// 显示并聚焦辅助窗口（设置/报表/关于：常驻隐藏窗口，只 show 不重建）。
+/// 报表窗口先做屏幕高度钳制（2026-09-24 所有者反馈：笔记本上默认 820 占满整屏）
 fn show_aux_window(app: &tauri::AppHandle, label: &str) {
     if let Some(w) = app.get_webview_window(label) {
+        if label == "report" {
+            clamp_report_height(&w);
+        }
         let _ = (w.show(), w.set_focus());
+    }
+}
+
+/// 报表高度钳制：外框高超过所在屏工作区可容纳高度时缩回去（绝不放大，
+/// 不干扰用户手动调过的尺寸）；所在屏/工作区拿不到则保持配置默认，不阻塞显示。
+/// 缩回后顶部位置不动可能探出屏幕底缘，顺带把纵向位置钳回工作区内
+fn clamp_report_height(w: &tauri::WebviewWindow) {
+    // 所在屏：显示过取 current；首开隐藏态可能拿不到，退主屏（笔记本即用户所指的屏）
+    let mon = w
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| w.primary_monitor().ok().flatten());
+    let Some(mon) = mon else { return };
+    let scale = mon.scale_factor() as f64;
+    let (wa_y, wa_h) = {
+        let area = mon.work_area();
+        (area.position.y, area.size.height as f64)
+    };
+    // 目标高度：默认 820（逻辑→物理），不超过工作区减上下呼吸边；下限 minHeight
+    let target = ((REPORT_DEFAULT_H * scale).min((wa_h - 48.0).max(0.0)) as u32)
+        .max((REPORT_MIN_H * scale) as u32);
+    let Ok(cur) = w.outer_size() else { return };
+    if cur.height <= target {
+        return; // 放得下（含用户手动调小过）→ 不动
+    }
+    let _ = w.set_size(tauri::PhysicalSize::new(cur.width, target));
+    if let Ok(pos) = w.outer_position() {
+        let min_y = wa_y;
+        let max_y = (wa_y + wa_h as i32 - target as i32).max(min_y);
+        let y = pos.y.clamp(min_y, max_y);
+        if y != pos.y {
+            let _ = w.set_position(tauri::PhysicalPosition::new(pos.x, y));
+        }
     }
 }
 

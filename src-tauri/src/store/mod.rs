@@ -581,7 +581,6 @@ pub struct SummaryStats {
     pub total_tokens: i64,
     pub calls: i64,
     pub sessions: i64,
-    pub projects: i64,
     pub errors: i64,
     /// 模型生成时长合计（毫秒）
     pub duration_ms: Option<i64>,
@@ -591,6 +590,10 @@ pub struct SummaryStats {
     pub reasoning_tokens: i64,
     /// 输入+输出合计（思考占比分母；缓存读写不计入，口径见报表页脚注）
     pub billable_tokens: i64,
+    /// 输入 token 合计（缓存命中率分母之一，2026-09-24 报表改造）
+    pub input_total: i64,
+    /// 缓存读 token 合计（缓存命中率分子）
+    pub cache_read_total: i64,
 }
 
 /// 趋势行：时间桶 + 四项用量 + 调用次数 + 生成时长（前端切换指标不再回查）
@@ -601,10 +604,25 @@ pub struct TrendRow {
     pub output: i64,
     pub cache_read: i64,
     pub cache_creation: i64,
+    /// 思考 token 合计（不在账单四项内，tooltip 单列一行展示）
+    pub reasoning: i64,
     pub calls: i64,
     /// 该桶生成时长合计（毫秒）；无时长数据为 None
     pub duration_ms: Option<i64>,
 }
+
+/// 额度历史采样点（额度消耗曲线用；used_percent 为空的历史行不入列）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct QuotaPoint {
+    pub provider: String,
+    pub window_kind: String,
+    pub fetched_at: i64,
+    pub used_percent: f64,
+}
+
+/// 额度曲线单序列点数上限：超出按等步长抽样（保留首尾），
+/// 防止"全部"档把数月历史一次性塞进一次 IPC（5 分钟一条，两年约 20 万点）
+const QUOTA_MAX_POINTS: usize = 4000;
 
 /// 热力图单元：星期×小时，token 与次数双指标（前端切换）
 #[derive(Debug, Clone, serde::Serialize)]
@@ -695,12 +713,16 @@ pub struct FilterOptions {
     /// 项目目录全路径列表；空串表示"未知项目"（project_dir 缺失的会话）
     pub projects: Vec<String>,
     pub models: Vec<String>,
+    /// 供应商列表（与维度条同口径：缺失归 'unknown'）
+    pub providers: Vec<String>,
 }
 
 /// 整页报表快照（单命令返回，图与图之间口径一致）
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ReportSnapshot {
     pub summary: SummaryStats,
+    /// 上一等长周期汇总（环比基准）：today→昨天、7d/30d/90d→紧邻上一段、all→无
+    pub prev_summary: Option<SummaryStats>,
     pub trend: Vec<TrendRow>,
     pub by_agent: Vec<SliceUsage>,
     pub by_project: Vec<SliceUsage>,
@@ -708,6 +730,10 @@ pub struct ReportSnapshot {
     pub by_provider: Vec<SliceUsage>,
     /// 错误类型分布（仅 error_type 非空的记录；限流/取消/网络等）
     pub by_error: Vec<SliceUsage>,
+    /// 按模型平均首字延迟（仅含上报 ttft 的前台调用；无数据为空）
+    pub ttft_by_model: Vec<SliceUsage>,
+    /// 额度消耗历史采样（与范围档同窗口；未配置额度为空，前端整卡隐藏）
+    pub quota_curve: Vec<QuotaPoint>,
     pub heatmap: Vec<HeatCell>,
     pub options: FilterOptions,
 }
@@ -719,12 +745,16 @@ const SESSION_PAGE_SIZE: i64 = 20;
 /// 的 ENDED_AFTER_MS 同值同义，两处改动必须同步——岛面板与会话窗口靠它对齐口径）
 const ENDED_AFTER_MS: i64 = 2 * 3_600_000;
 
-/// 报表筛选上下文：范围起点 + 三个维度过滤（None=不过滤；项目空串=未知项目）
+/// 报表筛选上下文：范围起点 + 可选时间上界 + 四个维度过滤（None=不过滤；
+/// 项目空串=未知项目；供应商与维度条同口径归 'unknown'）
 struct ReportFilter {
     cutoff_ms: i64,
+    /// 时间上界（不含）；None=无上界。环比查询上一周期时用 [cutoff, end) 区间
+    end_ms: Option<i64>,
     agent: Option<String>,
     project: Option<String>,
     model: Option<String>,
+    provider: Option<String>,
 }
 
 /// 当前 Unix 毫秒
@@ -757,6 +787,7 @@ fn build_filter(
     agent: Option<&str>,
     project: Option<&str>,
     model: Option<&str>,
+    provider: Option<&str>,
 ) -> Option<ReportFilter> {
     let cutoff_ms = match range {
         "today" => today_start_ms(conn)?,
@@ -769,9 +800,11 @@ fn build_filter(
     };
     Some(ReportFilter {
         cutoff_ms,
+        end_ms: None,
         agent: agent.map(String::from),
         project: project.map(String::from),
         model: model.map(String::from),
+        provider: provider.map(String::from),
     })
 }
 
@@ -803,6 +836,10 @@ fn filter_where(f: &ReportFilter) -> (String, Vec<rusqlite::types::Value>) {
     let mut params: Vec<rusqlite::types::Value> = Vec::new();
     sql.push_str(" WHERE u.ts >= ?");
     params.push(f.cutoff_ms.into());
+    if let Some(end) = f.end_ms {
+        sql.push_str(" AND u.ts < ?");
+        params.push(end.into());
+    }
     if let Some(a) = &f.agent {
         sql.push_str(" AND u.agent = ?");
         params.push(a.clone().into());
@@ -820,6 +857,11 @@ fn filter_where(f: &ReportFilter) -> (String, Vec<rusqlite::types::Value>) {
         sql.push_str(" AND LOWER(u.model) = LOWER(?)");
         params.push(m.clone().into());
     }
+    if let Some(pv) = &f.provider {
+        // 与维度条同口径：provider 缺失归 'unknown' 参与筛选
+        sql.push_str(" AND COALESCE(u.provider,'unknown') = ?");
+        params.push(pv.clone().into());
+    }
     (sql, params)
 }
 
@@ -831,9 +873,10 @@ impl Store {
         agent: Option<&str>,
         project: Option<&str>,
         model: Option<&str>,
+        provider: Option<&str>,
     ) -> Option<ReportFilter> {
         let conn = self.lock_conn();
-        build_filter(&conn, range, agent, project, model)
+        build_filter(&conn, range, agent, project, model, provider)
     }
 
     /// 汇总卡：总量/次数/会话数/活跃项目数/错误次数 + 时长/TTFT/思考占比原料
@@ -843,12 +886,13 @@ impl Store {
         let sql = format!(
             "SELECT COALESCE(SUM({TOTAL_EXPR}),0), COALESCE(SUM(NOT u.is_background),0),
                     COUNT(DISTINCT u.session_id),
-                    COUNT(DISTINCT COALESCE(s.project_dir,'')),
                     COALESCE(SUM(u.error_type IS NOT NULL),0),
                     SUM(u.duration_ms),
                     CAST(AVG(u.ttft_ms) AS INTEGER),
                     COALESCE(SUM(COALESCE(u.reasoning_tokens,0)),0),
-                    COALESCE(SUM(COALESCE(u.input_tokens,0)+COALESCE(u.output_tokens,0)),0)
+                    COALESCE(SUM(COALESCE(u.input_tokens,0)+COALESCE(u.output_tokens,0)),0),
+                    COALESCE(SUM(COALESCE(u.input_tokens,0)),0),
+                    COALESCE(SUM(COALESCE(u.cache_read_tokens,0)),0)
              FROM usage_records u LEFT JOIN sessions s ON s.id = u.session_id{where_sql}"
         );
         let Ok(mut stmt) = conn.prepare(&sql) else {
@@ -859,12 +903,13 @@ impl Store {
                 total_tokens: r.get(0)?,
                 calls: r.get(1)?,
                 sessions: r.get(2)?,
-                projects: r.get(3)?,
-                errors: r.get(4)?,
-                duration_ms: r.get(5)?,
-                ttft_avg_ms: r.get(6)?,
-                reasoning_tokens: r.get(7)?,
-                billable_tokens: r.get(8)?,
+                errors: r.get(3)?,
+                duration_ms: r.get(4)?,
+                ttft_avg_ms: r.get(5)?,
+                reasoning_tokens: r.get(6)?,
+                billable_tokens: r.get(7)?,
+                input_total: r.get(8)?,
+                cache_read_total: r.get(9)?,
             })
         });
         match rows {
@@ -884,6 +929,7 @@ impl Store {
                     COALESCE(SUM(COALESCE(u.output_tokens,0)),0),
                     COALESCE(SUM(COALESCE(u.cache_read_tokens,0)),0),
                     COALESCE(SUM(COALESCE(u.cache_creation_tokens,0)),0),
+                    COALESCE(SUM(COALESCE(u.reasoning_tokens,0)),0),
                     COALESCE(SUM(NOT u.is_background),0),
                     SUM(u.duration_ms)
              FROM usage_records u LEFT JOIN sessions s ON s.id = u.session_id{where_sql}
@@ -899,8 +945,9 @@ impl Store {
                 output: r.get(2)?,
                 cache_read: r.get(3)?,
                 cache_creation: r.get(4)?,
-                calls: r.get(5)?,
-                duration_ms: r.get(6)?,
+                reasoning: r.get(5)?,
+                calls: r.get(6)?,
+                duration_ms: r.get(7)?,
             })
         });
         match rows {
@@ -967,11 +1014,13 @@ impl Store {
     fn report_options(&self, f: &ReportFilter) -> FilterOptions {
         let conn = self.lock_conn();
         let mut out = FilterOptions::default();
-        let lists: [(&str, &str); 3] = [
+        let lists: [(&str, &str); 4] = [
             ("agent", "SELECT DISTINCT u.agent FROM usage_records u WHERE u.ts >= ? ORDER BY 1"),
             ("project", "SELECT DISTINCT COALESCE(s.project_dir,'') FROM usage_records u
                          LEFT JOIN sessions s ON s.id = u.session_id WHERE u.ts >= ? ORDER BY 1"),
             ("model", "SELECT DISTINCT LOWER(u.model) FROM usage_records u WHERE u.ts >= ? ORDER BY 1"),
+            ("provider", "SELECT DISTINCT COALESCE(u.provider,'unknown') FROM usage_records u
+                          WHERE u.ts >= ? ORDER BY 1"),
         ];
         for (key, sql) in lists {
             let Ok(mut stmt) = conn.prepare(sql) else {
@@ -983,7 +1032,8 @@ impl Store {
                 match key {
                     "agent" => out.agents = vals,
                     "project" => out.projects = vals,
-                    _ => out.models = vals,
+                    "model" => out.models = vals,
+                    _ => out.providers = vals,
                 }
             }
         }
@@ -1016,6 +1066,69 @@ impl Store {
         }
     }
 
+    /// 按模型平均首字延迟（仅统计上报了 ttft 的前台调用；
+    /// total=平均毫秒、calls=有首字记录的调用条数，前端据此展示置信度）
+    fn report_ttft_by_model(&self, f: &ReportFilter) -> Vec<SliceUsage> {
+        let conn = self.lock_conn();
+        let (where_sql, params) = filter_where(f);
+        let sql = format!(
+            "SELECT LOWER(u.model) AS label, CAST(AVG(u.ttft_ms) AS INTEGER), COUNT(u.ttft_ms)
+             FROM usage_records u LEFT JOIN sessions s ON s.id = u.session_id{where_sql}
+               AND u.ttft_ms IS NOT NULL AND u.is_background = 0
+             GROUP BY label ORDER BY 2 DESC"
+        );
+        let Ok(mut stmt) = conn.prepare(&sql) else {
+            return vec![];
+        };
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
+            Ok(SliceUsage {
+                label: r.get(0)?,
+                total: r.get(1)?,
+                calls: r.get(2)?,
+            })
+        });
+        match rows {
+            Ok(it) => it.filter_map(|x| x.ok()).collect(),
+            Err(_) => vec![],
+        }
+    }
+
+    /// 额度消耗历史采样（额度曲线用）：fetched_at 升序、跳过无百分比的历史行；
+    /// 超上限时按等步长抽样并保留首尾——锯齿（用满→重置）形态靠首点极值不丢
+    pub fn quota_history(&self, cutoff_ms: i64) -> Vec<QuotaPoint> {
+        let conn = self.lock_conn();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT provider, window_kind, fetched_at, used_percent
+             FROM quota_snapshots
+             WHERE fetched_at >= ?1 AND used_percent IS NOT NULL
+             ORDER BY fetched_at ASC",
+        ) else {
+            return vec![];
+        };
+        let rows = stmt.query_map([cutoff_ms], |r| {
+            Ok(QuotaPoint {
+                provider: r.get(0)?,
+                window_kind: r.get(1)?,
+                fetched_at: r.get(2)?,
+                used_percent: r.get(3)?,
+            })
+        });
+        let all: Vec<QuotaPoint> = match rows {
+            Ok(it) => it.filter_map(|x| x.ok()).collect(),
+            Err(_) => vec![],
+        };
+        if all.len() <= QUOTA_MAX_POINTS {
+            return all;
+        }
+        // 等步长抽样：步长向上取整，索引整步保留，末点必留
+        let step = all.len().div_ceil(QUOTA_MAX_POINTS);
+        all.into_iter()
+            .enumerate()
+            .filter(|(i, _)| i % step == 0)
+            .map(|(_, p)| p)
+            .collect()
+    }
+
     /// 整页报表快照（一次调用返回全部图数据）
     pub fn report_snapshot(
         &self,
@@ -1023,16 +1136,45 @@ impl Store {
         agent: Option<&str>,
         project: Option<&str>,
         model: Option<&str>,
+        provider: Option<&str>,
     ) -> Option<ReportSnapshot> {
-        let f = self.report_filter(range, agent, project, model)?;
+        let f = self.report_filter(range, agent, project, model, provider)?;
+        // 环比基准：上一等长周期 [start, end)。today→昨天零点起；
+        // 7d/30d/90d→紧邻上一段；all→全部历史无上期，不比
+        let prev_window: Option<(i64, i64)> = match range {
+            "today" => {
+                let t = today_start_ms(&self.lock_conn())?;
+                Some((t - 86_400_000, t))
+            }
+            "7d" | "30d" | "90d" => {
+                let span = range.trim_end_matches('d').parse::<i64>().ok()? * 86_400_000;
+                Some((now_ms() - 2 * span, now_ms() - span))
+            }
+            _ => None,
+        };
+        let prev_summary = prev_window.map(|(start, end)| {
+            self.report_summary(&ReportFilter {
+                cutoff_ms: start,
+                end_ms: Some(end),
+                agent: f.agent.clone(),
+                project: f.project.clone(),
+                model: f.model.clone(),
+                provider: f.provider.clone(),
+            })
+        });
+        // 额度历史与用量筛选无关（额度按供应商计），仅与范围档同窗口
+        let quota_curve = self.quota_history(f.cutoff_ms);
         Some(ReportSnapshot {
             summary: self.report_summary(&f),
+            prev_summary,
             trend: self.report_trend(&f, range),
             by_agent: self.report_by_dim(&f, "agent"),
             by_project: self.report_by_dim(&f, "project"),
             by_model: self.report_by_dim(&f, "model"),
             by_provider: self.report_by_dim(&f, "provider"),
             by_error: self.report_by_error(&f),
+            ttft_by_model: self.report_ttft_by_model(&f),
+            quota_curve,
             heatmap: self.report_heatmap(&f),
             options: self.report_options(&f),
         })
@@ -1042,7 +1184,8 @@ impl Store {
     /// 只要 Agent/项目/模型三张选项表；只受范围影响、不受维度筛选影响，
     /// 保证任意筛选组合下选项仍然齐全可切换）
     pub fn session_options(&self, range: &str) -> Option<FilterOptions> {
-        let f = self.report_filter(range, None, None, None)?;
+        // 会话窗口暂无供应商筛选，第 5 参固定 None
+        let f = self.report_filter(range, None, None, None, None)?;
         Some(self.report_options(&f))
     }
 
@@ -1086,7 +1229,7 @@ impl Store {
             "duration" => "duration_ms DESC",
             _ => return None,
         };
-        let f = self.report_filter(range, agent, project, model)?;
+        let f = self.report_filter(range, agent, project, model, None)?;
         let conn = self.lock_conn();
         let (where_sql, mut params) = filter_where(&f);
         // 内层子查询：按会话聚合（别名供外层过滤/排序引用，避免脆弱的列号）；
@@ -1272,7 +1415,7 @@ impl Store {
             "duration" => "duration_ms DESC",
             _ => return None,
         };
-        let f = self.report_filter(range, agent, project, model)?;
+        let f = self.report_filter(range, agent, project, model, None)?;
         let conn = self.lock_conn();
         let (where_sql, mut params) = filter_where(&f);
         // 内层子查询按会话聚合；first_ts/last_ts 保持整数毫秒——状态档要拿它和
@@ -1646,12 +1789,14 @@ mod tests {
         store.insert_usage(&rows);
 
         // 全量快照（all 档，按月分桶）
-        let snap = store.report_snapshot("all", None, None, None).unwrap();
+        let snap = store.report_snapshot("all", None, None, None, None).unwrap();
         assert_eq!(snap.summary.total_tokens, row_sum * 3);
         assert_eq!(snap.summary.calls, 3);
         assert_eq!(snap.summary.sessions, 3);
-        assert_eq!(snap.summary.projects, 2);
         assert_eq!(snap.summary.errors, 1);
+        // 缓存命中率原料：输入与缓存读合计（样本固定 input=1000、cache_read=3000）
+        assert_eq!(snap.summary.input_total, 1000 * 3);
+        assert_eq!(snap.summary.cache_read_total, 3000 * 3);
 
         // Agent 维度：zcode 2 行在前（降序）；模型名大小写归一无影响（此处 zcode 两条模型不同）
         assert_eq!(snap.by_agent.len(), 2);
@@ -1691,22 +1836,39 @@ mod tests {
         assert_eq!(snap.options.models.len(), 3);
 
         // 维度过滤：agent=zcode → 只剩 2 行
-        let z = store.report_snapshot("all", Some("zcode"), None, None).unwrap();
+        let z = store.report_snapshot("all", Some("zcode"), None, None, None).unwrap();
         assert_eq!(z.summary.calls, 2);
         assert_eq!(z.summary.total_tokens, row_sum * 2);
         // 项目过滤：projA → zcode s1 + CC s1
-        let pa = store.report_snapshot("all", None, Some(r"F:\projA"), None).unwrap();
+        let pa = store.report_snapshot("all", None, Some(r"F:\projA"), None, None).unwrap();
         assert_eq!(pa.summary.calls, 2);
         // 模型过滤（大小写不敏感）
-        let m = store.report_snapshot("all", None, None, Some("GLM-5.3")).unwrap();
+        let m = store.report_snapshot("all", None, None, Some("GLM-5.3"), None).unwrap();
         assert_eq!(m.summary.calls, 1);
 
         // 今日档：now 样本必然落入（本机时区零点 <= now）
-        let today = store.report_snapshot("today", None, None, None).unwrap();
+        let today = store.report_snapshot("today", None, None, None, None).unwrap();
         assert_eq!(today.summary.calls, 3);
+        // 环比基准：today 的上一周期=昨天（样本全在今天，昨期 0 次调用）；all 档无上期
+        assert_eq!(today.prev_summary.as_ref().unwrap().calls, 0);
+        assert!(snap.prev_summary.is_none());
         // 近 7 天档同量；非法档拒绝
-        assert_eq!(store.report_snapshot("7d", None, None, None).unwrap().summary.calls, 3);
-        assert!(store.report_snapshot("xyz", None, None, None).is_none());
+        assert_eq!(store.report_snapshot("7d", None, None, None, None).unwrap().summary.calls, 3);
+        assert!(store.report_snapshot("xyz", None, None, None, None).is_none());
+
+        // 按模型首字延迟：三模型各 1 条 ttft=900（样本工厂固定值）
+        assert_eq!(snap.ttft_by_model.len(), 3);
+        assert!(snap.ttft_by_model.iter().all(|t| t.total == 900 && t.calls == 1));
+        // 额度历史：空库无快照 → 空曲线
+        assert!(snap.quota_curve.is_empty());
+        // 供应商筛选：glm → 3 行全中；unknown → 空
+        let pv = store.report_snapshot("all", None, None, None, Some("glm")).unwrap();
+        assert_eq!(pv.summary.calls, 3);
+        let pu = store.report_snapshot("all", None, None, None, Some("unknown")).unwrap();
+        assert_eq!(pu.summary.calls, 0);
+        // 下拉选项含供应商；趋势思考 token 三桶各 50 守恒
+        assert_eq!(snap.options.providers, vec!["glm".to_string()]);
+        assert_eq!(snap.trend.iter().map(|t| t.reasoning).sum::<i64>(), 150);
 
         // ===== M1-10 会话中心：追加一个 4 小时前的已结束样本（插在报表断言之后，
         // 不影响上方 report_snapshot 对 3 行样本的守恒断言）=====

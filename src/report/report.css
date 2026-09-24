@@ -49,12 +49,19 @@
   white-space: nowrap;
 }
 
-/* 页头右侧：范围档（导出按钮已随会话明细迁往会话窗口，M1-10） */
+/* 页头右侧：数据截至 + 刷新 + 范围档（导出按钮已随会话明细迁往会话窗口，M1-10） */
 .rp-header-right {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+/* 「数据截至」时间戳（与 会话窗口 ss-stamp 同款）：诚实呈现数据时点 */
+.rp-stamp {
+  font-size: 11px;
+  color: var(--text-4);
+  white-space: nowrap;
 }
 
 .rp-ranges {
@@ -87,7 +94,7 @@
   border-color: #10b981;
 }
 
-/* ===== 汇总卡行（第一眼总量、强度与效率；8 张一行） ===== */
+/* ===== 汇总卡行（第一眼总量、强度与效率；8 张一行，窄窗下沉两行） ===== */
 
 .rp-cards {
   display: grid;
@@ -103,11 +110,35 @@
   min-width: 0;
 }
 
+/* 窄窗（<860px 内容区）8 卡挤成 82px/张会截断「生成时长」等长值：
+   下沉为 4×2 两行，每张 ~170px 放得下完整数值（与设置页窄窗下沉同思路） */
+@media (max-width: 860px) {
+  .rp-cards {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
 .rp-summ-label {
   font-size: 11px;
   color: var(--text-3);
   margin-bottom: 4px;
   white-space: nowrap;
+  display: flex;
+  align-items: center;
+}
+
+/* 标签尾 ⓘ 更多说明入口（2026-09-24 C2，与设置页 st-row-tip 同款）：
+   口径细节悬停出 Tip 气泡，弱色不与数值抢读 */
+.rp-info {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  color: var(--text-4);
+  cursor: help;
+}
+
+.rp-info:hover {
+  color: var(--text-2);
 }
 
 .rp-summ-val {
@@ -117,6 +148,32 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 环比小字：较上一等长周期的变化；中性灰（用量涨跌无好坏），
+   bad=上升为坏（出错次数）标警示色 */
+.rp-delta {
+  font-size: 10px;
+  color: var(--text-4);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.rp-delta.bad {
+  color: var(--danger);
+}
+
+/* 可点击卡（会话数 → 会话窗口）：hover 描边示意可进 */
+.rp-summ.link {
+  cursor: pointer;
+}
+
+.rp-summ.link:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
 }
 
 /* 出错数 > 0 时数字标警示色（仅提示不告警，符合不打扰红线） */
@@ -194,7 +251,8 @@
   color: var(--text-1);
 }
 
-/* 维度面板：右栏纵向四段，超高内部滚动（不打断整页滚动位置） */
+/* 维度面板：右栏「面板头（标题＋指标切换）+ 各维度段」纵向排布，
+   超高内部滚动（不打断整页滚动位置） */
 .rp-dims {
   display: flex;
   flex-direction: column;
@@ -210,6 +268,19 @@
 .rp-dims::-webkit-scrollbar-thumb {
   background: var(--scroll-thumb);
   border-radius: 3px;
+}
+
+/* 面板头：左标题 + 右指标切换（Token/次数，全段统一下发） */
+.rp-dims-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.rp-dims-title {
+  font-size: 12px;
+  color: var(--text-3);
 }
 
 /* 维度比例条（HTML 自绘，天然可点击、随主题变量走） */
@@ -283,10 +354,20 @@
   padding: 4px 0;
 }
 
+/* 展开其余 N 项 / 收起（2026-09-24 B2）：伪链接小按钮，与维度行弱视觉区分 */
 .rp-dim-more {
   font-size: 11px;
   color: var(--text-4);
-  padding: 2px 6px;
+  padding: 3px 6px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+
+.rp-dim-more:hover {
+  color: var(--text-2);
 }
 
 /* 会话明细表样式已随功能迁往 sessions/sessions.css（M1-10） */

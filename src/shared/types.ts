@@ -108,8 +108,14 @@ export function agentColor(agent: string): string {
   if (custom) return custom;
   const known = AGENT_COLORS[agent];
   if (known) return known;
+  return hashColor(agent);
+}
+
+/** 按名字散列稳定取色（报表维度条用）：同一标签在任何筛选/排序下颜色不变，
+ *  修掉此前按列表序号取色、筛选一变同一条目就换色的漂移问题 */
+export function hashColor(label: string): string {
   let h = 0;
-  for (let i = 0; i < agent.length; i++) h = (h * 31 + agent.charCodeAt(i)) >>> 0;
+  for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) >>> 0;
   return FALLBACK_COLORS[h % FALLBACK_COLORS.length];
 }
 
