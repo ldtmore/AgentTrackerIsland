@@ -85,6 +85,7 @@ pub mod claude_code;
 pub mod codex;
 pub mod engine;
 pub mod gemini;
+pub mod hermes;
 pub mod hook_events;
 pub mod kimi;
 pub mod openclaw;

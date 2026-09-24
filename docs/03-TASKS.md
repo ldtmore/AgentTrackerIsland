@@ -757,6 +757,40 @@
   ⬜ `test_real_openclaw` 对账留待装机（清单 01-RESEARCH §14.3 八项）
 - 依赖：无（独立适配器批次）
 
+### M2-14 Hermes 适配器（state.db 累计快照重采档）✅（2026-09-24 代码完成，装机对账留待）
+
+- 背景（源码级调研先行，详 01-RESEARCH §15；所有者拍板本机不装机）：
+  NousResearch/hermes-agent main 分支核实——**四处总纲预想修正**：①「SqliteTail
+  水位采 usage 行」不成立，**库内无逐调用流水表**（messages.token_count 仅单值
+  整数），唯一四桶数据面是累计快照 → 采集走 session_model_usage 行重采＋自库
+  「保留最大快照」幂等（rewind 不清零、增量路径单调、gateway absolute 只覆盖
+  sessions 主行，快照单调安全）；②记账双通路（update_token_counts 唯一咽喉：
+  CLI 增量累加/gateway absolute 覆盖主行；后台合并 writer 秒级延迟落盘）；
+  ③session_model_usage.task 列即后台辅助调用维度（vision/压缩/标题生成）——
+  直接映射 is_background（token 计入、次数不计，对齐 CC cost-state 裁定）；
+  ④库内无逐调用错误载体（api_request_error 仅 hooks 面）→ 无错误行，错误纯启发式
+- 内容：`collector/hermes.rs` 新建——状态根（HERMES_HOME env 目录须存在，env 与
+  已有根同路径跳过保 tag 稳定＞Windows %LOCALAPPDATA%\hermes＞默认根/profiles/<名>
+  命名 profile 枚举，tag=default/<名>/env 消歧）＋scan（sessions 表 90 天窗，
+  标题链 title>display_name，cwd/model/billing_provider 直取，REAL 秒转毫秒）＋
+  collect（last_seen 水位＋进程内高水位双层，幂等键 `hm:{tag}:{sid}:{model}:{task}:
+  {provider}:{base}:{mode}` 六元组主键全拼）＋无 hooks 注入（Hermes 有 shell
+  hooks 体系但为 YAML config.yaml＋consent allowlist 机制，注入成本高且 SQLite
+  通道已覆盖，**列装机后增强档**，不入 HOOKS_AGENTS）＋快轮每 home 两个 File
+  信号（state.db＋state.db-wal，WAL 主库 mtime 不动）＋进程匹配 cmd 含 hermes
+  （装机核实）；前端 AGENT_DEFS +1（hermes 暗金 #eab308）
+- 已知口径差（装机对账评估）：ts 取 last_seen（该累计行最后写入时刻），历史会话
+  token 记账日压缩到末日；官方 usage_totals 口径排除子会话/空会话/归档，我们全收
+- 涉及：src-tauri/src/collector/{hermes,mod}.rs、state/service.rs（注册＋不入
+  HOOKS_AGENTS）、src/shared/types.ts（AGENT_DEFS +1）、
+  docs/{01-RESEARCH,04-MULTI-AGENT-EXPANSION,03-TASKS}.md
+- 验证：✅ cargo test **84/84** 全绿（新增 6：状态根解析含 env 去重/库发现/
+  scan 标题链与秒转毫秒/端到端采集含后台行与 provider 回退/last_seen 水位增量
+  含快照升级/快轮信号双文件）；✅ npm run build 通过（echarts chunk 警告为
+  M1-1 已知现状）；✅ cargo check 零 hermes 告警；
+  ⬜ `test_real_hermes` 对账留待装机（清单 01-RESEARCH §15.3 八项）
+- 依赖：无（独立适配器批次）
+
 ## 待议区（看板外想法，不擅自实施）
 
 - **零用量会话不在会话窗口显示**（M1-10 有意边界；**2026-09-21 所有者拍板收尾**）：

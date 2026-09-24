@@ -420,6 +420,58 @@ IncrementalFileReader**——重读会重复产出）；截断半条停值起点
 
 ---
 
+## 15. 各 Agent 数据面勘察（P3，2026-09-24，M2-14 Hermes 开工前源码级核实）
+
+> 核实方式：NousResearch/hermes-agent main 分支本地克隆逐文件源码（hermes_state_*
+> 20 余模块：schema/usage/messages/rewind/ids＋agent/turn_usage＋hermes_cli/profiles/
+> plugins＋hermes_constants）；所有者本机未装机，全部结论以源码为准，装机实测留
+> §15.3 清单。总纲预想「state.db 核心持久层」属实，但**预想表结构已大幅修正**。
+
+### 15.1 状态根、多 profile 与库文件
+
+| 项 | 结论（源码出处） |
+|---|---|
+| 状态根解析 | `get_hermes_home`（hermes_constants.py:112）：`HERMES_HOME` env（expanduser+expandvars）> 平台默认；**Windows=`%LOCALAPPDATA%\hermes`**（LOCALAPPDATA 缺失回退 `~\AppData\Local\hermes`，_get_platform_default_hermes_home:53），README 安装节同口径确证；非 Windows=`~/.hermes` |
+| 多 profile | 命名 profile 的 home=`<默认根>/profiles/<名>/`（hermes_cli/profiles.py:174——**profiles 根锚定平台默认根而非当前 HERMES_HOME**，_get_default_hermes_root 当 HERMES_HOME 形如 `<root>/profiles/<名>` 时反解 root）；适配器枚举 默认根＋默认根/profiles/*，tag=default/<名> |
+| 库文件 | `<home>/state.db`（hermes_state.py:168 DEFAULT_DB_PATH），**WAL 模式**（模块 docstring：「WAL mode (concurrent readers + one writer)」）；守护模块（hermes_state_guard/lockguard/errors/dbfile 等）是 Hermes 自进程的锁/损坏修复/文件句柄稽核，对外部只读读者无额外要求 |
+| schema 版本 | `schema_version` 表，当前 **SCHEMA_VERSION=30**（hermes_state_common.py:239）；迁移内建（列对账 _reconcile_columns），只读面按列名白名单容忍漂移 |
+
+### 15.2 会话数据面与用量记账（与总纲预想的四点差异）
+
+| 项 | 结论（源码确证） |
+|---|---|
+| ⚠️ 差异①：无逐调用流水表 | **预想「SqliteTail 水位采集 usage 行」不成立**——库内没有逐 API 调用行；messages 表逐条消息仅 `token_count` 单值整数（无四桶分项）。唯一四桶数据面＝**累计快照**（sessions 主行＋session_model_usage 行）→ 采集只能走「累计快照重采＋保留最大快照幂等」路线（store 现有 upsert 语义天然适配） |
+| ⚠️ 差异②：记账双通路 | `update_token_counts` 是**所有 API 调用记账的唯一咽喉**（hermes_state_usage.py 注释明示：CLI/gateway/cron/delegated 全走此）；CLI 面=增量 delta（`absolute=False`，api_call_count=1，sessions 累加＋session_model_usage UPSERT 累加）；gateway 面=**absolute 绝对值覆盖 sessions 主行**（远程面持有累计总数；「absolute cumulative updates cannot be split back into routes」——session_model_usage 不被 absolute 写，保持增量累加）；落盘经后台合并 writer 线程（queue_token_counts，秒级延迟，atexit 兜底 flush）——最终一致，快轮读到的是略旧累计，无害 |
+| ⚠️ 差异③：辅助调用自带维度 | `session_model_usage.task` 列区分消耗类型：`''`=主循环；非空=辅助调用（vision/compression/title_generation/background_review…，record_auxiliary_usage 只写此表不写 sessions 主行，#23270）——**正是 CC cost-state 后台用量的对应物**，直接映射 is_background=1（token 计入、次数不计，M1-12 裁定口径） |
+| ⚠️ 差异④：无错误载体 | 库内**无逐调用错误列**（messages.finish_reason 是生成终止原因非错误；cost_status 是计费状态）——总纲矩阵「各家库内错误字段装机核实」已核实完毕：**不存在**；`api_request_error` 钩子事件存在但仅 hooks 面可及（本期不接 hooks）→ 错误状态纯启发式 |
+| 会话表 sessions | id=`YYYYMMDD_HHMMSS_<hex>`（hermes_state_ids.py，交互面 6 hex/gateway 8/导入 12）；source（cli/tui/telegram/discord/cron/subagent/kanban/tool/oneshot…）；title（AI 生成，title_source 排名去重）＋display_name（聊天面会话名）双列；cwd/git_branch/git_repo_root；model/billing_provider/base_url/mode；**五桶累计列**（input/output/cache_read/cache_write/reasoning_tokens）；estimated/actual_cost_usd；started_at/ended_at（REAL Unix 秒）/end_reason（reset 类 6 种＋可恢复类 4 种＋compression/new_session）；**last_activity_at 单调推进**（UPDATE 带 `< ?` 守卫，hermes_state_sessions.py:606）；parent_session_id（子代理/分支/压缩子代）；archived/pinned/hidden |
+| 累计表 session_model_usage | 主键 (session_id, model, billing_provider, billing_base_url, billing_mode, task)；五桶＋api_call_count＋双 cost＋first_seen/last_seen（REAL 秒，每次累加刷新） |
+| 采集口径裁定 | source_id=`hm:{tag}:{session_id}:{model}:{task}:{provider}:{base_url}:{mode}`（六元组主键全拼防碰撞）；ts=last_seen×1000；**已知口径差**：历史会话的 token 全记到 last_seen 末日（无逐调用时间戳可用），报表按天分组时历史压缩到末日——装机对账评估 |
+| 单调性 | 累计快照「保留最大」策略安全：hermes_state_rewind.py **不清零 token 列**；增量路径只加不减；gateway absolute 只覆盖 sessions 主行（session_model_usage 不受影响）——理论漂移点＝absolute 主行与增量表之差（装机对账项） |
+| 状态信号 | 无现成状态列；working=last_activity_at 时效启发式（快轮 state.db/-wal mtime）；ended_at/end_reason 无 SessionInfo 载体（时效窗自然覆盖）；gateway_heartbeats 表（backend_id/pid/last_heartbeat，#94895）可作进程级活性增强，装机核实 |
+| hooks | **有 shell hooks 体系**（纠正总纲「待核实」）：`<home>/config.yaml` 顶层 `hooks:` 键（YAML！非 JSON/TOML），事件 pre_tool_call/post_tool_call/pre_llm_call/post_llm_call/pre/post_api_request/api_request_error/on_session_start/end/finalize/reset/subagent_stop 等（hermes_cli/plugins.py VALID_HOOKS 更全）；条目 `{matcher?, command, timeout}`，shlex.split 子进程＋JSON stdin＋stdout 可阻断/注入；**consent 机制**：每 (event, command) 对 TTY 首次确认、持久化 shell-hooks-allowlist.json，非交互面须 `--accept-hooks`/`HERMES_ACCEPT_HOOKS=1`/`hooks_auto_accept` ——注入成本=YAML 保格式注入器（第三种形态）＋consent 双文件，且 SQLite 通道已覆盖用量与启发式状态 → **本期不接，列装机后增强档**（照 OpenCode SSE 增强档先例） |
+| 进程 | Python 应用：`hermes` 启动脚本（仓库根）＋常驻 gateway 进程（单进程多平台：Telegram/Discord/Slack/WhatsApp/Signal）＋TUI；进程名 python 无特征，命令行含 hermes（cmd_keywords 装机核实） |
+| foreign_sessions | Hermes 侧「导入 CC/Codex 会话」的功能（hermes_cli/foreign_sessions.py，只读别人文件）——方向相反（它读别人，我们读它），与适配器无关 |
+| 官方统计口径 | usage_totals（dashboard 侧栏）：`parent_session_id IS NULL AND message_count>=1 AND NOT archived`——官方排除子会话/空会话/归档；我们 scan 全收（90 天窗），口径差装机对账 |
+
+### 15.3 待装机核实清单（装机后回写本节并跑 test_real_hermes）
+
+1. 落盘核对：`%LOCALAPPDATA%\hermes\state.db`（及 profiles/<名>/state.db）真实存在性、
+   WAL sidecar 布局；HERMES_HOME 实际使用形态
+2. 用量对账：`hermes insights`/dashboard 的会话 token 与自库 session_model_usage 快照比对；
+   gateway absolute 覆盖后 sessions 主行与增量表 SUM 的漂移量
+3. 报表按天口径：last_seen 记账的「历史压缩到末日」偏差实测（决定是否按 first_seen 分摊）
+4. 进程名与命令行形态（gateway/TUI 常驻 python 的 cmdline 特征）；gateway_heartbeats
+   真实行形态（backend_id/pid/last_heartbeat）与活性窗口
+5. 多 profile session id 跨库碰撞观察（id 含 uuid，理论概率可忽略）；hidden/archived
+   会话的展示口径
+6. messages.token_count 单值语义（若四桶快照对账顺利则维持不采）
+7. hooks 增强档决策：api_request_error/on_session_* 注入的实测价值（YAML 注入器＋
+   consent allowlist 成本 vs 状态精度增益）
+8. 可达状态集按 §2.7（04-EXPANSION）回写
+
+---
+
 ## 调研日志
 
 | 日期 | 进展 |
@@ -433,3 +485,4 @@ IncrementalFileReader**——重读会重复产出）；截断半条停值起点
 | 2026-09-23 | §13 新增（P2 勘察节）：Gemini CLI/Qwen Code 两轮源码级核实（数据面+hooks 字段级）；**三处纠正总纲预想**——同族参数化不成立（fork 已分叉，独立双适配器）、Gemini 无 hooks 不成立（11 事件）、chats 已 JSONL 化（同 id 重 append）；token 口径裁定 cached ⊆ prompt；M2-11 按此实施（主通道+hooks 注入一并，所有者拍板扩大范围） |
 | 2026-09-23 | §13.4 新增（M2-12 开工前 outfile 字段级调研）：**Gemini 双记录须按 event.name 过滤防双计**、Qwen 单记录顶层展开、outfile JSON 仅 attributes 可枚举（时间取 event.timestamp）、启用需 enabled+outfile 双前提；OTLP receiver 仍留 backlog；M2-12 按此实施（token 行暂不入库防双计，所有者拍板） |
 | 2026-09-24 | §14 新增（P3 勘察节）：OpenClaw 源码级核实（schema 建表 SQL+转录持久化器+状态根解析器）；**三处总纲外新知**——①多 agent 多库（每 agentId 一库，session_key 跨库同名须带 agentId 消歧）、②事件 ≥1KB 转 zstd 是常态（Rust 侧必须解压+utf8_bytes 校验）、③回合式一次性落盘无双计面（usage 即每回合增量）；input 已归一免拆分；aborted 不计错误对齐 ZCode；M2-13 按此实施（合成样本 7 单测，装机对账留 §14.3） |
+| 2026-09-24 | §15 新增（P3 勘察节）：Hermes 源码级核实（hermes_state_* 全模块+turn_usage+profiles/plugins）；**四处纠正总纲预想**——①无逐调用流水表（采集改累计快照重采+保留最大幂等）、②记账双通路（CLI 增量/gateway absolute 只覆盖主行）、③task 列即后台辅助调用维度（对齐 CC cost-state is_background）、④库内无错误载体（hooks 面 api_request_error 本期不接，YAML+consent 成本）；Windows 根=`%LOCALAPPDATA%\hermes`+profiles/<名> 枚举；M2-14 按此实施 |

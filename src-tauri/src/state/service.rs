@@ -17,6 +17,7 @@ use crate::collector::claude_code::ClaudeCodeAdapter;
 use crate::collector::codex::CodexAdapter;
 use crate::collector::engine::{HotSignal, ProcessMatch};
 use crate::collector::gemini::GeminiAdapter;
+use crate::collector::hermes::HermesAdapter;
 use crate::collector::hook_events;
 use crate::collector::kimi::KimiCodeAdapter;
 use crate::collector::openclaw::OpenClawAdapter;
@@ -199,6 +200,10 @@ impl Aggregator {
                 Box::new(QwenCodeAdapter::new()),
                 // OpenClaw（M2-13）：多 agent 多库（每 agentId 一库，目录枚举）
                 Box::new(OpenClawAdapter::new()),
+                // Hermes（M2-14）：state.db 累计快照重采（库内无逐调用流水表，
+                // 01-RESEARCH §15）；无 hooks 注入（shell hooks 为 YAML＋consent
+                // allowlist，成本高且 SQLite 通道已覆盖，列装机后增强档）
+                Box::new(HermesAdapter::new()),
             ],
             hook_offsets,
             last_quota_fetch: 0,

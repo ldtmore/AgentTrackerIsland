@@ -6,7 +6,27 @@
 ## 当前状态（2026-09-24 更新）
 
 - **阶段**：阶段 3（实施）进行中，M0 已收尾；M1 全部完成（M1-2 搁置等所有者清单）；
-  **M2 P0/P1/P2 全部完成＋M2-13 已提交代码（2026-09-24，OpenClaw 适配器，装机对账留待）**——
+  **M2 P0/P1/P2 全部完成＋M2-14 Hermes 适配器代码完成（2026-09-24，装机对账留待）**——
+  源码级调研先行（NousResearch/hermes-agent main 本地克隆逐文件，详 01-RESEARCH
+  §15，所有者拍板本机不装机）**四处总纲预想修正**：①「SqliteTail 水位采 usage 行」
+  不成立，**库内无逐调用流水表**（messages.token_count 仅单值）→ 唯一四桶数据面是
+  session_model_usage 累计快照，采集走「行重采＋自库保留最大幂等」（rewind 不清零、
+  增量单调、gateway absolute 只覆盖主行，快照单调安全）；②记账双通路
+  （update_token_counts 唯一咽喉：CLI 增量/gateway absolute 覆盖主行；后台合并
+  writer 秒级延迟）；③task 列即后台辅助调用维度（vision/压缩/标题生成）→ 直接
+  映射 is_background（对齐 CC cost-state）；④**库内无逐调用错误载体** → 无错误行。
+  hooks 有但**不接**（YAML config.yaml＋consent allowlist 注入成本高，SQLite 通道
+  已覆盖，列装机后增强档，不入 HOOKS_AGENTS）。实施：`collector/hermes.rs`——
+  状态根（HERMES_HOME env 须存在，与已有根同路径跳过保 tag 稳定＞Windows
+  %LOCALAPPDATA%\hermes＞默认根/profiles/<名> 枚举，tag=default/<名>/env 消歧）＋
+  scan（sessions 表 90 天窗，title>display_name，cwd/model 直取，REAL 秒转毫秒）＋
+  collect（last_seen 水位＋进程内高水位双层，幂等键 `hm:{tag}:{sid}:{model}:{task}:
+  {provider}:{base}:{mode}` 六元组全拼）＋快轮每 home 双 File 信号（state.db＋
+  -wal）＋进程 cmd 含 hermes（装机核实）；前端 AGENT_DEFS +1（hermes 暗金 #eab308）。
+  验证：cargo test **84/84** 全绿（新增 6）＋npm build 通过＋check 零 hermes 告警；
+  `test_real_hermes` 标 #[ignore] **装机后补跑**（清单 01-RESEARCH §15.3 八项）。
+  ⏳ 待所有者验收后提交。
+  **M2-13 OpenClaw 已提交代码（2026-09-24，OpenClaw 适配器，装机对账留待）**——
   源码级调研先行（openclaw/openclaw main 逐文件，详 01-RESEARCH §14，所有者拍板
   本机不装机）**三处总纲外新知**：①每 agentId 一库（`<root>/agents/<id>/agent/`，
   多库枚举＋session_key 跨库同名须带 agentId 消歧，incognito 哨兵保留名排除）；
@@ -211,15 +231,15 @@
 ## 下一步
 
 1. **M2 推进中**（总纲 04-EXPANSION，P0/P1/P2 已全部完成）：
-   **最新＝M2-13 OpenClaw 适配器代码完成（2026-09-24，待所有者验收后提交）**，
-   装机对账 `test_real_openclaw` 留 §14.3 清单；M2-5 notify 评估按量化判据
+   **最新＝M2-14 Hermes 适配器代码完成（2026-09-24，待所有者验收后提交）**，
+   装机对账 `test_real_hermes` 留 §15.3 清单；M2-5 notify 评估按量化判据
    观察一周后回写结论（P0 上线日 2026-09-23 起算）
-2. **装机驱动批次**（所有者装机后集中补跑，清单已备）：`test_real_*` 共 9 项
-   （Codex/Kimi/OpenCode/MiMo/Gemini/Qwen/OTel×2/OpenClaw，见 01-RESEARCH
-   §11.3/§12.3/§13.3/§14.3）＋hooks 实机触发链＋M2-10b SSE 增强档
-3. **P3 三家**（下一批开发任务，照 M2-13 模式源码调研先行）：M2-14 Hermes →
-   M2-15 Copilot CLI（SQLite 档，OpenClaw 多库模式可复用）；M2-16 WorkBuddy
-   勘察定档；逆向档 Cursor/Windsurf 押后
+2. **装机驱动批次**（所有者装机后集中补跑，清单已备）：`test_real_*` 共 10 项
+   （Codex/Kimi/OpenCode/MiMo/Gemini/Qwen/OTel×2/OpenClaw/Hermes，见 01-RESEARCH
+   §11.3/§12.3/§13.3/§14.3/§15.3）＋hooks 实机触发链＋M2-10b SSE 增强档
+3. **P3 剩余**（照 M2-13/14 模式源码调研先行）：M2-15 Copilot CLI（SQLite 档，
+   OpenClaw 多库/Hermes 多根模式可复用）；M2-16 WorkBuddy 勘察定档；
+   逆向档 Cursor/Windsurf 押后
 4. 穿插项：T10 WT 跳转调试（待议区有线索）、CC 未装 hooks 的 mtime 假 working
    噪声（M1-12 遗留观察）；T13 Dogfood 周依赖 T12；**构建打包仅当所有者明确
    宣布"正式对外发布"时执行**（WORKFLOW 构建打包纪律）
