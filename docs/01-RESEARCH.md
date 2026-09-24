@@ -472,6 +472,62 @@ IncrementalFileReader**——重读会重复产出）；截断半条停值起点
 
 ---
 
+## 16. 各 Agent 数据面勘察（P3，2026-09-24，M2-15 Copilot CLI 开工前源码级核实）
+
+> 核实方式：与 M2-13/14 的开源仓库逐文件不同，**GitHub Copilot CLI 为闭源发行**
+> （github/copilot-cli 仓库仅 README＋安装脚本，无源码）。本次对发行产物做逆向级
+> 核实：下载 v1.0.88（2026-09-22 稳定版）win32-x64 发行包 → copilot.exe 实为
+> **Node SEA 引导器**，内嵌 gzip 应用包（`copilot.tgzw`，运行时解出 `index.js`
+> 再 import）→ 解包得完整应用：`app.js`（7.8MB esbuild bundle）＋
+> `copilot-sdk/*.d.ts`（可读类型声明）＋`schemas/session-events.schema.json`
+> （611 个事件定义）＋`prebuilds/win32-x64/runtime.node`（91MB，**Rust 原生
+> runtime**，内嵌 rustc 源路径 `src/runtime/src/session/sqlite.rs` 等，SQLite
+> store 全部 DDL/SQL/索引/内置文档字面量可见）。结论均出自发行产物字符串层与
+> 随包 schema 文件，装机实测留 §16.3 清单。
+
+### 16.1 状态根与落盘布局
+
+| 项 | 结论（发行产物出处） |
+|---|---|
+| 状态根解析 | `resolveCopilotHome` 链：显式 configDir ＞ **`COPILOT_HOME` env** ＞ `~/.copilot`（app.js `mj()`：`[configDir, COPILOT_HOME, pathOsHomeDir()]`）；Windows 原生侧（Rust taskbar-activator，内嵌 exe）同口径 `COPILOT_HOME ?? %USERPROFILE%\.copilot` 确证 |
+| XDG 旧源迁移 | `XDG_STATE_HOME/.copilot` 与 `XDG_CONFIG_HOME/.copilot` 是**迁移源**：启动时把 `session-state`、`session-store.db` 等移入 `~/.copilot` 并留 symlink（方向=XDG→home），适配器不扫描 XDG；另发现 `COPILOT_CACHE_HOME`（缓存目录，与数据面无关） |
+| 无 profiles | 无多 profile 机制（对照 Hermes profiles/<名> 枚举不适用）；多根只剩「默认根＋COPILOT_HOME 重定向」两候选，同路径去重保 tag 稳定 |
+| 布局 | `<root>/session-state/<sessionId>/`＝每会话目录（`events.jsonl` 事件日志＋`session.db` 每会话库（todos 等任务面）＋`workspace.yaml` 等）；**`<root>/session-store.db`＝全局 store（/chronicle 数据源，WAL＋foreign_keys＋wal_checkpoint(TRUNCATE)）**；command-history-state(.json)、installed-plugins/、config.json、mcp-config、lsp-config、permissions-config、hooks/（存在 hooks 目录，见 §16.2） |
+| store 访问方式 | CLI 自身用只读 **DuckDB** 查询 store（store_query 工具内置文档），我们直接只读 SQLite（同 ZCode 通道，更轻）；runtime（Rust）持有写连接 |
+
+### 16.2 session-store.db 数据面（总纲预想的修正与裁定）
+
+| 项 | 结论（DDL/SQL 字面量确证） |
+|---|---|
+| ⚠️ 修正①：通道裁定 | 总纲预想「FileTail + SqliteTail 双选，以实测信息密度定」→ **SQLite 单通道**：store 的 `assistant_usage_events` 是**逐调用流水**（五桶 token＋时长＋首字＋initiator 逐行全有），信息密度完胜事件面——events.jsonl 的 `assistant.usage` 事件 `ephemeral:true`（schema 明示 transient **不落盘**），无需 FileTail |
+| sessions 表 | `id TEXT PK, cwd, repository, host_type, branch, summary, created_at, updated_at`（TEXT，`datetime('now')`＝UTC 秒精度字典序可比）；会话开始即 `INSERT OR IGNORE INTO sessions (id)` 建行，随后 UPSERT `ON CONFLICT(id) DO UPDATE SET cwd=COALESCE(excluded.cwd,cwd),…`（逐回合刷新 updated_at）；summary=AI 会话摘要（标题载体）；云模式另有 task_id/agent_name 列（本地无） |
+| ⭐ assistant_usage_events | `id INTEGER PK AUTOINCREMENT`（**rowid 水位＋source_id**）、session_id、turn_index、agent_id（子代理维度）、parent_tool_call_id、model NOT NULL、copilot_usage_model、**五桶**（input/output/cache_read/cache_write/reasoning_tokens）、total_nano_aiu（计费单位）、request_multiplier、duration_ms、time_to_first_token_ms、output_ttft_ms、inter_token_latency_ms、initiator、api_endpoint、reasoning_effort、finish_reason、content_filter_triggered、token_details_json、created_at；索引 (session_id,id)/(session_id,turn_index)/(model)；「exact local model usage for sessions recorded after usage persistence was introduced」——**旧会话无 usage 行**（功能上线前的历史，装机对账口径） |
+| ⚠️ 修正②：后台维度 | `initiator`：『What initiated this API call (e.g., "sub-agent", "mcp-sampling"); **absent for user-initiated calls**』——非空＝辅助调用，直接映射 is_background=1（token 计入、次数不计，对齐 CC cost-state/Hermes task 裁定）；agent_id/parent_tool_call_id 为关联维度不参与判定 |
+| ⚠️ 修正③：无错误载体 | store 无 API 错误行：`session.error`/`model.call_failure` 事件均为事件面（后者 `ephemeral:true` 仅遥测），usage 行 `finish_reason` 是模型终止原因（stop/length/tool_calls/content_filter）非 API 错误 → SQLite 通道无错误行（同 Hermes 差异④），错误状态纯启发式；events.jsonl 的 session.error（errorType 分类：authentication/quota/rate_limit/context_limit…＋statusCode）是精确载体，列装机后增强档 |
+| turns 表（隐私） | `user_message/assistant_response` 全文列——**隐私红线不读**（解析白名单只碰 sessions 元数据列与 usage 数字列） |
+| 迁移模式 | `pragma_table_info` 探列＋`ALTER TABLE ADD COLUMN`（output_ttft_ms/copilot_usage_model 为后补列）＋schema_version 表——只读侧按列名白名单容忍漂移（Hermes 同款） |
+| 云/本地双模式 | 内置报错「Session store is not available. The cloud session store is active」——企业云会话存储激活时本地 store 缺失/空，适配器静默降级（装机核实云模式形态） |
+| 事件面（增强档素材） | 每会话 `events.jsonl`＝SessionEvent JSONL（id uuid/timestamp ISO 8601/parentId 链/ephemeral/agentId/type/data；611 个定义）：session.error、permission.requested（waiting 信号）、session.title_changed、session.usage_checkpoint（累计 nano_aiu＋premium requests＝CC cost-state 对应物）、subagent.*、session.compaction_* 等——错误/等待状态精度的装机后增强档（照 OpenCode SSE 先例），本期不接 |
+| hooks | **纠正总纲「无公开 hooks」**：存在 hooks 体系（设置分类「Lifecycle event handlers」＋`hooks/` 配置目录＋`hooks.**` glob＋COPILOT_HOOK_ALLOW_LOCALHOST/HTTP env）——形态与注入成本未核实，SQLite 通道已覆盖用量与启发式状态，**本期不接，列装机后增强档** |
+| 进程 | Windows 发行＝`copilot.exe`（Node SEA 引导器；npm 包 `@github/copilot` bin 名 `copilot`）；进程匹配 cmd 含 copilot（装机核实 VS Code Copilot 扩展宿主误报面） |
+
+### 16.3 待装机核实清单（装机后回写本节并跑 test_real_copilot）
+
+1. 落盘核对：`%USERPROFILE%\.copilot\session-store.db` 真实存在性、WAL sidecar、
+   session-state/<id>/ 目录文件清单（events.jsonl 行样本）；COPILOT_HOME 实际使用形态
+2. 用量对账：`/chronicle` 报告的 token 与 assistant_usage_events 聚合比对；
+   copilot_usage_model/total_nano_aiu/request_multiplier 计费口径（premium requests）
+3. 旧会话无 usage 行的边界实测（usage persistence 上线版本前后）；turns 兜底口径评估
+4. initiator 全枚举（sub-agent/mcp-sampling/compaction 类辅助调用全谱）与
+   is_background 覆盖率；agent_id 与 subagent 事件关联
+5. 进程名与命令行形态（Node SEA 引导器进程特征）；VS Code Copilot 扩展误报排查
+6. 云会话存储模式（企业策略）下本地 store 行为；云模式会话是否可观测
+7. events.jsonl 增强档决策：session.error/permission.requested 注入状态机精度增益
+   vs 逐会话文件枚举成本；session.usage_checkpoint 累计口径与逐调用行对账
+8. 可达状态集按 §2.7（04-EXPANSION）回写
+
+---
+
 ## 调研日志
 
 | 日期 | 进展 |
@@ -486,3 +542,4 @@ IncrementalFileReader**——重读会重复产出）；截断半条停值起点
 | 2026-09-23 | §13.4 新增（M2-12 开工前 outfile 字段级调研）：**Gemini 双记录须按 event.name 过滤防双计**、Qwen 单记录顶层展开、outfile JSON 仅 attributes 可枚举（时间取 event.timestamp）、启用需 enabled+outfile 双前提；OTLP receiver 仍留 backlog；M2-12 按此实施（token 行暂不入库防双计，所有者拍板） |
 | 2026-09-24 | §14 新增（P3 勘察节）：OpenClaw 源码级核实（schema 建表 SQL+转录持久化器+状态根解析器）；**三处总纲外新知**——①多 agent 多库（每 agentId 一库，session_key 跨库同名须带 agentId 消歧）、②事件 ≥1KB 转 zstd 是常态（Rust 侧必须解压+utf8_bytes 校验）、③回合式一次性落盘无双计面（usage 即每回合增量）；input 已归一免拆分；aborted 不计错误对齐 ZCode；M2-13 按此实施（合成样本 7 单测，装机对账留 §14.3） |
 | 2026-09-24 | §15 新增（P3 勘察节）：Hermes 源码级核实（hermes_state_* 全模块+turn_usage+profiles/plugins）；**四处纠正总纲预想**——①无逐调用流水表（采集改累计快照重采+保留最大幂等）、②记账双通路（CLI 增量/gateway absolute 只覆盖主行）、③task 列即后台辅助调用维度（对齐 CC cost-state is_background）、④库内无错误载体（hooks 面 api_request_error 本期不接，YAML+consent 成本）；Windows 根=`%LOCALAPPDATA%\hermes`+profiles/<名> 枚举；M2-14 按此实施 |
+| 2026-09-24 | §16 新增（P3 勘察节）：Copilot CLI 发行产物逆向级核实（闭源——Node SEA 引导器解包 gzip 应用包：app.js bundle+SDK 声明+事件 schema+Rust runtime.node 的 store DDL）；**三处总纲预想修正**——①通道裁定 SQLite 单通道（assistant_usage_events 逐调用流水，events.jsonl 的 usage 事件 ephemeral 不落盘）、②initiator 非空=后台辅助调用（映射 is_background）、③store 无错误载体（session.error 仅事件面）；根=`COPILOT_HOME`??`~/.copilot`，hooks 体系存在（纠正「无公开 hooks」）本期不接；M2-15 按此实施 |

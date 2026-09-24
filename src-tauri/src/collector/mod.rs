@@ -83,6 +83,7 @@ pub trait AgentAdapter: Send + Sync {
 
 pub mod claude_code;
 pub mod codex;
+pub mod copilot;
 pub mod engine;
 pub mod gemini;
 pub mod hermes;

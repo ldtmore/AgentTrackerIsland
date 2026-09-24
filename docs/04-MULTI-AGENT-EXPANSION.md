@@ -60,7 +60,7 @@
 | 🅲 中 | **Qwen Code**（千问） | `<runtime>\projects\<sanitizeCwd>\chats\<uuid>.jsonl` 纯追加消息树（**2026-09-23 源码核实，纠正「同 Gemini 同构」旧记录**：fork 基线 v0.8.2 自 v0.1 起停止同步，落盘已大幅分叉→独立适配器；`QWEN_HOME`+`QWEN_RUNTIME_DIR` 双重定向；官方观测 sidecar `chats/<sessionId>.runtime.json` 装机核实；详 01-RESEARCH §13.2） | **有 hooks 22 事件**（几乎全 CC 同名；async/shell 字段，timeout 秒） | usageMetadata 归一化后 cached ⊆ prompt 统一拆分；StopFailure.error 精确枚举 | FileTail ✅ M2-11 + HookBridge ✅ M2-11（10 事件）+ **OtelSink ✅ M2-12**（同上，单记录顶层展开形态，详 01-RESEARCH §13.4） |
 | 🅲 中 | **OpenClaw** | `~\.openclaw\agents\<agentId>\agent\openclaw-agent.sqlite`（**2026-09-24 源码核实，详 01-RESEARCH §14**：多 agent 多库须目录枚举；会话三层 session_nodes→session_windows→transcript_events，事件 ≥1KB 转 zstd 是常态须解压；usage 四桶 camelCase 落盘前已按「input 不含缓存」归一；状态根 OPENCLAW_STATE_DIR>~\.openclaw>~\.openclaw-<profile>>~\.clawdbot） | 无 CC 式 hooks（Gateway 有 HTTP 端点，LocalHttp 增强档暂不做） | 事件行 usage（回合式一次性落盘无双计面）；session_nodes.status 现成状态信号 | SqliteTail ✅ M2-13 |
 | 🅲 中 | **Hermes**（Nous Research） | `<home>\state.db`（**2026-09-24 源码核实，详 01-RESEARCH §15**：Windows=%LOCALAPPDATA%\hermes＋HERMES_HOME 重定向＋profiles/<名> 枚举；**库内无逐调用流水表**——唯一四桶数据面是 session_model_usage 累计快照，走重采＋保留最大幂等；task 列=后台辅助调用维度映射 is_background；schema v30，WAL） | **有 shell hooks**（YAML config.yaml `hooks:` 键＋consent allowlist——注入成本高，SQLite 通道已覆盖，列装机后增强档） | 累计快照重采（无逐调用行无双计面）；last_activity_at 单调启发式；**库内无错误载体** | SqliteTail ✅ M2-14 |
-| 🅲 中 | **Copilot CLI** | `~\.copilot\session-state\` 会话文件集 + 本地 SQLite session store（官方文档，`/chronicle` 的数据源，含成本数据） | 无公开 hooks | store 内 | FileTail + SqliteTail 双选 |
+| 🅲 中 | **Copilot CLI** | `<root>\session-store.db` 全局 store（**2026-09-24 发行产物逆向级核实，纠正本表旧版记录**：闭源发行——Node SEA 引导器内嵌 gzip 应用包，解包核实 store DDL；逐调用流水表 assistant_usage_events（rowid 水位＋五桶＋initiator 后台维度），sessions 表标题=summary；`COPILOT_HOME` env＞`~/.copilot`；WAL；详 01-RESEARCH §16） | **有 lifecycle hooks 体系**（纠正「无公开 hooks」旧记录；形态/成本未核实，列装机后增强档）；events.jsonl 事件面（session.error/permission.requested 精确载体）装机后评估 | store 内逐调用行（总纲「store 内」属实且超预期）；旧会话无 usage 行（usage persistence 上线前） | SqliteTail 单通道 ✅ M2-15（信息密度裁定，FileTail 不做——usage 事件 ephemeral 不落盘） |
 | 🅳 穷 | **Cursor** | `state.vscdb`（SQLite，`~\.cursor`）——**社区逆向**（tokenuse、deja-vu registry、agent-tracker 等先例验证可行） | 无 | db 内 | SqliteTail（实验性） |
 | 🅳 穷 | **Windsurf** | Cascade 轨迹本地存储——**社区逆向脚本** | 无 | 逆向 | SqliteTail（实验性） |
 | ❓ 待核实 | **WorkBuddy**（腾讯 CodeBuddy 系） | 文档站未公开落盘细节，疑似 CC 同源生态 | 疑似有 hooks | 待核实 | P4 首任务装机勘察定档 |
@@ -202,7 +202,7 @@
 | Gemini / Qwen | ✅ 启发式＋hooks 干活类事件 | ✅ hooks（Gemini=Notification 权限确认；Qwen=PermissionRequest） | ✅ Gemini=转录 error 行；Qwen=StopFailure/PostToolUseFailure（精确枚举） | ✅ | 文件 tail＋hooks（2026-09-23 纠正「无 hooks」预想，详 01-RESEARCH §13） |
 | OpenClaw | ✅ session_nodes.status（running/done/failed/killed/timeout，库内现成）＋启发式 | ❌ 无权限类信号源 | ✅ 有限——transcript stopReason=error 弱信号（精确载体装机核实 §14.3） | ✅ | sqlite 档（2026-09-24 M2-13 核实） |
 | Hermes | ✅ last_activity_at 单调启发式（快轮 state.db/-wal mtime）＋gateway_heartbeats 装机核实 | ❌ | ❌ **库内无逐调用错误载体**（api_request_error 仅 hooks 面；2026-09-24 M2-14 核实） | ✅ | sqlite 档（累计快照重采） |
-| Copilot | ✅ 启发式 | ❌ | ⚠️ 库内错误字段装机核实 | ✅ | sqlite 档 |
+| Copilot | ✅ 启发式 | ❌ | ❌ **store 无错误载体**（session.error 仅 events.jsonl 事件面；2026-09-24 M2-15 核实，装机评估增强档） | ✅ | sqlite 档 |
 | Cursor/Windsurf | ⚠️ 弱启发式 | ❌ | ❌ | ✅ 进程探测 | 实验性档 |
 
 结论与约束：① waiting/error 的覆盖度是各家差异最大的维度，适配器交付时必须在 01-RESEARCH 勘察记录中写明本家可达状态集；② `SessionSignals` 需要为 Kimi 的 `StopFailure/PostToolUseFailure` 新增 `last_failure` 信号位（喂 error 判定，比通知文本启发式精确），这是状态机唯一的数据结构扩展，判定优先级逻辑不变。
@@ -266,7 +266,7 @@
 |------|------|------|
 | M2-13 OpenClaw | `openclaw-agent.sqlite` 水位采集（session rows 的 token counters + 转录树增量）——**2026-09-24 源码调研后落地**：多 agent 多库枚举＋三层会话结构（session_nodes/windows/transcript_events）＋事件 zstd 解压（01-RESEARCH §14），合成样本 7 单测 | 对账 + 状态可用；`test_real_openclaw` 装机补跑（§14.3 八项清单） |
 | M2-14 Hermes | state.db 累计快照重采——**2026-09-24 源码调研后落地**：无逐调用流水表（总纲预想修正，01-RESEARCH §15），session_model_usage 行重采＋保留最大幂等＋task 列后台行＋多根枚举（default/profiles/env），合成样本 6 单测；hooks 不接（YAML+consent 成本，列增强档） | 对账 + 状态可用；`test_real_hermes` 装机补跑（§15.3 八项清单） |
-| M2-15 Copilot CLI | `~\.copilot\session-state\` 文件 + sqlite store 二选一（以实测信息密度定） | 同上 |
+| M2-15 Copilot CLI | `~\.copilot\session-state\` 文件 + sqlite store 二选一（以实测信息密度定）——**2026-09-24 发行产物逆向级调研后落地**：闭源发行（Node SEA 引导器解包应用包核实，01-RESEARCH §16），裁定 SQLite 单通道（assistant_usage_events 逐调用流水＋rowid 水位＋initiator 后台行），合成样本 8 单测 | 对账 + 状态可用；`test_real_copilot` 装机补跑（§16.3 八项清单） |
 
 ### P4 逆向档收尾——预计 2 个会话 + 持续跟进
 

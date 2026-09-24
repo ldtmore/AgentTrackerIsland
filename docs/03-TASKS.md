@@ -791,6 +791,45 @@
   ⬜ `test_real_hermes` 对账留待装机（清单 01-RESEARCH §15.3 八项）
 - 依赖：无（独立适配器批次）
 
+### M2-15 Copilot CLI 适配器（session-store.db 逐调用流水档）✅（2026-09-24 代码完成，装机对账留待）
+
+- 背景（发行产物逆向级调研先行，详 01-RESEARCH §16；所有者拍板本机不装机）：
+  与 M2-13/14 的开源仓库逐文件不同，**Copilot CLI 闭源发行**——github/copilot-cli
+  仓库仅 README＋安装脚本。核实路径：v1.0.88 win32-x64 发行包 → copilot.exe 实为
+  **Node SEA 引导器**，内嵌 gzip 应用包（copilot.tgzw，运行时解出 index.js 再
+  import）→ 解包得完整应用：app.js（7.8MB esbuild bundle）＋copilot-sdk/*.d.ts
+  ＋session-events.schema.json（611 事件定义）＋runtime.node（91MB Rust 原生
+  runtime，store 全部 DDL/SQL/索引/内置文档字面量可见）
+- **三处总纲预想修正**：①「FileTail＋SqliteTail 双选」裁定 **SQLite 单通道**——
+  store 的 assistant_usage_events 是逐调用流水（五桶＋时长＋首字＋initiator 逐行
+  全有），而 events.jsonl 的 assistant.usage 事件 ephemeral 不落盘，无需 FileTail；
+  ②initiator 非空＝辅助调用（sub-agent/mcp-sampling，官方注释明示 absent for
+  user-initiated calls）→ 映射 is_background（token 计入、次数不计，对齐 CC
+  cost-state/Hermes task 裁定）；③store 无 API 错误载体（session.error 仅事件面，
+  usage 行 finish_reason 是模型终止原因）→ 无错误行，错误纯启发式（同 Hermes ④）
+- 内容：`collector/copilot.rs` 新建——状态根（COPILOT_HOME env 目录须存在＞默认根
+  `~/.copilot`＝%USERPROFILE%\.copilot；XDG 目录是 CLI 自身迁移源不扫描；无
+  profiles；tag=default/env 消歧）＋scan（sessions 表 90 天窗，标题=summary，
+  cwd 直取，TEXT datetime('now') 秒精度字典序可比转毫秒；model/provider 库内无列，
+  模型由聚合器按最近用量回填）＋collect（**rowid 水位**增量——id INTEGER
+  AUTOINCREMENT 跨轮单调，per-tag 记录防跨库不可比；重启后进程内水位缺失回退
+  调用方时间水位-60s 作 created_at 下界防全量重放；幂等键
+  `cp:{tag}:{session_id}:{rowid}`，逐调用流水重放全忽略）＋turns 表
+  user_message/assistant_response 全文列**隐私红线不读**＋无 hooks 注入（Copilot
+  有 lifecycle hooks 体系——纠正总纲「无公开 hooks」——但形态/成本未核实，
+  SQLite 通道已覆盖，列装机后增强档）＋快轮每 home 两个 File 信号
+  （session-store.db＋-wal，WAL 教训同款）＋进程 cmd 含 copilot（装机核实）；
+  前端 AGENT_DEFS +1（copilot GitHub 灰 #8b949e）
+- 涉及：src-tauri/src/collector/{copilot,mod}.rs、state/service.rs（注册＋不入
+  HOOKS_AGENTS）、src/shared/types.ts（AGENT_DEFS +1）、
+  docs/{01-RESEARCH,03-TASKS,04-MULTI-AGENT-EXPANSION,HANDOFF}.md
+- 验证：✅ cargo test **92/92** 全绿（新增 8：时间列解析往返/状态根解析含 env
+  去重/库发现/scan 标题与秒精度往返/端到端采集含后台行与 provider 推断/rowid
+  水位增量/调用方时间水位防全量重放/快轮信号双文件）；✅ npm run build 通过
+  （echarts chunk 警告为 M1-1 已知现状）；✅ cargo check 零 copilot 告警；
+  ⬜ `test_real_copilot` 对账留待装机（清单 01-RESEARCH §16.3 八项）
+- 依赖：无（独立适配器批次）
+
 ## 待议区（看板外想法，不擅自实施）
 
 - **零用量会话不在会话窗口显示**（M1-10 有意边界；**2026-09-21 所有者拍板收尾**）：

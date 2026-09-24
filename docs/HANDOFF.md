@@ -6,7 +6,29 @@
 ## 当前状态（2026-09-24 更新）
 
 - **阶段**：阶段 3（实施）进行中，M0 已收尾；M1 全部完成（M1-2 搁置等所有者清单）；
-  **M2 P0/P1/P2 全部完成＋M2-14 Hermes 适配器代码完成（2026-09-24，装机对账留待）**——
+  **M2 P0/P1/P2 全部完成＋M2-15 Copilot CLI 适配器代码完成（2026-09-24，装机对账留待）**——
+  与 M2-13/14 开源逐文件不同，Copilot CLI **闭源发行**：github/copilot-cli 仓库仅
+  README＋安装脚本，改走**发行产物逆向级调研**（v1.0.88 win32-x64 包；copilot.exe
+  实为 Node SEA 引导器，内嵌 gzip 应用包 copilot.tgzw，解出 app.js 7.8MB bundle
+  ＋SDK 声明＋611 事件 schema＋runtime.node 91MB Rust runtime——store 全部 DDL/
+  SQL/索引/内置文档字面量可见），详 01-RESEARCH §16，所有者拍板本机不装机。
+  **三处总纲预想修正**：①「FileTail＋SqliteTail 双选」裁定 **SQLite 单通道**
+  （store 的 assistant_usage_events 是逐调用流水五桶全有；events.jsonl 的
+  assistant.usage 事件 ephemeral 不落盘）；②initiator 非空＝辅助调用（sub-agent/
+  mcp-sampling）→ is_background（对齐 CC cost-state/Hermes task 裁定）；
+  ③store 无 API 错误载体 → 无错误行（同 Hermes ④；events.jsonl 增强档装机评估）。
+  实施：`collector/copilot.rs`——状态根（COPILOT_HOME env＞~/.copilot；XDG 是
+  CLI 自身迁移源不扫描；tag=default/env 消歧）＋scan（sessions 表 90 天窗，
+  标题=summary，TEXT datetime('now') 秒精度转毫秒，model/provider 库内无列走
+  用量回填）＋collect（**rowid 水位** per-tag 防跨库不可比＋调用方时间水位-60s
+  作 created_at 下界防重启全量，幂等键 `cp:{tag}:{sid}:{rowid}` 逐调用流水重放
+  全忽略）＋turns 全文列隐私红线不读＋无 hooks 注入（lifecycle hooks 体系存在
+  ——纠正总纲「无公开 hooks」——形态未核实列增强档，不入 HOOKS_AGENTS）＋快轮
+  session-store.db/-wal 双 File 信号＋进程 cmd 含 copilot；前端 AGENT_DEFS +1
+  （copilot GitHub 灰 #8b949e）。验证：cargo test **92/92** 全绿（新增 8）＋
+  npm build 通过＋check 零 copilot 告警；`test_real_copilot` 标 #[ignore]
+  **装机后补跑**（清单 01-RESEARCH §16.3 八项）。⏳ 待所有者验收后提交。
+  **M2-14 Hermes 已提交（2026-09-24，5e1b634）**——
   源码级调研先行（NousResearch/hermes-agent main 本地克隆逐文件，详 01-RESEARCH
   §15，所有者拍板本机不装机）**四处总纲预想修正**：①「SqliteTail 水位采 usage 行」
   不成立，**库内无逐调用流水表**（messages.token_count 仅单值）→ 唯一四桶数据面是
@@ -25,7 +47,6 @@
   -wal）＋进程 cmd 含 hermes（装机核实）；前端 AGENT_DEFS +1（hermes 暗金 #eab308）。
   验证：cargo test **84/84** 全绿（新增 6）＋npm build 通过＋check 零 hermes 告警；
   `test_real_hermes` 标 #[ignore] **装机后补跑**（清单 01-RESEARCH §15.3 八项）。
-  ⏳ 待所有者验收后提交。
   **M2-13 OpenClaw 已提交代码（2026-09-24，OpenClaw 适配器，装机对账留待）**——
   源码级调研先行（openclaw/openclaw main 逐文件，详 01-RESEARCH §14，所有者拍板
   本机不装机）**三处总纲外新知**：①每 agentId 一库（`<root>/agents/<id>/agent/`，
@@ -231,14 +252,15 @@
 ## 下一步
 
 1. **M2 推进中**（总纲 04-EXPANSION，P0/P1/P2 已全部完成）：
-   **最新＝M2-14 Hermes 适配器代码完成（2026-09-24，待所有者验收后提交）**，
-   装机对账 `test_real_hermes` 留 §15.3 清单；M2-5 notify 评估按量化判据
-   观察一周后回写结论（P0 上线日 2026-09-23 起算）
-2. **装机驱动批次**（所有者装机后集中补跑，清单已备）：`test_real_*` 共 10 项
-   （Codex/Kimi/OpenCode/MiMo/Gemini/Qwen/OTel×2/OpenClaw/Hermes，见 01-RESEARCH
-   §11.3/§12.3/§13.3/§14.3/§15.3）＋hooks 实机触发链＋M2-10b SSE 增强档
-3. **P3 剩余**（照 M2-13/14 模式源码调研先行）：M2-15 Copilot CLI（SQLite 档，
-   OpenClaw 多库/Hermes 多根模式可复用）；M2-16 WorkBuddy 勘察定档；
+   **最新＝M2-15 Copilot CLI 适配器代码完成（2026-09-24，待所有者验收后提交）**；
+   M2-14 Hermes 已提交（5e1b634）；装机对账 `test_real_*` 留各家清单；
+   M2-5 notify 评估按量化判据观察一周后回写结论（P0 上线日 2026-09-23 起算）
+2. **装机驱动批次**（所有者装机后集中补跑，清单已备）：`test_real_*` 共 11 项
+   （Codex/Kimi/OpenCode/MiMo/Gemini/Qwen/OTel×2/OpenClaw/Hermes/Copilot，见
+   01-RESEARCH §11.3/§12.3/§13.3/§14.3/§15.3/§16.3）＋hooks 实机触发链＋
+   M2-10b SSE 增强档
+3. **P3 剩余**（照 M2-13/14/15 模式调研先行）：M2-16 WorkBuddy 勘察定档
+   （装机核实落盘与 hooks）；
    逆向档 Cursor/Windsurf 押后
 4. 穿插项：T10 WT 跳转调试（待议区有线索）、CC 未装 hooks 的 mtime 假 working
    噪声（M1-12 遗留观察）；T13 Dogfood 周依赖 T12；**构建打包仅当所有者明确

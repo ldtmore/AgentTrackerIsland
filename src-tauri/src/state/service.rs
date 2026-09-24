@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use crate::collector::claude_code::ClaudeCodeAdapter;
 use crate::collector::codex::CodexAdapter;
+use crate::collector::copilot::CopilotAdapter;
 use crate::collector::engine::{HotSignal, ProcessMatch};
 use crate::collector::gemini::GeminiAdapter;
 use crate::collector::hermes::HermesAdapter;
@@ -204,6 +205,10 @@ impl Aggregator {
                 // 01-RESEARCH §15）；无 hooks 注入（shell hooks 为 YAML＋consent
                 // allowlist，成本高且 SQLite 通道已覆盖，列装机后增强档）
                 Box::new(HermesAdapter::new()),
+                // Copilot CLI（M2-15）：session-store.db 逐调用流水（rowid 水位，
+                // 01-RESEARCH §16）；无 hooks 注入（lifecycle hooks 形态未核实，
+                // SQLite 通道已覆盖，列装机后增强档）
+                Box::new(CopilotAdapter::new()),
             ],
             hook_offsets,
             last_quota_fetch: 0,
