@@ -1,0 +1,562 @@
+/* 报表页样式（M1-R1 重构；M1-10 瘦身：会话明细表样式随功能迁往 */
+/* sessions/sessions.css，可搜索下拉样式随组件迁往 shared/searchselect.css）。 */
+/* 常规窗口，色板走 App.css 的主题变量，支持深浅双主题，与设置页同族 */
+
+.rp-root {
+  box-sizing: border-box;
+  /* 自身作为滚动容器（与设置页同模式）：全局 App.css 对 body 设了 overflow:hidden，
+     内容超出窗口高度时由 .rp-root 出滚动条 */
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--root-bg);
+  color: var(--text-1);
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 13px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 内容限宽（五轮审查批次三）：2K/4K 最大化时内容列不无限拉伸——逐子元素
+   限宽居中（滚动容器本体保持全宽：滚动条仍贴窗口右缘、根背景不透底），
+   与设置页 .st-root max-width:1080 同一规范；媒体查询按视口宽度计算，
+   不受本限宽影响（断点仍表达「窗口多宽」的正确语义）。
+   box-sizing:border-box（2026-10-03 布局修复）：原 max-width 钳内容盒，
+   .rp-card 自带 padding 左右 28＋边框 2 全部加在限宽之外——窗口够宽限宽
+   激活后带内衬的卡视觉外宽 1230、裸结构 div（rp-main 等）1200，上下卡
+   左右边缘错开 15px（五轮验收窗口内容区不足 1200，限宽未激活故潜伏）；
+   钳边框盒＝钳视觉总宽，才是「逐子元素限宽」的本意 */
+.rp-root > * {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1200px;
+  margin-inline: auto;
+}
+
+/* 刷新失败横幅（五轮审查批次一）：手上有旧数据时的行内错误态＋重试，
+   旧内容保留在下方，「数据截至」时间戳不更新即旧数据口径的可见暗示 */
+.rp-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--danger);
+  border-radius: var(--r-sm, 8px);
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.rp-error .rp-btn {
+  flex: none;
+}
+
+/* 变更中轻量指示（五轮审查）：筛选/范围后续变更保留旧内容只降透明度，
+   不再整页塌成「加载中…」重挂 ECharts（闪烁＋图例/交互状态丢失）；
+   头部控件不降（刷新/导出仍可点） */
+.rp-root.fetching .rp-cards,
+.rp-root.fetching .rp-budget,
+.rp-root.fetching .rp-filter,
+.rp-root.fetching .rp-main {
+  opacity: 0.55;
+  transition: opacity var(--dur-fast, 0.12s) ease;
+}
+
+/* 文本选中色（五轮审查）：WebView2 默认蓝底白字在深色页面上突兀，
+   改强调色淡底，深浅主题各自成立 */
+.rp-root ::selection {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* 滚动条：与设置页/岛面板同款（6px 细条半透明，悬停加亮） */
+.rp-root::-webkit-scrollbar {
+  width: 6px;
+}
+
+.rp-root::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.rp-root::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 3px;
+}
+
+.rp-root::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+
+.rp-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  /* 窄窗换行兜底：标题＋数据截至＋刷新＋导出＋5 范围档＋设置在 760px 最小窗
+     已近满宽，「导出中…」变宽或导出结果提示（max 320px）出现必然溢出——
+     放行折行（行距沿用 gap 10px），正常宽度零变化 */
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.rp-title {
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 页头右侧：数据截至 + 刷新 + 范围档（导出按钮已随会话明细迁往会话窗口，M1-10） */
+.rp-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  /* 组内放行折行：窄窗下范围档整组下移而不是挤出视口 */
+  flex-wrap: wrap;
+}
+
+/* 「数据截至」时间戳（与 会话窗口 ss-stamp 同款）：诚实呈现数据时点 */
+.rp-stamp {
+  font-size: 11px;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+
+.rp-ranges {
+  display: flex;
+  gap: 6px;
+}
+
+/* 按钮基类（底色/边框/圆角/字阶等）收敛至 shared/buttons.css（07-UX 3.5），
+   本页仅保留 active 强调变体；悬停复述强调底（基类悬停已 :not(.active) 排除，
+   此处给选中态保留反馈：底不变微压暗，对齐 st-btn-primary 先例——
+   换灰底会让 accent-contrast 反色字失去依托，2026-10-08 验收发现修复） */
+.rp-btn.active {
+  /* 走全局强调色（2026-10-03 审查修复）：原第三种绿硬编码 #10b981 叠加后
+     文字仅 2.65:1；与设置页锚点条同源后双主题自动达标 */
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.rp-btn.active:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+  opacity: 0.88;
+}
+
+/* ===== 汇总卡行（第一眼总量、强度与效率；9 张一行，窄窗下沉两行） ===== */
+
+.rp-cards {
+  display: grid;
+  /* 9 列（四轮审查修正）：cards 数组 9 项（总Token/估算成本/调用次数/生成时长/
+     平均首字/思考占比/缓存命中率/会话数/出错次数），原 8 列使「出错次数」
+     孤卡悬空第二行；900px 窗口下 9 列约 88px/张，长值有 ellipsis 兜底 */
+  grid-template-columns: repeat(9, 1fr);
+  gap: 8px;
+}
+
+.rp-summ {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  min-width: 0;
+}
+
+/* 窄窗 9 卡挤成 ~70px/张会截断「生成时长」等长值：下沉为 5+4 两行
+   （5 列保证 9=5+4 无孤卡），每张 ~150px 放得下完整数值。
+   断点 860→960（07-UX 1.4）：默认窗宽 900 内容区约 864px 恰好高于 860，
+   「默认打开即 9 列」使下沉保护在默认状态永不生效；960 下默认开窗走两行，
+   拉宽过 960 才展开 9 列 */
+@media (max-width: 960px) {
+  .rp-cards {
+    grid-template-columns: repeat(5, 1fr);
+  }
+}
+
+.rp-summ-label {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-bottom: 4px;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+}
+
+/* 标签尾 ⓘ 更多说明入口（2026-09-24 C2，与设置页 st-row-tip 同款）：
+   口径细节悬停出 Tip 气泡，弱色不与数值抢读 */
+.rp-info {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  color: var(--text-4);
+  cursor: help;
+}
+
+.rp-info:hover {
+  color: var(--text-2);
+}
+
+.rp-summ-val {
+  font-size: 17px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 环比小字：较上一等长周期的变化；中性灰（用量涨跌无好坏），
+   bad=上升为坏（出错次数）标警示色 */
+.rp-delta {
+  /* 最小最弱组合提档（2026-10-03 审查修复）：10px＋text-4 双主题均低于 AA
+     （深 3.8:1/浅 4.2:1），全项目最小字号处先达标——11px＋text-3（7.2:1） */
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.rp-delta.bad {
+  color: var(--danger);
+}
+
+/* 可点击卡（会话数 → 会话窗口）：hover 描边示意可进 */
+.rp-summ.link {
+  cursor: pointer;
+}
+
+.rp-summ.link:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+/* 出错数 > 0 时数字标警示色（仅提示不告警，符合不打扰红线） */
+.rp-summ.warn .rp-summ-val {
+  color: var(--danger);
+}
+
+/* ===== 筛选条（维度下拉；可搜索下拉组件样式在 shared/searchselect.css） ===== */
+
+.rp-filter {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.rp-clear {
+  padding: 5px 10px;
+}
+
+/* ===== 主区：维度面板（左）+ 趋势（右） ===== */
+
+.rp-main {
+  display: grid;
+  /* 维度列换到左位（2026-10-08 所有者拍板）：维度条是全局筛选的发起方，
+     「控件在前、结果在后」的动线；两卡宽度份额不变（2fr/3fr 只是左右对调），
+     趋势图可读性与维度条比例感知均不受损 */
+  grid-template-columns: 2fr 3fr;
+  gap: 12px;
+  align-items: stretch;
+  /* 趋势图高度唯一来源（2026-10-03 布局修复）：clamp 公式定义于此，趋势卡
+     Chart 与维度栏 .rp-dims 钳高消费同一变量——原维度栏 max-height:372px 是
+     图表固定高度时代的配套值，五轮审查图表改视口自适应后未同步，窗口矮时
+     趋势卡被 stretch 拉伸出图表下方大空白、窗口高时维度栏底缘不齐；同源后两卡
+     随视口同涨同落 */
+  --rp-trend-h: clamp(220px, min(40vh, 40vw), 460px);
+}
+
+/* 窄窗堆叠（2026-10-03 审查修复）：min 760px 窗口下 2fr 列仅 ~280px，
+   维度条的进度条被压到 ~80px 比例感知失真——与上方 rp-cards 同断口堆叠为单列
+   （07-UX 1.4：断点随 rp-cards 联动 860→960，两处恒同断口） */
+@media (max-width: 960px) {
+  .rp-main {
+    grid-template-columns: 1fr;
+  }
+}
+
+.rp-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px 6px;
+}
+
+.rp-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  /* 标题的 6px 下边距移至此处（2026-10-03 布局修复）：margin 挂在 flex 子项
+     （rp-card-title）上会参与 margin-box 对齐，标题文字与按钮垂直中心错位
+     ~3px；移到容器后 head 内纯 center 对齐，三张图表卡共用 */
+  margin-bottom: 6px;
+}
+
+.rp-card-title {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* 头部右侧按钮组成组（2026-10-03 布局修复）：趋势卡两组切换器相邻右对齐，
+   窄卡时组内换行防溢出——头部布局不随指标切换重排，按钮不再跳位 */
+.rp-head-toggles {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 指标切换小按钮组（Token/次数） */
+.rp-metric {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.rp-metric-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.rp-metric-btn + .rp-metric-btn {
+  border-left: 1px solid var(--border);
+}
+
+.rp-metric-btn.on {
+  background: var(--btn-bg-hover);
+  color: var(--text-1);
+}
+
+/* 整组禁用（2026-10-03 布局修复）：恒渲染占位锁交互（组容器 title 说明原因），
+   弱化但不消失——与 rp-btn:disabled 同一套降级语言 */
+.rp-metric-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 维度面板：维度栏「面板头（标题＋指标切换）+ 各维度段」纵向排布，
+   超高内部滚动（不打断整页滚动位置）。
+   钳高与趋势卡同源（2026-10-03 布局修复）：--rp-trend-h 定义于 .rp-main。
+   补偿值 49px 推导：限宽规则已给 .rp-root > * 统一 box-sizing:border-box，
+   本条 max-height 钳的是边框盒总高；对齐目标＝趋势卡总高＝边框 2 + padding
+   (12+6) + 头部行 ~23 + 头部下边距 6 + chartH ≈ chartH+49。±3px 行高渲染
+   误差被 stretch 拉齐吸收（本栏是滚动容器，被拉高只是多露几行，无副作用）；
+   头部行高若将来变化需同步此值 */
+.rp-dims {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: calc(var(--rp-trend-h) + 49px);
+  overflow-y: auto;
+}
+
+.rp-dims::-webkit-scrollbar {
+  width: 6px;
+}
+
+.rp-dims::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 3px;
+}
+
+/* 面板头：左标题 + 右指标切换（Token/次数，全段统一下发） */
+.rp-dims-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.rp-dims-title {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* 维度比例条（HTML 自绘，天然可点击、随主题变量走） */
+.rp-dim-title {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-bottom: 6px;
+}
+
+.rp-dim-row {
+  display: grid;
+  grid-template-columns: minmax(64px, 128px) 1fr 52px;
+  gap: 8px;
+  align-items: center;
+  padding: 3px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.rp-dim-row:hover {
+  background: var(--surface-hover);
+}
+
+/* 不可筛选维度（供应商）：普通视觉，不暗示可点击 */
+.rp-dim-row.flat {
+  cursor: default;
+}
+
+.rp-dim-row.flat:hover {
+  background: transparent;
+}
+
+/* 命中当前筛选的条目：描边高亮 */
+.rp-dim-row.on {
+  background: var(--surface-hover);
+  outline: 1px solid var(--accent);
+}
+
+.rp-dim-name {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rp-dim-track {
+  height: 8px;
+  background: var(--track);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.rp-dim-fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  min-width: 2px; /* 极小占比也留个可见点 */
+}
+
+.rp-dim-val {
+  font-size: 11px;
+  color: var(--text-3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.rp-dim-empty {
+  font-size: 12px;
+  color: var(--text-4);
+  padding: 4px 0;
+}
+
+/* 展开其余 N 项 / 收起（2026-09-24 B2）：伪链接小按钮，与维度行弱视觉区分 */
+.rp-dim-more {
+  font-size: 11px;
+  color: var(--text-4);
+  padding: 3px 6px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+
+.rp-dim-more:hover {
+  color: var(--text-2);
+}
+
+/* 会话明细表样式已随功能迁往 sessions/sessions.css（M1-10） */
+
+.rp-empty {
+  color: var(--text-4);
+  text-align: center;
+  padding: 60px 0;
+}
+
+.rp-foot {
+  font-size: 11px;
+  color: var(--text-4);
+  padding-bottom: 4px;
+}
+/* 两行短句行距（07-UX 3.3）：与关于页脚注同款 2px 紧排 */
+.rp-foot > div + div {
+  margin-top: 2px;
+}
+
+/* 消费预算条（#23）：汇总卡后一行；超线项红色加粗 */
+.rp-budget {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-2);
+  margin: 2px 0 6px;
+}
+.rp-budget-item b {
+  color: var(--text-1);
+}
+.rp-budget-item.over,
+.rp-budget-item.over b {
+  color: var(--danger);
+  font-weight: 700;
+}
+.rp-budget-tip {
+  cursor: help;
+  color: var(--text-4);
+}
+
+/* 年度热力图（#24）：7 行×53 列 CSS grid；格子边长 = min(卡片宽按列数平分,
+   28px)——常规窗口平分铺满整卡，超宽窗口封顶 28px 居中，窄窗口等比缩小免滚动；
+   列数由组件经 --yh-cols 下发（53 或 54，随首列周日补位） */
+.rp-yearheat {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: min(calc((100% - (var(--yh-cols, 53) - 1) * 3px) / var(--yh-cols, 53)), 28px);
+  justify-content: center;
+  gap: 3px;
+  width: 100%;
+  padding: 2px 0 4px;
+}
+.rp-yh-cell {
+  display: inline-block;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 3px;
+  background: var(--surface-hover, rgba(255, 255, 255, 0.06));
+}
+.rp-yh-cell.lv1 {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.rp-yh-cell.lv2 {
+  background: color-mix(in srgb, var(--accent) 42%, transparent);
+}
+.rp-yh-cell.lv3 {
+  background: color-mix(in srgb, var(--accent) 62%, transparent);
+}
+.rp-yh-cell.lv4 {
+  background: color-mix(in srgb, var(--accent) 82%, transparent);
+}
+.rp-yh-cell.lv5 {
+  background: var(--accent);
+}
+.rp-yh-legend {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-4);
+}
+.rp-yh-legend .rp-yh-cell {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}

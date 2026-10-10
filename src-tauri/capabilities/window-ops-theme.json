@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "window-ops-theme",
+  "description": "五个带装饰的辅助窗口专属：标题栏颜色随应用主题同步（setTheme，07-UX 2.4）。岛与托盘菜单为无边框透明窗无标题栏，不授予",
+  "windows": ["settings", "report", "quotas", "sessions", "about"],
+  "permissions": [
+    "core:window:allow-set-theme"
+  ]
+}

@@ -1,0 +1,301 @@
+/* 供应商实例卡片（M3-4，ProviderCard.tsx 配套样式；设置页与额度页共用）。
+   独立文件而非并入 settings.css：M3-5 额度页引入组件时无需拖入整份设置页样式。
+   品牌色经 --pc-color 局部变量注入，深浅主题色板变量沿用 App.css 体系。
+   2026-09-28 降噪：品牌色收敛为色条＋色点两处身份标识——启停/岛展示开关
+   on 态改全局强调色（不再随品牌色染色），来源徽标中性灰（元信息不占品牌色），
+   摘要告警琥珀改走 --warn-amber 语义变量。 */
+
+/* 卡片容器（网格由页面侧负责：设置页 st-insts / 额度页自定） */
+.pc-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  transition: border-color var(--dur-base) var(--ease-out), opacity var(--dur-base) var(--ease-out);
+}
+.pc-card::before {
+  /* 品牌色条（左侧 3px 竖条） */
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--pc-color);
+  opacity: 0.9;
+}
+.pc-card-off {
+  opacity: 0.55;
+}
+
+/* 头行：别名 + 右侧双开关（岛展示 / 启停），单个实例的操作集中一处 */
+.pc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pc-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pc-switches {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+.pc-switch-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.pc-switch-cap {
+  font-size: 11px;
+  color: var(--text-3);
+  cursor: default;
+}
+
+/* 次行：品牌色点 + 厂商名 + 来源徽标 */
+.pc-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: -4px;
+  min-width: 0;
+}
+.pc-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+.pc-kind {
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.pc-origin {
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 999px;
+  /* 中性灰描边（2026-09-28 降噪）：来源是元信息不是身份，不占品牌色 */
+  color: var(--text-3);
+  border: 1px solid var(--border-strong);
+  white-space: nowrap;
+}
+
+/* 头行右上身份组（额度页 hideSwitches 形态，2026-09-30）：色点＋厂商名＋来源
+   徽标整体靠右；min-width:0 允许整组收缩，厂商名内部省略号兜底——窄卡上
+   别名与最长厂商名（自定义（OpenAI 兼容））同排不打架，全量信息走悬浮 */
+.pc-head-id {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.pc-head-id .pc-kind {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pc-head-id .pc-dot,
+.pc-head-id .pc-origin {
+  flex: none;
+}
+.pc-switch-btn {
+  display: inline-flex;
+  align-items: center;
+  width: 36px;
+  height: 20px;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--switch-off);
+  cursor: pointer;
+  transition: background var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out);
+}
+/* on 态走全局强调色（2026-09-28 降噪）：控件状态色全应用单色（Fluent 惯例），
+   不再随品牌色染色——同屏多实例时不会出现 N 种开关色 */
+.pc-switch-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  justify-content: flex-end;
+}
+.pc-switch-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  /* 描边提档（五轮审查，同设置页 st-switch-thumb）：深色主题翠绿轨上
+     白 thumb 原 1.92:1，加 0.45 黑描边补轮廓通道 */
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25), 0 0 0 1.5px rgb(0 0 0 / 0.45);
+}
+
+/* 岛展示小号开关（28px）：与启停主开关同构缩小，视觉层级低于启停。
+   注意源码序陷阱：本规则必须能压住自身灰底——开启态色写在
+   .pc-switch-sm.pc-switch-on（更高特异性）内，不依赖 .pc-switch-on 生效 */
+.pc-switch-sm {
+  display: inline-flex;
+  align-items: center;
+  width: 28px;
+  height: 16px;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--switch-off);
+  cursor: pointer;
+  transition: background var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out);
+}
+.pc-switch-sm .pc-switch-thumb {
+  width: 10px;
+  height: 10px;
+}
+.pc-switch-sm.pc-switch-on {
+  justify-content: flex-end;
+  /* 开启色＝accent 掺灰（62% 强度）：与主开关同色相不同「音量」——
+     看得出开了，但不抢主开关的视觉。层级靠强度＋尺寸双通道表达，
+     不引入第二色相破坏全项目 accent 纪律（2026-10-10 验收反馈）。
+     此前开启不变色是源码序 bug：本文件的灰底规则在 .pc-switch-on
+     之后，同特异性后者胜，把绿底压掉了 */
+  background: color-mix(in srgb, var(--accent) 62%, var(--switch-off));
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border-strong));
+}
+
+/* 摘要行：金额/百分比 + 数据时间 */
+.pc-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.pc-summary-main {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.pc-summary-time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+
+/* 摘要百分比的告警色（阈值水位分色：warn 琥珀/danger 红；normal 继承主文案色）。
+   琥珀走 --warn-amber 语义变量，与岛端 quota-warn 同值同源（2026-09-28 统一） */
+.pc-pct-warn {
+  color: var(--warn-amber);
+}
+
+.pc-pct-danger {
+  color: var(--danger);
+}
+
+/* 凭据失效时的"历史"小标：提示摘要为最近一次成功数据而非实时值 */
+.pc-stale {
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-3);
+  vertical-align: 2px;
+}
+
+/* 凭据异常（分类文案红字：与网络失败区分，指引用户改配置而非干等） */
+.pc-cred-err {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+/* 凭据红字行尾的动作出口（M3-5 A3：额度页纯查看卡无「编辑」按钮，
+   引导落空时给跨页链接；文字链样式，继承红字但加下划线暗示可点） */
+.pc-cred-fix {
+  margin-left: 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--danger);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pc-cred-fix:hover {
+  filter: brightness(1.2);
+}
+
+/* base 覆盖留痕（折叠表单外的可见提示） */
+.pc-base {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 检测三态行内反馈：busy / ✓ / ✗ */
+.pc-test {
+  font-size: 12px;
+}
+.pc-test-busy {
+  color: var(--text-3);
+}
+.pc-test-ok {
+  color: var(--accent);
+}
+.pc-test-err {
+  color: var(--danger);
+}
+
+/* 底部操作行：检测 / 编辑 / 删除（确认态变红）。
+   margin-top:auto 把按钮行钉在卡片底缘——网格等高拉伸后各卡按钮位置一致，
+   不随摘要/检测反馈等内容多少上下浮动 */
+.pc-foot {
+  margin-top: auto;
+  padding-top: 4px;
+  display: flex;
+  gap: 6px;
+}
+.pc-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--btn-bg);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background var(--dur-base) var(--ease-out), color var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out);
+}
+.pc-btn:hover:not(:disabled) {
+  background: var(--btn-bg-hover);
+  color: var(--text-1);
+}
+.pc-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.pc-btn-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: transparent;
+}
+.pc-btn-danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
+}

@@ -1,0 +1,258 @@
+/* 关于页样式：与设置页（settings.css）同规范——卡片 + 发丝线行分隔，
+   色板全走 App.css 主题变量，深浅双主题自适应；ab-* 前缀防跨页冲突 */
+
+.ab-root {
+  box-sizing: border-box;
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--root-bg);
+  color: var(--text-1);
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 13px;
+  padding: 16px 18px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 滚动条：与设置页/岛面板同款 6px 细条 */
+.ab-root::-webkit-scrollbar {
+  width: 6px;
+}
+
+.ab-root::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ab-root::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 3px;
+}
+
+.ab-root::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+
+/* ===== 品牌区：图标 + 名称 + 口号 + 简介，居中排版 ===== */
+
+/* 品牌卡与内容随窗口尺寸连续伸缩（所有者定版：不做限宽封顶）——内衬与图标
+   用 clamp 随视口宽线性呼吸：下限防 400px 最小窗贴边局促，上限防大窗无限
+   空旷；系数按默认窗 460 对齐原固定值标定（@460 ≈ 内衬 23/18、图标 64），
+   默认开窗观感不变，拖动窗口全程无级渐变 */
+.ab-hero {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: clamp(18px, 5vw, 36px) clamp(14px, 4vw, 32px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.ab-logo {
+  width: clamp(56px, 14vw, 80px);
+  height: clamp(56px, 14vw, 80px);
+}
+
+.ab-names {
+  margin-top: 12px;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ab-name-zh {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.ab-name-en {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ab-slogan {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+/* 简介：宽度随品牌卡全宽伸缩，不设上限（所有者拍板；原 max-width 350
+   恒定不随窗口，与卡片脱节） */
+.ab-intro {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+/* ===== 信息卡片：版本 / 仓库，行结构与设置页同款（发丝线分隔） ===== */
+
+.ab-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2px 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+.ab-row {
+  padding: 11px 0;
+}
+
+.ab-row + .ab-row {
+  border-top: 1px solid var(--border);
+}
+
+.ab-row-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ab-row-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.ab-row-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-1);
+}
+
+.ab-row-desc {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+.ab-row-control {
+  flex: none;
+}
+
+/* 版本号：右侧加重展示 */
+.ab-version {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* 仓库链接：按钮语义、链接观感（强调色 + 下划线），点击经 Rust 打开浏览器 */
+.ab-link {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-align: left;
+  word-break: break-all;
+  cursor: pointer;
+}
+
+.ab-link:hover {
+  opacity: 0.85;
+}
+
+/* 链接下方小字引导：说明升级由用户手动完成 */
+.ab-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+/* 复制失败的行内红字提示（2026-10-03 审查修复：替代系统 alert） */
+.ab-hint-err {
+  color: var(--danger);
+}
+
+/* 复制按钮：与设置页 st-btn 同款。基类（底色/边框/圆角/字阶等）收敛至
+   shared/buttons.css（07-UX 3.5），本页保留两项差异：更大内边距与 nowrap；
+   hover 维持无守卫现状（禁用态也反馈悬停） */
+.ab-btn {
+  padding: 6px 14px;
+  white-space: nowrap;
+}
+
+.ab-btn:hover {
+  background: var(--btn-bg-hover);
+}
+
+/* 复制成功态：文字转主题强调色（2026-10-09，所有者要求加强「已复制」提示；
+   浅色 #34d399／深色 #047857 随主题变量自动切换），2s 后随 copied 还原 */
+.ab-btn.ab-btn-ok {
+  color: var(--accent);
+}
+
+/* ===== 鸣谢卡：独立第三卡（对外致意与应用自身事实分卡，一卡一主题） =====
+   材质复用 .ab-section（surface＋发丝边＋圆角），本类覆写内衬为内容卡规格；
+   卡头弱色轻档（对齐报表 .rp-card-title 卡头先例），视觉重量全页最低 */
+
+.ab-thanks {
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 卡头：标题 + 排序说明同行 baseline——列表顺序不暗示重要性，一句话交代 */
+.ab-thanks-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ab-thanks-title {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ab-thanks-note {
+  font-size: 11px;
+  color: var(--text-4);
+}
+
+/* 胶囊列表：flex-wrap 随窗口宽度伸缩折行（400px 最小窗自动两行以上） */
+.ab-thanks-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 单枚胶囊：弱色底细边框全圆，11px——纯展示不可点故无 hover 反馈；
+   nowrap 防长名（Claude-Code-Usage-Monitor）在胶囊内折行 */
+.ab-thanks-tag {
+  padding: 2px 9px;
+  background: var(--btn-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+/* ===== 页脚：产品红线关键词 + 版权署名，贴底居中 ===== */
+
+.ab-foot {
+  margin-top: auto;
+  padding: 4px 0 2px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-4);
+}
+
+/* 两行页脚的行间距：关键词行与署名行轻微分隔 */
+.ab-foot > div + div {
+  margin-top: 2px;
+}

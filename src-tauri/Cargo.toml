@@ -1,0 +1,68 @@
+[package]
+name = "agenttrackerisland"
+version = "0.6.0"
+description = "主流 AI Agent 的旁路观测台:状态监控与用量统计"
+authors = ["LDT"]
+license = "MIT"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "agenttracker_island_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+anyhow = "1.0.104"
+# 日志门面(tauri 传递依赖已入树,零新增下载;std feature 供自实现文件后端)
+log = { version = "0.4", features = ["std"] }
+chrono = "0.4.45"
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "rustls"] }
+sysinfo = "0.39.6"
+# TOML 保格式编辑（M2-6/7 hooks 注入器）：保留用户 config.toml 的注释与排版
+toml_edit = "0.23"
+# OpenClaw 转录事件压缩解压（M2-13）：≥1KB 的事件以 zstd 存 transcript_events.event_zstd
+zstd = "0.13"
+# Win32 API：T10 窗口跳转（find_session_window/SW_RESTORE）/贴边看护的左键状态判定
+windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging", "Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse"] }
+tauri-plugin-autostart = "2.5.1"
+tauri-plugin-dialog = "2.7.3"
+# 单实例守卫（2026-10-03 审查新增）：防双开双采双写（Windows 自启＋手点图标场景）
+tauri-plugin-single-instance = "2"
+# 全局快捷键（07-UX 2.3）：Ctrl+Alt+I 显隐灵动岛，纯 Rust 侧注册与分发
+tauri-plugin-global-shortcut = "2"
+# 系统通知（07-UX 2.6）：会话等待输入 opt-in 通知＋首次关闭到托盘一次性提示
+tauri-plugin-notification = "2"
+# 供应商实例层（M3-2）：明文凭据存系统钥匙串（Windows Credential Manager），SQLite 不落真值。
+# 必须显式启用 windows-native：keyring 3 无任何默认平台后端，缺省静默落内存 mock
+# （写入假成功、重启即丢、读取必失败——2026-09-25 全员凭据丢失事故根因）
+keyring = { version = "3", features = ["windows-native"] }
+# env 凭据引用的第二层检测：读注册表用户级环境变量（HKCU\Environment）；0.55 已在依赖树
+winreg = "0.55"
+# 一键复制 Key（2026-10-10）：后端直写系统剪贴板（真值不进前端）＋120s 读回比对清空
+arboard = "3"
+# 供应商实例 id 生成（v4；1.x 已在依赖树）
+uuid = { version = "1", features = ["v4"] }
+# 本地只读 API 服务器（localapi.rs：127.0.0.1 /v1/status|limits|spend，默认关）
+tiny_http = "0.12"
+tauri-plugin-window-state = "2"
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+# 不用 abort(2026-09-17 审查):聚合线程的 panic 隔离依赖 unwind(catch_unwind),
+# 常驻工具"单线程故障不整体退出"优先于二进制体积
+strip = true

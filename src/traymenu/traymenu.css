@@ -1,0 +1,300 @@
+/*
+ * 托盘菜单页样式（#tray-menu，M1-9）：只写本页布局与交互，
+ * 色板/材质/缓动全部引用 App.css 的岛面板变量（App.tsx 已全局引入 App.css），
+ * 深浅主题随 [data-theme] 自动切换，与岛视觉同一语言。
+ */
+
+/* 窗口全透明；面板四周留 8px 透明边距给圆角（html/body/#root 全透明见 App.css）。
+   高度不锁 100vh：根元素由内容自然撑开，前端测得实际高度后回写窗口（TrayMenu.tsx
+   的 ResizeObserver 自适应），菜单项增减无需回头改 tauri.conf.json 的高度 */
+.tm-root {
+  padding: 8px;
+  box-sizing: border-box;
+  background: transparent;
+  /* 入场：从托盘方向 6px 上浮 + 淡入，与岛「进场减速舒展」同一缓动令牌；
+     重放由 Rust 推送 tray-menu-show 后前端以 key 重挂实现 */
+  animation: tm-in var(--dur-enter) var(--ease-out);
+}
+
+@keyframes tm-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 玻璃面板：面层 RGB 复用岛面板变量（暗 20,20,24 / 浅白系），但不透明度独立抬高：
+   岛浮在桌面上 88% 足够，托盘菜单浮在任意应用窗口上，过透会吃掉文字对比度。
+   97% ≈ 仍有极浅玻璃感、文字清晰；仍觉糊可继续调高，1 = 全不透明 */
+.tm-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  box-sizing: border-box;
+  border-radius: 14px;
+  border: 1px solid var(--border-strong);
+  background: rgba(var(--panel-rgb), 0.97);
+  box-shadow: inset 0 1px 0 var(--hl-top), inset 0 -1px 0 var(--hl-bottom);
+}
+
+/* ===== 信息头 =====
+   行高显式确定（20/9/16px）：测量自适应依赖布局可复现，字体默认行高会
+   随平台字体度量漂移，让测量值在渲染帧之间抖动 */
+.tm-head {
+  padding: 10px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tm-head-line1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+}
+
+/* 全空闲/无会话时的弱化文案：会话总数只在这里出现一次，其余场合不上桌 */
+.tm-head-quiet {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+
+.tm-head-warn {
+  color: var(--warn-amber);
+  display: inline-flex;
+}
+
+.tm-head-warn-text {
+  color: var(--warn-amber);
+}
+
+/* 状态计数行：点 + 数量 + 文字，只列非零「有事」状态、按严重度排序。
+   文字自带语义（复用岛面板 SESSION_META 的词），无需图例 */
+.tm-head-states {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.tm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-3);
+}
+
+.tm-chip b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 点颜色跟随 chip 文字色（currentColor），颜色与语义一一对应 */
+.tm-chip .tm-dot {
+  background: currentColor;
+}
+
+.chip-error {
+  color: var(--danger);
+}
+
+.chip-waiting {
+  color: var(--warn-amber);
+}
+
+.chip-working {
+  color: var(--accent);
+}
+
+.chip-idle,
+.chip-offline {
+  color: var(--text-4);
+}
+
+.tm-head-line2 {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 额度行：百分比档位色复用 App.css 的 .text-normal/.text-warn/.text-danger，
+   阈值与岛面板同一套（设置页可配）；重置时间等辅助信息弱化 */
+.tm-head-quota b {
+  font-weight: 600;
+}
+
+/* 额度行可点击态（M3-5）：直达额度窗口；hover 微高亮给出可点暗示，
+   不改变行内文字配色（档位色语义优先） */
+.tm-head-quota-link {
+  cursor: pointer;
+  border-radius: 6px;
+  margin: 0 -6px;
+  padding-left: 6px;
+  padding-right: 6px;
+  transition: background var(--dur-base) var(--ease-out);
+}
+.tm-head-quota-link:hover {
+  background: var(--surface-hover);
+}
+
+.tm-quota-sub {
+  color: var(--text-4);
+}
+
+.tm-quota-exhausted {
+  color: var(--danger);
+}
+
+/* 余额告急红字（M3-6 归一第一优先）：跌破警戒线的实例名＋金额（06 §9.2） */
+.tm-quota-urgent {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* ===== 全部实例明细（M3-6）：点击额度行展开/收起，每实例一行，
+   色点＋别名＋数值摘要＋更新时间，行点击打开额度窗口 ===== */
+.tm-quota-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tm-quota-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 15px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) ease;
+}
+
+.tm-quota-item:hover {
+  background: var(--surface-hover);
+}
+
+/* 色点＝实例品牌色（岛轮播指示器同一颜色语义） */
+.tm-quota-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.tm-quota-alias {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tm-quota-val {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+}
+
+.tm-quota-time {
+  flex: none;
+  color: var(--text-4);
+}
+
+.tm-quota-none {
+  color: var(--text-4);
+}
+
+/* 状态点：基础形态（颜色由 chip 的 currentColor 提供） */
+.tm-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+/* 分组分隔线：发丝线 + 左右收进 */
+.tm-sep {
+  flex: none;
+  height: 1px;
+  background: var(--border);
+  margin: 4px 10px;
+}
+
+/* ===== 菜单项：行高 40（原生约 30），左图标 + 文案 + 右徽标 ===== */
+.tm-item {
+  flex: none;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  cursor: default;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+
+.tm-item:hover {
+  background: var(--surface-hover);
+}
+
+.tm-item:active {
+  background: var(--veil-active);
+}
+
+.tm-item-ico {
+  flex: none;
+  width: 16px;
+  display: inline-flex;
+  justify-content: center;
+  color: var(--text-3);
+}
+
+.tm-item-label {
+  flex: 1;
+}
+
+/* 右侧状态徽标（岛可见性）：弱化字号，不与主文案抢层级 */
+.tm-item-badge {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+/* 退出项：悬停文字与图标转错误红（图标 currentColor 自动跟随） */
+.tm-item-danger:hover {
+  color: var(--danger);
+}
+
+.tm-item-danger:hover .tm-item-ico {
+  color: var(--danger);
+}

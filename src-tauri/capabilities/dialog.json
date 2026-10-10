@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "dialog-save",
+  "description": "保存对话框仅报表（CSV 导出）与会话（CSV 导出）两窗口使用（2026-10-03 审查收窄：原先授予全部 7 窗口）",
+  "windows": ["report", "sessions"],
+  "permissions": ["dialog:allow-save"]
+}

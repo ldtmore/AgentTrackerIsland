@@ -1,0 +1,85 @@
+/* ===== 操作结果反馈 toast（2026-10-09 自设置页 .st-toast 提炼共享） =====
+   三页同一反馈语言：成功短暂自动消失、失败常驻可关闭；
+   贴窗顶居中（AntD 同位，落在页头中部空区不盖按钮）；样式逐参数照搬原
+   设置页实现（视觉零变化），时长/悬停暂停语义见 Toast.tsx */
+
+/* 选择器带类型（div.toast，0-1-1）：压过报表/会话页的「内容限宽」根选择器
+   （.rp-root > *／.ss-root > *，0-1-0 的 width:100% + max-width:1200/1320
+   会把页内 fixed 元素拉成限宽横幅——2026-10-09 实机翻车点）；width 显式
+   收缩适配双保险，不依赖 fixed 定位的 shrink-to-fit 缺省行为 */
+div.toast {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-toast);
+  /* 收缩为内容宽的居中小胶囊，上限 560px（失败长文在限宽内换行全文可读，
+     不再如旧内联芯片截断丢排障信息） */
+  width: fit-content;
+  max-width: min(560px, calc(100vw - 48px));
+  background: var(--option-bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--text-1);
+  box-shadow: 0 4px 16px var(--edge-shadow);
+  animation: toast-in var(--dur-enter) ease;
+  /* 文字＋动作链接＋（失败）关闭钮同行排布；纯文字态单 span 视觉同旧块级 */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.toast-err {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.toast-text {
+  min-width: 0;
+}
+
+/* 动作链接（导出成功＝打开所在目录）：强调色文字钮，悬停下划线示意可点 */
+.toast-action {
+  flex: none;
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.toast-action:hover {
+  text-decoration: underline;
+}
+
+/* 失败 toast 的关闭钮（五轮审查口径随组件迁移）：常驻提示配主动关闭手段 */
+.toast-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: none;
+  padding: 2px;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.7;
+}
+
+.toast-close:hover {
+  opacity: 1;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -6px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}

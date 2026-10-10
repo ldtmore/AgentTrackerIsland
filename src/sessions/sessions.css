@@ -1,0 +1,1078 @@
+/* 会话窗口样式（M1-10：会话管理中心；常规窗口， */
+/* 色板走 App.css 的主题变量，支持深浅双主题，与报表/设置页同族） */
+
+.ss-root {
+  box-sizing: border-box;
+  /* 自身作为滚动容器（与设置/报表页同模式）：全局 App.css 对 body 设了 overflow:hidden，
+     内容超出窗口高度时由 .ss-root 出滚动条 */
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--root-bg);
+  color: var(--text-1);
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 13px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 内容限宽（五轮审查批次三）：11 列表格是天然宽内容，限宽取 1320（比报表/
+   额度宽一档保列可读）；逐子元素限宽居中，滚动条仍贴窗口右缘。
+   box-sizing:border-box（2026-10-03 布局修复，同报表页）：钳边框盒＝钳
+   视觉总宽——否则带 padding/边框的顶层元素在限宽激活后视觉外宽超出裸
+   结构 div，上下边缘错开（机制性预防） */
+.ss-root > * {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1320px;
+  margin-inline: auto;
+}
+
+/* 文本选中色（五轮审查，同报表页）：替代 WebView2 默认蓝底白字 */
+.ss-root ::selection {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* 滚动条：与设置/报表/岛面板同款（6px 细条半透明，悬停加亮）；
+   width=竖向、height=横向（表格窄窗横向溢出时同为细长条，不走系统粗样式） */
+.ss-root::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.ss-root::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ss-root::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 3px;
+}
+
+.ss-root::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+
+/* ===== 页头：标题 + 数据截至 + 刷新 + 导出 ===== */
+
+.ss-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  /* 窄窗换行兜底（与报表页 .rp-header 同规则）：导出结果提示（max 320px）
+     出现时头部放行折行而不是挤压溢出 */
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.ss-title {
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 标题+口径说明的包裹层：小字紧贴标题，不被 space-between 推向右侧 */
+.ss-title-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 口径说明小字：本窗口只统计有调用记录的会话（与岛面板的文件扫描口径差异），
+   hover 见完整解释——数据口径差异必须交互引导，不能让用户猜（2026-09-21 所有者拍板） */
+.ss-title-note {
+  font-size: 11px;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+
+.ss-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  /* 组内放行折行：导出提示占宽时其余控件下移而不是挤出视口 */
+  flex-wrap: wrap;
+}
+
+/* 数据截至时间戳：诚实呈现数据时点（打开/刷新时查询，非实时） */
+.ss-stamp {
+  font-size: 11px;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+
+.ss-export {
+  white-space: nowrap;
+}
+
+/* ===== 按钮（与报表 rp-btn 同款） ===== */
+
+/* 按钮基类（底色/边框/内边距/圆角等）收敛至 shared/buttons.css（07-UX 3.5），
+   本页仅保留 nowrap 与 active 强调变体两项差异；选中态悬停复述强调底
+   （换灰底会让 accent-contrast 反色字失去依托，2026-10-08 验收发现修复，
+   反馈形式对齐 st-btn-primary 先例） */
+.ss-btn {
+  white-space: nowrap;
+}
+
+.ss-btn.active {
+  /* 走全局强调色（2026-10-03 审查修复）：原第三种绿硬编码 #10b981 叠加后
+     文字仅 2.65:1；与设置页锚点条同源后双主题自动达标 */
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.ss-btn.active:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+  opacity: 0.88;
+}
+
+/* ===== 工具行 1：搜索框 + 状态档 chips ===== */
+
+.ss-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.ss-search {
+  position: relative;
+  flex: 1;
+  min-width: 220px;
+}
+
+.ss-search input {
+  box-sizing: border-box;
+  width: 100%;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  color: var(--text-1);
+  border-radius: 8px;
+  padding: 5px 28px 5px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+}
+
+.ss-search input:focus {
+  border-color: var(--accent);
+}
+
+/* 清空按钮（有输入时出现，右侧悬浮） */
+.ss-search-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  color: var(--text-4);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.ss-search-clear:hover {
+  color: var(--text-2);
+}
+
+.ss-chips {
+  display: flex;
+  gap: 6px;
+}
+
+/* 状态档 chip：选中态描边高亮（不用大面积色块，保持克制） */
+.ss-chip {
+  background: var(--btn-bg);
+  border: 1px solid var(--border-strong);
+  color: var(--text-2);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.ss-chip:hover {
+  background: var(--btn-bg-hover);
+}
+
+.ss-chip.on {
+  background: var(--btn-bg-hover);
+  border-color: var(--accent);
+  color: var(--text-1);
+}
+
+/* ===== 工具行 2：范围档 + 维度筛选 ===== */
+
+.ss-filter {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.ss-ranges {
+  display: flex;
+  gap: 6px;
+}
+
+.ss-clear {
+  padding: 5px 10px;
+}
+
+/* ===== 会话表 ===== */
+
+.ss-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ss-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-4);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  /* 表头吸顶（2026-10-03 审查修复）：每页最多 200 行滚 3 屏后列头仍在——
+     此前 Sessions.tsx 注释宣称已吸顶但 CSS 无 sticky；不透明底防穿行 */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--root-bg);
+}
+
+/* 可排序表头：可点击暗示 + 选中键高亮 */
+.ss-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.ss-table th.sortable:hover {
+  color: var(--text-2);
+}
+
+/* 带列级说明的表头（状态/Agent/出错/时长）：虚线下划线＋help 光标暗示可悬停 */
+.ss-table th.help {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.ss-table th.help:hover {
+  color: var(--text-2);
+}
+
+.ss-sort-mark {
+  color: var(--accent);
+}
+
+.ss-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 首列（状态）与第二列（会话名）不截断挤压；会话名列弹性收窄 */
+.ss-table td:nth-child(2) {
+  max-width: 280px;
+  color: var(--text-1);
+}
+
+/* 窄窗列降级（五轮审查批次三）：最小窗 760 下 11 列 nowrap 会压瘦主信息列
+   （会话名大面积省略号）——<900px 隐藏三列低频信息保主列完整：
+   序号（第 1 列，翻页信息页脚已有）/项目（第 6 列，抽屉里有全路径）/
+   时长（第 10 列，部分 Agent 本就无此字段）。被隐信息明细层（抽屉）完整承载 */
+@media (max-width: 900px) {
+  .ss-table th:nth-child(1),
+  .ss-table td:nth-child(1),
+  .ss-table th:nth-child(6),
+  .ss-table td:nth-child(6),
+  .ss-table th:nth-child(10),
+  .ss-table td:nth-child(10) {
+    display: none;
+  }
+}
+
+.ss-table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+/* 仅新鲜会话可点击跳转：光标与悬浮提示暗示可点，旧行普通光标 */
+.ss-table tbody tr.clickable {
+  cursor: pointer;
+}
+
+/* 当前打开抽屉的会话行：保持高亮，翻列表时不迷失在看哪一行 */
+.ss-table tbody tr.ss-row-active,
+.ss-table tbody tr.ss-row-active:hover {
+  background: var(--surface-hover);
+}
+
+/* 数字列右对齐等宽 */
+.ss-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+}
+
+/* 状态单元格：状态点 + 文案（状态点样式复用 App.css 的 .dot 体系） */
+.ss-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+}
+
+/* 出错会话的状态文字标红（与岛面板 .card-state.text-error 同语义） */
+.ss-state-err {
+  color: var(--danger);
+}
+
+/* 已结束会话整行置灰弱化（与岛面板 .card-ended 同一置灰度，扫表时层级清晰） */
+.ss-table tbody tr.ended {
+  opacity: 0.55;
+}
+
+/* 出错列：有错红字、无错弱化 */
+.ss-err {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.ss-err0 {
+  color: var(--text-4);
+}
+
+/* 序号列：弱化小数字（辅助定位，不抢数据列的视觉权重） */
+.ss-seq {
+  color: var(--text-4);
+}
+
+/* ===== 分页器 ===== */
+
+.ss-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.ss-page-no {
+  font-size: 12px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  margin-right: auto;
+}
+
+/* 跳页输入框（07-UX 3.2）：窄宽仅容页码，样式走搜索框同语言（input 底/边/
+   焦点强调色），居中排版贴数字输入惯例 */
+.ss-jump {
+  box-sizing: border-box;
+  width: 56px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  color: var(--text-1);
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: center;
+  outline: none;
+}
+
+.ss-jump:focus {
+  border-color: var(--accent);
+}
+
+.ss-jump::placeholder {
+  color: var(--text-4);
+}
+
+/* 每页行数选择（原生 select：选项弹层不吃半透明变量，用不透明 option-bg） */
+.ss-pagesize {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.ss-pagesize select {
+  background: var(--btn-bg);
+  border: 1px solid var(--border-strong);
+  color: var(--text-1);
+  border-radius: 8px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.ss-pagesize select:hover {
+  background: var(--btn-bg-hover);
+}
+
+.ss-pagesize select option {
+  background: var(--option-bg);
+  color: var(--text-1);
+}
+
+/* ===== 空态/加载/失败 ===== */
+
+.ss-empty {
+  color: var(--text-4);
+  text-align: center;
+  padding: 60px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+/* 空态内的动作按钮升级为主按钮（2026-10-03 审查：空态行动性归一——
+   额度页空态模板是「主按钮」，重试/清除筛选同款强调，行动入口不弱化） */
+.ss-empty .ss-btn {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+/* 空态主按钮悬停复述强调底（同 .active 复述理由：基类悬停的 :not(.active)
+   只排除类名 active，护不住这种上下文主按钮写法） */
+.ss-empty .ss-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+  opacity: 0.88;
+}
+
+.ss-retry {
+  padding: 5px 10px;
+}
+
+.ss-foot {
+  font-size: 11px;
+  color: var(--text-4);
+  padding-bottom: 4px;
+}
+/* 分条短句行距（2026-10-10 对齐报表页脚 07-UX 3.3 同款 2px 紧排） */
+.ss-foot > div + div {
+  margin-top: 2px;
+}
+
+/* ===== 会话详情抽屉：头区一行＋统计条＋页签（调用流水/状态时间线）＋正序倒序 ===== */
+
+/* 遮罩：点击关闭。overflow:hidden＋overscroll-behavior:contain 把遮罩本身
+   变成「不可滚动的滚动容器」——它是 .ss-root（本页真正的滚动容器）的 DOM
+   子节点，不这么做滚轮链会穿透遮罩滚动背后表格（07-UX 2.2；本页 body 恒
+   overflow:hidden，锁 body 的方案在本项目无效） */
+.ss-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: var(--z-modal);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+/* 右侧滑入面板。同 2.2：抽屉本体也终止滚轮链（头部/统计条区域不链回表格） */
+.ss-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 520px;
+  max-width: 92vw;
+  background: var(--root-bg);
+  border-left: 1px solid var(--border-strong);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);
+  z-index: var(--z-modal-top);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  animation: ss-drawer-in var(--dur-enter) var(--ease-out);
+}
+
+@keyframes ss-drawer-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/* 头区一行：状态点＋标题（左）＋跳转＋关闭（右），原三行纵排收为一行 */
+.ss-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ss-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 14px;
+}
+
+.ss-drawer-title b {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 头区右侧工具：跳转＋关闭（跳转压缩为小按钮，完整说明在悬浮提示） */
+.ss-drawer-headtools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.ss-drawer-jump {
+  padding: 3px 10px;
+  font-size: 11px;
+}
+
+/* 关闭按钮：绝对定位悬浮在抽屉左上角外侧——不占抽屉空间、位置恒定；
+   抽屉（fixed）即其包含块 */
+.ss-drawer-close {
+  position: absolute;
+  top: 8px;
+  left: -34px;
+  background: none;
+  border: none;
+  color: var(--text-4);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  flex: none;
+}
+
+.ss-drawer-close:hover {
+  color: var(--text-1);
+}
+
+/* 旧「600px 抽屉关闭钮回贴」断点已删（五轮审查）：窗口 minWidth=760，
+   92vw（699px）恒大于抽屉固定宽 520px，该档永不触发——死代码 */
+
+/* 元信息行：Agent 全名徽标＋模型（等宽字体）＋最后活动相对时间（右对齐） */
+.ss-drawer-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* 模型名：等宽字体（中间弹性位，过长省略） */
+.ss-drawer-model {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 最后活动相对时间：弱色小字（悬浮看首末完整时间） */
+.ss-drawer-rel {
+  flex: none;
+  color: var(--text-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* 完整项目路径：独立一行，等宽弱色小字，允许任意字符断行不撑破抽屉 */
+.ss-drawer-path {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+  word-break: break-all;
+}
+
+/* 统计条：五格汇总（数据全部来自行数据，零额外查询） */
+.ss-drawer-stats {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.ss-drawer-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ss-drawer-stat-label {
+  /* 11px（07-UX 3.7）：对齐四轮审查 rp-delta 10px→11px 提档先例——10px 是
+     全项目唯一残留小字，中文在 10px 下笔画粘连 */
+  font-size: 11px;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+
+.ss-drawer-stat-value {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 出错子标：红色小字跟在调用数后 */
+.ss-drawer-stat-err {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--danger);
+}
+
+/* 统计条弱色明细行：输入/缓存/思考/首字/错误率等次要指标一行放下，可换行 */
+.ss-drawer-stat-detail {
+  font-size: 11px;
+  color: var(--text-4);
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 页签栏：两页签（选中描边高亮，同状态档 chip 风格）＋右侧排序切换/刷新 */
+.ss-drawer-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+
+.ss-drawer-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text-3);
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.ss-drawer-tab:hover {
+  background: var(--surface-hover);
+  color: var(--text-1);
+}
+
+.ss-drawer-tab.on {
+  background: var(--btn-bg-hover);
+  border-color: var(--accent);
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+/* 页签栏右侧工具：排序切换＋刷新 */
+.ss-drawer-tools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ss-drawer-order {
+  background: var(--btn-bg);
+  border: 1px solid var(--border-strong);
+  color: var(--text-2);
+  border-radius: 8px;
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.ss-drawer-order:hover {
+  background: var(--btn-bg-hover);
+  color: var(--text-1);
+}
+
+/* 排序方向三角：accent 色与主表格排序标记同一符号语言 */
+.ss-drawer-order-mark {
+  color: var(--accent);
+}
+
+.ss-drawer-refresh {
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  font-size: 11px;
+  padding: 3px 6px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.ss-drawer-refresh:hover {
+  color: var(--text-1);
+}
+
+/* 主体：页签内容唯一滚动区。overscroll-behavior:contain（07-UX 2.2）：
+   列表滚到尽头不再把滚轮链回背后表格 */
+.ss-drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.ss-drawer-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.ss-drawer-body::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 3px;
+}
+
+/* 截断诚实提示：命中加载上限时出现在列表顶部 */
+.ss-trunc {
+  font-size: 11px;
+  color: var(--text-4);
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  padding: 4px 8px;
+  margin-bottom: 8px;
+}
+
+/* 日期分组分隔行：左右细线夹标签（今天／昨天／MM-dd（周X）） */
+.ss-day-sep {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 6px;
+  color: var(--text-4);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.ss-day-sep::before,
+.ss-day-sep::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.ss-day-sep:first-child {
+  margin-top: 2px;
+}
+
+.ss-drawer-empty,
+.ss-drawer-loading {
+  font-size: 12px;
+  color: var(--text-4);
+  padding: 8px 0;
+}
+
+/* 加载态呼吸动画（prefers-reduced-motion 下被全局收束） */
+.ss-drawer-loading {
+  animation: ss-loading-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes ss-loading-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.ss-drawer-err {
+  font-size: 12px;
+  color: var(--danger);
+  padding: 8px 0;
+}
+
+/* 单次调用卡片：与状态时间线共用同一条竖向时间轴——
+   轴段由每张卡自绘（上下撑满），日期分隔行处自然断开 */
+.ss-call {
+  position: relative;
+  margin-left: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+
+/* 轴线段：卡片左外沿，与事件轴同一垂直线（轴距容器左缘 5px）；
+   bottom 延伸 8px 吸收卡片间 6px 间距（2026-10-10 修复断轴）——同日相邻
+   卡片连成整条；延伸量取 8px＝6px 间距＋2px 余量：高 DPI 缩放下 6px 间隙
+   映射非整数物理像素，细线端点各损半像素会留约 2px 视觉淡缝，过量盖住；
+   线在卡外间隙里不触内容，日期分隔行上 margin 10px 仍挡住延伸保留「隔天断开」 */
+.ss-call::before {
+  content: "";
+  position: absolute;
+  left: -11px;
+  top: 0;
+  bottom: -8px;
+  width: 1px;
+  background: var(--border);
+}
+
+/* 列表末卡收线：不向底部悬出延伸小尾巴 */
+.ss-call:last-child::before {
+  bottom: 0;
+}
+
+/* 轴上圆点：垂直居中于卡片（卡片高度随拆解行换行变化时始终居中）；正常调用灰点 */
+.ss-call::after {
+  content: "";
+  position: absolute;
+  left: -14.5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-4);
+}
+
+/* 出错调用：红点＋淡红光晕，扫轴一眼定位错误。
+   半透明红走 color-mix(var(--danger)) 派生（2026-10-10 审查修复：原硬编码
+   亮红 rgba(248,113,113) 不随主题——浅色 --danger 已切深红 #b91c1c 而此四处
+   仍是 red-400，合成边框对浅卡面仅 1.50:1；派生后深浅两主题自动联动，
+   深色渲染分毫不变，写法同 ::selection 处既有先例） */
+.ss-call-err::after {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
+}
+
+/* 悬浮卡片：轻微提亮＋点微亮，指示「正在读哪一条」；出错卡保持红底语义并加深 */
+.ss-call:hover {
+  background: var(--surface-hover);
+}
+
+.ss-call:hover::after {
+  background: var(--text-3);
+}
+
+.ss-call-err:hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.ss-call-err:hover::after {
+  background: var(--danger);
+}
+
+/* 出错卡：红边＋极淡红底，扫表一眼定位 */
+.ss-call-err {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+
+.ss-call-line1 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+  min-width: 0;
+}
+
+.ss-call-time {
+  color: var(--text-4);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.ss-call-model {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 合计 token（含缓存）：扫表主数字，右对齐加粗 */
+.ss-call-total {
+  color: var(--text-1);
+  font-weight: 600;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.ss-call-errtag {
+  color: var(--danger);
+  flex: none;
+  font-size: 11px;
+}
+
+.ss-call-line2 {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 状态时间线：布局骨架与调用卡同构（2026-10-10 所有者拍板）——
+   左侧 0~16px 间隔带放轴线＋圆点（行背景物理够不到，悬浮永不与轴交叉，
+   修掉原 padding-left 盒内画线「高亮盖住圆点、灰块穿线」的交叉），
+   右侧数据行从 16px 起与调用卡数据区同起点；行仍是无边框轻行（事件高频
+   低密度，套卡片会让长列表膨胀三倍——容器形态刻意分层，轴几何恒对齐）；
+   悬浮行轻微提亮（与调用卡同一「正在读哪一条」的指示语言） */
+.ss-event {
+  position: relative;
+  display: flex;
+  /* baseline 对齐（2026-10-10 修复）：时间 11px 与 hook 名 12px 字号不同，
+     默认顶对齐时基线错开 1~2px 视觉「不在一条水平线」——与调用卡 line1 同款 */
+  align-items: baseline;
+  gap: 10px;
+  margin-left: 16px;
+  /* 左右对称 8px 内边距（2026-10-10）：修悬浮高亮「文字顶行左缘」；
+     文字起点 24px 恰与调用卡文字起点（16＋边框 1＋padding 8＝25px）对齐 */
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+.ss-event:hover {
+  background: var(--surface-hover);
+}
+
+/* 轴线：距容器左缘 5px（-11 + margin 16），与调用卡轴线同一垂直线，
+   页签切换时轴不跳动；行间无 margin，线天然连续成整条 */
+.ss-event::before {
+  content: "";
+  position: absolute;
+  left: -11px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+/* 圆点：6px 紧凑档（调用卡 8px），圆心对准线中心（距容器左缘 5.5px） */
+.ss-event::after {
+  content: "";
+  position: absolute;
+  left: -13.5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-4);
+}
+
+.ss-event-time {
+  color: var(--text-4);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.ss-event-hook {
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* 流水条目复制按钮（2026-10-10 悬浮化重构）：绝对定位脱离内容流——
+   原内联在调用卡 line2（flex-wrap）末尾，opacity:0 不脱流，文字长时被
+   挤成独占一行＝未悬浮时卡片底部一块空白行；事件行尾部也被恒定挤压。
+   现两宿主统一浮层化：内容区零占位，悬浮时实底小 pill（--root-bg 不透明
+   底＋细边框，压字也可辨识，深浅主题随 --root-bg 联动）淡入。
+   padding 扩热区（四轮审查）保留：含边框约 24px 高不低于最小点击目标 */
+.ss-copy {
+  position: absolute;
+  background: var(--root-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-4);
+  font-size: 11px;
+  padding: 4px 6px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+/* 调用卡宿主：悬浮出现于卡片右下角（原视觉位置，不遮 line1 主数字） */
+.ss-call .ss-copy {
+  right: 8px;
+  bottom: 4px;
+}
+
+/* 事件行宿主：行尾垂直居中 */
+.ss-event .ss-copy {
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.ss-call:hover .ss-copy,
+.ss-event:hover .ss-copy,
+.ss-copy:focus-visible,
+.ss-copy.ok {
+  opacity: 1;
+}
+
+.ss-copy:hover {
+  color: var(--text-1);
+}
+
+.ss-copy.ok {
+  color: var(--accent);
+}

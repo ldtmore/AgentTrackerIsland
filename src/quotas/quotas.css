@@ -1,0 +1,485 @@
+/* 额度页样式（M3-5，Quotas.tsx 配套；06-PLAN §8 三段式骨架）。
+   常规窗口，色板走 App.css 的主题变量，支持深浅双主题，与报表/设置页同族。
+   实例卡片本体复用 providercard.css（.pc-* 全局类），本文件只负责页面布局
+   与额度体/脚注/分组/空态等页面级元素。 */
+
+/* 页面滚动容器（与报表页 rp-root 同模式）：body overflow:hidden，内容超出
+   窗口高度时由根元素出滚动条 */
+.qt-root {
+  box-sizing: border-box;
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--root-bg);
+  color: var(--text-1);
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 13px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 内容限宽（五轮审查批次三，同报表页 1200）：大屏不无限拉伸；逐子元素
+   限宽居中，滚动条仍贴窗口右缘、根背景不透底。
+   box-sizing:border-box（2026-10-03 布局修复，同报表页）：钳边框盒＝钳
+   视觉总宽——否则带 padding/边框的顶层元素在限宽激活后视觉外宽超出裸
+   结构 div，上下边缘错开（机制性预防，当前顶层多为裸 div 暂未显形） */
+.qt-root > * {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1200px;
+  margin-inline: auto;
+}
+
+/* 文本选中色（五轮审查，同报表页）：替代 WebView2 默认蓝底白字 */
+.qt-root ::selection {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.qt-root::-webkit-scrollbar {
+  width: 6px;
+}
+.qt-root::-webkit-scrollbar-track {
+  background: transparent;
+}
+.qt-root::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 3px;
+}
+.qt-root::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+
+/* 页头：标题 + 数据截至 + 手动刷新（与报表页同款交互） */
+.qt-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  /* 窄窗换行兜底（与报表/会话页同规则）：控件极少的头部常态不会折行，
+     仅极窄时放行换行防挤压 */
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.qt-title {
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.qt-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.qt-stamp {
+  font-size: 11px;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+/* qt-btn 全部声明与基类一致（07-UX 3.5 收敛至 shared/buttons.css），
+   本页无差异规则保留 */
+
+/* ===== 汇总条：余额合计（按币种分列）＋窗口口径实例数，悬浮给口径说明 ===== */
+/* 总览卡（2026-09-29 布局优化）：原汇总条与重置日历两个孤块合并的单卡容器
+   ——块材质（surface+border+圆角）在此层，内部两段（汇总行＋重置时间表）；
+   与实例卡片同一种"卡片语言"，间距节奏对齐（padding 14px / 卡片流 gap 10px） */
+/* 2026-09-29 二次优化：总览卡改**左右布局**（汇总行｜垂直分隔线｜重置时间表
+   chip 横排），压低卡片高度避免挤压下方实例卡片流；窄窗（<760px）回退上下堆叠 */
+.qt-overview {
+  display: flex;
+  align-items: stretch;
+  gap: 16px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+/* 垂直分隔线（随右段一起出现/隐藏；stretch 自适应卡片高度） */
+.qt-overview-sep {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+}
+@media (max-width: 760px) {
+  .qt-overview {
+    flex-direction: column;
+    gap: 0;
+  }
+  .qt-overview-sep {
+    width: auto;
+    height: 1px;
+    margin: 10px 0;
+  }
+}
+/* 上段：汇总行（原汇总条的 flex 布局，块样式已上移 .qt-overview） */
+.qt-sumbar {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.qt-sum-label {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.qt-sum-num {
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.qt-sum-sep {
+  color: var(--text-4);
+}
+.qt-sum-sub {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.qt-sum-sub b {
+  color: var(--text-1);
+}
+.qt-sum-none {
+  font-size: 12px;
+  color: var(--text-3);
+}
+/* 汇总条口径说明 ⓘ：推到条右端（悬浮出完整口径说明） */
+.qt-sum-tip {
+  margin-left: auto;
+  cursor: help;
+}
+
+/* ===== 实例卡片流网格（设置页 st-insts 同款自适配列） ===== */
+.qt-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  gap: 10px;
+}
+
+/* 厂商折叠分组（>3 家时启用）：组头 = 箭头＋品牌色点＋厂商名＋实例数 */
+.qt-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.qt-group-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 2px 2px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  cursor: pointer;
+  text-align: left;
+  border-radius: 6px;
+}
+.qt-group-head:hover {
+  color: var(--text-1);
+  background: var(--surface-hover);
+}
+.qt-group-head .pc-dot {
+  width: 9px;
+  height: 9px;
+}
+.qt-group-chevron {
+  font-size: 11px;
+  color: var(--text-4);
+  width: 10px;
+  flex: none;
+}
+.qt-group-count {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-4);
+}
+
+/* ===== 额度体（ProviderCard detail 插槽内容） ===== */
+
+/* Windows 口径：每窗口一组 = 条行（三列等长）＋ 倒计时小字行（E1 改造）。
+   组间 10px、组内 2px，倒计时缩进对齐条起点 */
+.qt-qwins {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.qt-qwingroup {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+/* 历史小标行（凭据失效时额度体顶部的补充说明，A2）。
+   2026-10-09 位置统一：「历史／推算值」恒在额度体左上方——原右对齐与
+   Balance 口径的内联小标（跟在金额后）、岛面板行首的「推算」同义不同位 */
+.qt-stale-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: -4px;
+}
+.qt-qwin {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.qt-qwin-label {
+  flex: none;
+  width: 22px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.qt-qbar {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  /* 走 --track 进度轨道令牌（2026-10-10 审查修复：原误用 --switch-off 开关
+     关闭态轨道——两值不同（0.22/0.08 白），额度条轨道明显偏实；岛端 .qbar、
+     面板 .quota-bar、报表轨道均走 --track，此处对齐） */
+  background: var(--track);
+  overflow: hidden;
+}
+.qt-qbar-fill {
+  height: 100%;
+  border-radius: 999px;
+  /* 走主题变量（2026-10-03 审查修复：原硬编码 #34d399/#f59e0b 不随主题，
+     且与 9-28 定下的单一琥珀变量口径分叉——浅色下告警档仅 1.99:1） */
+  background: var(--accent);
+  /* scaleX（合成器属性）替代 width：变化平滑不触发布局重排（与岛面板同款） */
+  transform-origin: left center;
+}
+.qt-qbar-fill.fill-warn {
+  background: var(--warn-amber);
+}
+.qt-qbar-fill.fill-danger {
+  background: var(--danger);
+}
+.qt-qwin-pct {
+  flex: none;
+  width: 36px;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+/* 水位分色文字（与 App.css text-warn/text-danger 同义，本页独立定义避免跨文件耦合） */
+.qt-qwin-pct.text-warn {
+  color: var(--warn-amber);
+}
+.qt-qwin-pct.text-danger {
+  color: var(--danger);
+}
+/* 倒计时独立小字行（E1）：缩进对齐条起点（22px 标签＋8px 间距），
+   从条行移出后条永远等长，倒计时作为辅助信息层级弱化 */
+.qt-qwin-reset {
+  margin-left: 30px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-4);
+}
+
+/* Balance 口径：金额大字 + 赠金/现金拆分行 */
+.qt-amount-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.qt-amount {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+/* 欠费（Moonshot cash_balance 可为负）与跌破警戒线同用红色告警 */
+.qt-amount-bad {
+  color: var(--danger);
+}
+.qt-amount-split {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.qt-amount-tag {
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  white-space: nowrap;
+}
+
+/* 暂无数据的额度体占位（Windows 零快照 / Balance 零快照 / LocalEstimate 预留） */
+.qt-qempty {
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.6;
+}
+
+/* ===== 卡片脚注（ProviderCard actions 插槽）：时间 + 状态徽标 + 单卡刷新 ===== */
+.qt-foot {
+  margin-top: auto;
+  padding-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.qt-foot-time {
+  font-size: 11px;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+/* 状态徽标：异常态才出现（正常态保持安静，默认即正常） */
+.qt-badge {
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+  cursor: default;
+}
+.qt-badge-warn {
+  color: var(--warn-amber);
+  border: 1px solid var(--warn-amber);
+}
+.qt-badge-off {
+  color: var(--text-3);
+  border: 1px solid var(--border-strong);
+}
+.qt-foot .qt-refresh {
+  margin-left: auto;
+}
+
+/* 单卡刷新小按钮（与 pc-btn 同族，弱化为文字级） */
+.qt-refresh {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--btn-bg);
+  color: var(--text-2);
+  cursor: pointer;
+  font-family: inherit;
+  flex: none;
+}
+.qt-refresh:hover:not(:disabled) {
+  background: var(--btn-bg-hover);
+  color: var(--text-1);
+}
+.qt-refresh:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* 刷新失败即时反馈（复用检测三态行的视觉语言） */
+.qt-refresh-err {
+  font-size: 12px;
+  color: var(--danger);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* 空态引导（零实例：页面存在、零阻塞——红线④）：07-UX 2.1 起错误态与真空态
+   统一走 shared/EmptyState 模板（样式在 shared/emptystate.css，本模板即其蓝本），
+   页内样式已随迁移删除 */
+
+/* 托盘深链定位高亮（#12）：进入视口中心时描边呼吸一下，随 focusId 清除而消失 */
+.qt-card-focus > * {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 12px;
+  animation: qt-focus-pulse 0.8s ease-in-out 2;
+}
+@keyframes qt-focus-pulse {
+  50% {
+    outline-color: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .qt-card-focus > * {
+    animation: none;
+  }
+}
+
+/* pace 燃烧速度预警小字（#21）：高危红／逼近琥珀；常态（预测 <85%）不渲染。
+ * 2026-09-29 修正：--warn 变量不存在（全局为 --warn-amber），原 fallback 硬编码
+ * 永远生效不随双主题——改用真实变量 */
+.qt-qwin-pace {
+  font-size: 11px;
+  color: var(--warn-amber);
+  padding-left: 2px;
+}
+.qt-qwin-pace.qt-pace-bad {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* 重置时间表（#22，2026-09-29 改总览卡内联段）：小标＋逐日紧凑行，
+   无事件整段隐藏（组件返回 null，分隔线随之内联随之消失） */
+.qt-cal {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.qt-cal-title {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.qt-cal-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  color: var(--text-1);
+  font-size: 12px;
+}
+.qt-cal-item {
+  white-space: nowrap;
+}
+
+/* 窗口重置反馈（#26）：重置发生时进度条从满格扫过回落（一次性 1s 自熄） */
+.qt-qbar-fill.qt-just-reset {
+  animation: qt-reset-sweep 0.9s ease-out;
+}
+@keyframes qt-reset-sweep {
+  0% {
+    transform: scaleX(1);
+    filter: brightness(1.6);
+  }
+  60% {
+    filter: brightness(1.2);
+  }
+  100% {
+    filter: brightness(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .qt-qbar-fill.qt-just-reset {
+    animation: none;
+  }
+}
+
+/* 卡片等高修正（2026-09-29）：#12 深链给每张卡包了一层定位锚 div——它成了
+   网格的直接子项被拉伸到行高，而内部 ProviderCard 只占内容高，同卡出现高度差
+   与底部留白。让包装层与卡片两层都填满行高，恢复 grid 直接子项时代的等高观感
+   （设置页 st-insts 无包装层，不受影响） */
+.qt-cards > div {
+  height: 100%;
+}
+.qt-cards > div > .pc-card {
+  height: 100%;
+  box-sizing: border-box;
+}

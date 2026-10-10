@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "全部窗口的基础权限（core:default 只读类）。窗口操作权限已按实际使用收窄至岛窗（window-ops-island）与托盘菜单（window-ops-tray），四轮审查：原先三项操作权限授予全部 7 窗口而五个辅助窗口无消费者",
+  "windows": ["island", "settings", "sessions", "report", "quotas", "about", "tray-menu"],
+  "permissions": [
+    "core:default"
+  ]
+}

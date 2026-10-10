@@ -1,0 +1,125 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "去你的岛",
+  "identifier": "com.agenttrackerisland.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "island",
+        "title": "去你的岛",
+        "width": 380,
+        "height": 48,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "transparent": true,
+        "resizable": false,
+        "shadow": false,
+        "visible": false
+      },
+      {
+        "label": "tray-menu",
+        "title": "托盘菜单 · 去你的岛",
+        "url": "index.html#tray-menu",
+        "width": 280,
+        "height": 324,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "transparent": true,
+        "resizable": false,
+        "shadow": false,
+        "visible": false,
+        "focus": false
+      },
+      {
+        "label": "settings",
+        "title": "设置 · 去你的岛",
+        "url": "index.html#settings",
+        "width": 800,
+        "height": 600,
+        "minWidth": 520,
+        "minHeight": 480,
+        "visible": false,
+        "resizable": true,
+        "center": true
+      },
+      {
+        "label": "report",
+        "title": "报表 · 去你的岛",
+        "url": "index.html#report",
+        "width": 900,
+        "height": 675,
+        "minWidth": 760,
+        "minHeight": 520,
+        "visible": false,
+        "resizable": true,
+        "center": true
+      },
+      {
+        "label": "quotas",
+        "title": "额度 · 去你的岛",
+        "url": "index.html#quotas",
+        "width": 900,
+        "height": 675,
+        "minWidth": 760,
+        "minHeight": 520,
+        "visible": false,
+        "resizable": true,
+        "center": true
+      },
+      {
+        "label": "sessions",
+        "title": "会话 · 去你的岛",
+        "url": "index.html#sessions",
+        "width": 960,
+        "height": 700,
+        "minWidth": 760,
+        "minHeight": 520,
+        "visible": false,
+        "resizable": true,
+        "center": true
+      },
+      {
+        "label": "about",
+        "title": "关于 · 去你的岛",
+        "url": "index.html#about",
+        "width": 460,
+        "height": 540,
+        "minWidth": 400,
+        "minHeight": 460,
+        "visible": false,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420 ws://localhost:1421"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "licenseFile": "../LICENSE",
+    "windows": {
+      "nsis": {
+        "template": "nsis/installer.nsi",
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"]
+      }
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

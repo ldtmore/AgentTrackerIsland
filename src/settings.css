@@ -1,0 +1,1424 @@
+/* 设置页样式（2026-09-17 重构）：分区卡片 + 统一"设置行" + 即时生效交互
+   色板全部走 App.css 主题变量（含本次新增的 accent/danger/switch-off），
+   深浅双主题下均保证文字与控件的对比度；窗口可调尺寸，布局随宽度流式伸缩
+   2026-09-28 降噪改版：分区间距/分区头字号/行高节奏放宽；阈值色点改语义变量；
+   Agent 卡不再把 --accent 局部重写为身份色（开关/焦点环恒用全局强调色）；
+   清理无引用死样式（st-badge/st-token） */
+
+/* 页面外壳（L1 改造）：滚动与根背景挂在全窗层——滚动条贴窗口右缘，
+   内部内容列限宽居中，全屏拉伸时行不至于拉到不可扫读的长度 */
+.st-page {
+  box-sizing: border-box;
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--root-bg);
+  color: var(--text-1);
+}
+
+/* 文本选中色（五轮审查，同报表/会话/额度三页）：替代 WebView2 默认蓝底白字 */
+.st-page ::selection {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* 内容列：限宽 1080px 居中（微软设置页指南建议 1000～1100px）；
+   Agent 卡片网格随之封顶 3 列 */
+.st-root {
+  box-sizing: border-box;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 14px 16px 20px;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  /* 分区之间 16px：2026-09-28 降噪放宽（原 12px），用留白疏解连续滚动的拥挤感 */
+  gap: 16px;
+}
+
+/* 滚动条：与灵动岛展开面板（panel-sessions）同款——6px 细条半透明，
+   悬停加亮；轨道透明融入窗口背景 */
+.st-page::-webkit-scrollbar {
+  width: 6px;
+}
+
+.st-page::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.st-page::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 3px;
+}
+
+.st-page::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+
+/* ===== 顶部锚点条（阶段二）：sticky 钉顶 + scroll-spy 高亮 + 点击平滑滚动 =====
+   高度变量供分区头吸顶（.st-sec-head）与 toast 让位（.st-toast-top）引用，
+   TSX 侧 NAV_HEIGHT_PX（scroll-spy 吸顶判定线）同源，改动需三处同步 */
+:root {
+  --st-nav-h: 42px;
+}
+
+.st-nav {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky-nav); /* 高于分区头（--z-sticky）低于 toast */
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--st-nav-h);
+  /* 不透明底：吸顶时实打实盖住穿行的行内容（同 --sec-head-bg 思路，此处用页面根色） */
+  background: var(--root-bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.st-nav-item {
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 5px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--dur-fast) ease, background var(--dur-fast) ease;
+}
+
+.st-nav-item:hover {
+  color: var(--text-1);
+  background: var(--surface-hover);
+}
+
+.st-nav-item:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 当前分区：强调色文字 + 低透明强调底（与厂商选择器选中项同一配方） */
+.st-nav-on,
+.st-nav-on:hover {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-weight: 500;
+}
+
+/* ===== 首次引导「三步上手卡」（07-UX 1.1）：一次性引导，样式对齐分区卡片
+   语言（surface 面＋border 边＋12px 圆角），以强调色左标线与常规分区区分 ===== */
+
+.st-onboarding {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  padding: 12px 14px;
+  flex: none;
+}
+
+.st-onb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.st-onb-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* 「不再显示」：弱色文字钮，hover 提亮——低频逃生口不与步骤链接抢读 */
+.st-onb-dismiss {
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--text-4);
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.st-onb-dismiss:hover {
+  color: var(--text-2);
+}
+
+.st-onb-desc {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+.st-onb-steps {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.st-onb-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.st-onb-step + .st-onb-step {
+  border-top: 1px solid var(--border);
+}
+
+.st-onb-mark {
+  flex: none;
+  display: inline-flex;
+}
+
+.st-onb-step-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.st-onb-step-title {
+  font-size: 12px;
+  color: var(--text-1);
+}
+
+.st-onb-step-desc {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 「去操作」链接（07-UX 1.1）：强调色文字钮走 scrollToSection 直达分区，
+   完成与否均可点（第一步「去调整」是查看性动作）；focus-visible 焦点环保
+   键盘可达（与 st-nav-item 同款） */
+.st-onb-link {
+  flex: none;
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.st-onb-link:hover {
+  text-decoration: underline;
+}
+
+.st-onb-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ===== 分区卡片 ===== */
+
+.st-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px 6px;
+  display: flex;
+  flex-direction: column;
+  flex: none;
+}
+
+/* ===== 分区头：主标题 + 副标题同行（主/副标题关系，基线对齐，均不换行） ===== */
+
+/* 副标题不换行：窗口最小宽度按最宽一条副标题的实际文字宽度设下限，
+   极端收窄时以省略号兜底（正常最小宽度下不会触发） */
+/* 分区头吸顶（L2 改造）：滚动中每节标题钉在窗口顶、随下一节到来被推走，
+   深滚时始终知道自己所在分区。top 让位顶部锚点条高度（--st-nav-h，阶段二），
+   与锚点条底缘相接；背景用「surface 叠在 root-bg 上」的不透明
+   近似色（--sec-head-bg）——常态下与卡片面视觉无差，吸顶时能实打实盖住
+   穿行的行内容；负外边距抵消卡片内边距，吸顶背景铺满卡片内宽到边框 */
+.st-sec-head {
+  position: sticky;
+  top: var(--st-nav-h);
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  margin: -12px -14px 0;
+  padding: 12px 14px 6px;
+  background: var(--sec-head-bg);
+  border-radius: 12px 12px 0 0;
+}
+
+.st-sec-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+  flex: none;
+  white-space: nowrap;
+}
+
+.st-sec-desc {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.st-sec-body {
+  display: flex;
+  flex-direction: column;
+  margin-top: 4px;
+}
+
+/* ===== 设置行：左 = 固定标题 + 固定描述，右 = 控件；相邻行发丝线分隔 ===== */
+
+.st-row-item {
+  padding: 12px 0;
+}
+
+.st-row-item + .st-row-item {
+  border-top: 1px solid var(--border);
+}
+
+.st-row-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.st-row-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.st-row-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-1);
+}
+
+.st-row-desc {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.55;
+  margin-top: 2px;
+}
+
+/* 描述行尾的 ⓘ 更多说明入口（I2 改造）：功能性标记——悬停出 Tip 气泡承接
+   从描述里挪出来的细节；弱色不与正文抢读，行内基线对齐。
+   padding 扩热区（四轮审查）：12px 图标低于最小点击目标约 24px */
+.st-row-tip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 4px;
+  margin-left: 0;
+  vertical-align: -2px;
+  color: var(--text-4);
+  cursor: help;
+}
+
+.st-row-tip:hover {
+  color: var(--text-2);
+}
+
+/* 校验错误：就近显示在出错行正下方（不用底部/远端提示，保证可见） */
+.st-row-error {
+  font-size: 11px;
+  color: var(--danger);
+  margin-top: 6px;
+}
+
+/* 校验失败时出错输入框的边框标红（I3 改造）：红字定位到行、红框定位到框 */
+.st-input-err {
+  border-color: var(--danger);
+}
+
+.st-input-err:focus {
+  border-color: var(--danger);
+}
+
+.st-row-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+/* tall 行：宽控件（输入框）独占一行放到文字下方 */
+.st-row-control-tall {
+  margin-top: 8px;
+}
+
+/* ===== 输入控件 ===== */
+
+.st-input {
+  box-sizing: border-box;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  color: var(--text-1);
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.st-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+select.st-input option {
+  background: var(--option-bg);
+}
+
+/* 行右侧定宽下拉（平台 / 保留周期） */
+.st-input-sm {
+  width: 172px;
+}
+
+/* 阈值数字输入：居中窄框 */
+.st-input-num {
+  width: 56px;
+  text-align: center;
+  padding: 6px 4px;
+}
+
+/* 阈值前置色点：琥珀 / 红，与岛胶囊语义一致（2026-09-28 起走语义变量，
+   与岛端 dot-amber / --danger 同值同源，消除同义色两套色值） */
+.st-th {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.st-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.st-dot-amber {
+  background: var(--warn-amber);
+}
+
+.st-dot-red {
+  background: var(--danger);
+}
+
+.st-eye,
+.st-key-copy {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--btn-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.st-eye:hover,
+.st-key-copy:hover {
+  background: var(--btn-bg-hover);
+  color: var(--text-1);
+}
+
+/* ===== 滑动开关：状态由位置表达，标题文案固定 ===== */
+
+.st-switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  border: 1px solid var(--border-strong);
+  background: var(--switch-off);
+  cursor: pointer;
+  padding: 0;
+  flex: none;
+  transition: background var(--dur-enter) ease, border-color var(--dur-enter) ease;
+}
+
+.st-switch:hover {
+  border-color: var(--scroll-thumb-hover);
+}
+
+.st-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  /* 描边（C2 改造＋五轮审查提档）：浅色身份色（黄/琥珀等）做 on 轨道时白
+     thumb 对比不足；深色主题翠绿轨 #34d399 上白 thumb 原仅 1.92:1（图形需
+     3:1）——描边加深到 0.45 黑后轮廓可辨（位置通道本就兜底，此处补边界通道） */
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 0 1.5px rgba(0, 0, 0, 0.45);
+  transition: transform var(--dur-enter) ease;
+}
+
+.st-switch-on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.st-switch-on .st-switch-thumb {
+  transform: translateX(16px);
+}
+
+/* 行内小号开关（Agent 行精确状态，M2-8）：38×22 全尺寸在勾选行内偏大 */
+.st-switch-sm {
+  width: 30px;
+  height: 18px;
+  border-radius: 9px;
+}
+
+.st-switch-sm .st-switch-thumb {
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+}
+
+.st-switch-sm.st-switch-on .st-switch-thumb {
+  transform: translateX(12px);
+}
+
+/* 禁用态（busy 装卸中 / Agent 未勾选）：置灰且不可点 */
+.st-switch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ===== 背景不透明度滑块：原生 range 染主题强调色，右侧定宽数值回显 ===== */
+
+.st-slider {
+  width: 150px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.st-slider-val {
+  width: 38px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ===== 三档分段选择（主题）：点击即全窗口预览 ===== */
+
+.st-seg {
+  display: inline-flex;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.st-seg-item {
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.st-seg-item:hover {
+  color: var(--text-1);
+}
+
+.st-seg-on {
+  background: var(--surface-hover);
+  color: var(--text-1);
+  font-weight: 500;
+}
+
+/* ===== 按钮 ===== */
+/* 基类（底色/边框/圆角/字阶/禁用 0.45 等）收敛至 shared/buttons.css（07-UX 3.5），
+   本页保留四项差异：更大内边距、nowrap、无守卫 hover（禁用态也反馈悬停）、
+   更淡的禁用透明度 0.55 */
+
+.st-btn {
+  padding: 6px 14px;
+  white-space: nowrap;
+}
+
+.st-btn:hover {
+  background: var(--btn-bg-hover);
+}
+
+.st-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.st-btn-sm {
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+/* ===== Agent 监控（2026-09-23 卡片网格改版） =====
+   列数随容器宽度自适应：auto-fill + 280px 下限（min(280px,100%) 保证极端窄时
+   退单列不截断）；L1 内容列限宽 1080px 后网格随之封顶 3 列 */
+.st-agents {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
+  gap: 10px;
+  /* 网格无行内 padding：补足与普通设置行（上 padding 10px）一致的标题间距节奏 */
+  margin-top: 10px;
+}
+
+.st-agent {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--dur-base) ease, border-color var(--dur-base) ease, opacity var(--dur-base) ease;
+}
+
+.st-agent:hover {
+  background: var(--surface-hover);
+}
+
+.st-agent:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 启用态仅加强边框（2026-09-28 降噪）：开关/焦点环恒用全局强调色，
+   不再把 --accent 局部重写为身份色——控件状态色全页单色是 Fluent 惯例，
+   身份色只留在色点一处，消除同屏多色的花哨感 */
+.st-agent-on {
+  border-color: var(--border-strong);
+}
+
+/* 未启用的家不采集不展示：整卡降透明（色带/色点随之变淡，层次依旧可辨） */
+.st-agent:not(.st-agent-on) {
+  opacity: 0.68;
+}
+
+.st-agent-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.st-agent-name .st-agent-switch {
+  margin-left: auto;
+  display: inline-flex;
+}
+
+/* 身份徽章=取色入口（2026-09-30 徽章统一改版，替代旧 12px 色点）：
+   徽章本体由 shared/AgentBadge 渲染（灰阶态组件自理），此处只做
+   取色点击代理的容器——原生 color input 缩放差且样式不可控，隐藏铺满 */
+.st-agent-badge {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  transition: transform var(--dur-base) ease;
+}
+
+.st-agent-badge:hover {
+  transform: scale(1.05);
+}
+
+.st-agent-badge input[type="color"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.st-agent-badge input[type="color"]:disabled {
+  cursor: not-allowed;
+}
+
+/* 取色入口键盘焦点可见（2026-10-03 审查修复）：input 可 Tab 聚焦但
+   opacity:0 焦点环不可见——容器借 :focus-within 补一道徽章轮廓 */
+.st-agent-badge:focus-within {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+/* 副标题=真实采集方式文案；有 hooks 的家把精确开关挂在本行行尾 */
+.st-agent-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.st-agent-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 行内精确状态开关：未启用 Agent 时整组置灰（不监控谈不上精确） */
+.st-agent-hooks {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex: none;
+}
+
+.st-agent-hooks-label {
+  font-size: 10px;
+  color: var(--text-3);
+  cursor: default;
+}
+
+.st-agent-hooks-off .st-agent-hooks-label {
+  color: var(--text-4);
+}
+
+.st-agent-foot {
+  padding: 8px 0 4px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 上岛深度步进器（2026-10-08「在岛展示前 N 个」）：−/＋ 小方钮夹数值，
+   语言对齐 st-switch/st-btn 的边框与底色令牌；数值恒宽防步进抖动 */
+.st-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.st-stepper-btn {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--btn-bg);
+  color: var(--text-1);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--dur-base) ease;
+}
+
+.st-stepper-btn:hover:not(:disabled) {
+  background: var(--btn-bg-hover);
+}
+
+.st-stepper-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.st-stepper-val {
+  min-width: 2ch;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 岛外卡（拖拽序在 N 之外）：照常采集但不上岛——整卡退后＋行内「未上岛」
+   小标。与未启用（0.68＋灰徽章＝不采集）双通道区分，退后档取 0.55 拉开层次 */
+.st-agent.st-agent-offisland {
+  opacity: 0.55;
+}
+
+.st-agent-offisland-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  font-size: 10px;
+  color: var(--text-4);
+  cursor: default;
+}
+
+/* ===== 供应商实例管理（M3-4，06-PLAN §7；2026-09-25 UX 改版） =====
+   卡片本体样式在 shared/providercard.css（与额度页共用）；表单迁入页内弹窗，
+   此处放卡片网格、虚线添加卡、弹窗、凭据组合框与厂商 chip 墙 */
+
+/* 实例卡片网格：与 Agent 卡片网格同参数（auto-fill 280px 下限，限宽后 3 列封顶） */
+.st-insts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+/* 网格末尾虚线添加卡：与卡片流融为一体，替代游离的文字按钮 */
+.st-insts-add {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 120px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color var(--dur-base) ease, color var(--dur-base) ease, background var(--dur-base) ease;
+}
+
+.st-insts-add:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--surface);
+}
+
+.st-insts-add-plus {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 字符＋换 SVG 后经此处定尺寸（原字符 20px 视觉量级） */
+.st-insts-add-plus .ico {
+  width: 16px;
+  height: 16px;
+}
+
+/* ===== 页内模态弹窗（添加/编辑供应商） ===== */
+.st-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  /* 深色主题底色本就深，45% 黑几乎不可感知（M3-4 实测）——加深＋模糊，
+     双重手段把"弹窗态"与页面内容区分开 */
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 16px 16px;
+  overflow-y: auto;
+  /* overscroll-behavior:contain（07-UX 2.2）：弹窗内容滚到尽头不再链动
+     背后设置页（遮罩是 .st-page 滚动容器的子节点，滚轮链会穿透） */
+  overscroll-behavior: contain;
+  animation: st-modal-in 0.16s var(--ease-out);
+}
+
+.st-modal {
+  width: 560px;
+  max-width: 100%;
+  /* 必须用不透明底：--surface 是 4% 白的玻璃薄层（分区卡片专用），
+     弹窗用它背景内容会整体穿透（M3-4 实测翻车） */
+  background: var(--option-bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  animation: st-modal-pop 0.16s var(--ease-out);
+}
+
+.st-modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.st-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.st-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+@keyframes st-modal-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes st-modal-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.st-form-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.st-form-label {
+  flex: none;
+  width: 64px;
+  padding-top: 7px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.st-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+
+.st-form-field .st-input {
+  max-width: 420px;
+}
+
+.st-form-hint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-4);
+}
+
+/* 纯文字说明行（无输入框）的对齐修饰：st-form-label 的 padding-top:7px 是
+   为 input 行设计的，field 里只有一行 hint 时补同值内边距，与 label 基线
+   对齐（2026-10-10 验收反馈：claude-local 凭据行小字比「凭据」label 高 7px） */
+.st-form-hint-aligned {
+  padding-top: 7px;
+}
+
+.st-form-err {
+  font-size: 11px;
+  color: var(--danger);
+}
+
+.st-form-ok {
+  font-size: 11px;
+  color: var(--accent);
+}
+
+/* 凭据组合框：左类型下拉 + 分隔线 + 右值输入，共享边框成一体
+   （前缀组合模式，2026-09-25 UX 改版；输入框随类型联动密码/明文形态） */
+.st-combo {
+  display: flex;
+  align-items: stretch;
+  max-width: 420px;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color var(--dur-base) ease;
+}
+
+.st-combo:focus-within {
+  border-color: var(--accent);
+}
+
+.st-combo-select {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 7px 2px 7px 8px;
+  cursor: pointer;
+}
+
+.st-combo-select option {
+  background: var(--option-bg);
+  color: var(--text-1);
+}
+
+.st-combo-sep {
+  flex: none;
+  width: 1px;
+  margin: 5px 6px;
+  background: var(--input-border);
+}
+
+.st-combo-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 7px 8px;
+  outline: none;
+}
+
+.st-combo .st-eye {
+  flex: none;
+}
+
+/* 编辑态厂商锁定：色点 + 名称 + 不可更改提示，一行只读 */
+.st-kind-locked {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-1);
+  padding: 7px 0;
+}
+
+.st-kind-locked .st-form-hint {
+  margin-left: 8px;
+}
+
+/* 厂商可搜索选择器：触发器显示色点+当前厂商，展开浮层搜索+带色列表
+   （11 家路线图下平铺 chip 墙会膨胀；浮层底用不透明 option-bg，同弹窗教训） */
+.st-kindpick {
+  position: relative;
+  max-width: 420px;
+}
+
+.st-kindpick-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  color: var(--text-1);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color var(--dur-base) ease;
+}
+
+.st-kindpick-btn:hover {
+  border-color: var(--border-strong);
+}
+
+.st-kindpick-btn:focus-visible,
+.st-kindpick-btn.st-kindpick-open {
+  border-color: var(--accent);
+}
+
+.st-kindpick-text {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-kindpick-caret {
+  flex: none;
+  color: var(--text-3);
+  font-size: 10px;
+}
+
+.st-kindpick-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: var(--z-overlay);
+  background: var(--option-bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+
+.st-kindpick-search {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-1);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 8px 10px;
+}
+.st-kindpick-search:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+
+.st-kindpick-list {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+/* 列表滚动条（五轮审查）：厂商多于可视高时出滚动——原先无定制规则，
+   弹 WebView2 系统粗滚动条（.sel-list / .history-menu 同款三行补齐） */
+.st-kindpick-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.st-kindpick-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.st-kindpick-list::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 3px;
+}
+
+.st-kindpick-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.st-kindpick-opt:hover {
+  background: var(--btn-bg-hover);
+}
+
+.st-kindpick-opt.on {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.st-kindpick-none {
+  padding: 10px;
+  font-size: 12px;
+  color: var(--text-4);
+  text-align: center;
+}
+
+/* 选择器条目两行结构（2026-10-10 双站条目）：主行官方定名＋站别徽标，
+   副行「俗名 · 域名」弱化灰字——站别与请求目标一眼可辨 */
+.st-kindpick-item {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.st-kindpick-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.st-kindpick-sub {
+  font-size: 11px;
+  color: var(--text-4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 站别徽标（国内站/国际站）：小圆角描边 chip——双站厂商成对戴、单站无，
+   徽标只承载站别一个语义（防徽标通胀）；描边浅底双主题可辨 */
+.st-kind-badge {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--text-3);
+  background: var(--btn-bg);
+}
+
+.st-chip-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+/* base 覆盖折叠开关（文字按钮样式） */
+.st-form-fold {
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--text-3);
+  background: none;
+  border: none;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.st-form-fold:hover {
+  color: var(--text-1);
+}
+
+/* 表单主操作按钮（保存并检测）：强调色实底，文字色随主题取对比色
+   （暗主题亮翠绿底配深字、浅主题深翠绿底配白字——白字在亮绿上对比不足） */
+.st-btn-primary {
+  padding: 6px 14px;
+  font-size: 12px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.st-btn-primary:hover:not(:disabled) {
+  background: var(--accent);
+  opacity: 0.88;
+  color: var(--accent-contrast);
+}
+
+.st-btn-primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 余额警戒线输入框前的货币符号（与阈值行的色点占位同宽对齐） */
+.st-bal-sym {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* ===== 顶部 toast（2026-10-09 提炼 shared/Toast）：样式随组件走，此处仅留
+   设置页定位变体——成功 2.5s 自动消失、失败常驻可关闭的语义不变 ===== */
+
+/* 让位顶部锚点条（阶段二）：失败 toast 常驻时不遮分区导航 */
+.st-toast-top {
+  top: calc(var(--st-nav-h) + 12px);
+}
+
+/* ===== 窄窗适配（L3 改造）：窗口收窄到 640px 以下（最小窗 520px 触发）时，
+   右侧控件统一换到文字下方左对齐——消除描述换行后文字块与控件贴挤的观感；
+   tall 行（API Key）本就下沉，视觉不变 */
+@media (max-width: 639px) {
+  .st-row-main {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .st-row-control {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  /* 下沉后控件与描述之间拉开一行距，与 tall 行的 8px 保持同一节奏 */
+  .st-row-control:not(.st-row-control-tall) {
+    margin-top: 8px;
+  }
+
+  /* 供应商表单（M3-4）：窄窗时标签置顶、字段占满行宽 */
+  .st-form-row {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .st-form-label {
+    width: auto;
+    padding-top: 0;
+  }
+}
+
+/* 厂商折叠分组（2026-09-29 审查修复 #13，>3 家时启用）：组容器占满整行，
+   内部自起网格——外层 st-insts 是卡片网格，分组块作为一个网格项横跨全部列 */
+.st-inst-group {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.st-inst-group-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 2px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  cursor: pointer;
+  text-align: left;
+  border-radius: 6px;
+}
+.st-inst-group-head:hover {
+  color: var(--text-1);
+  background: var(--surface-hover);
+}
+.st-inst-chevron {
+  font-size: 11px;
+  color: var(--text-4);
+  width: 10px;
+  flex: none;
+}
+.st-inst-count {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-4);
+}
+/* 组内实例卡自起网格（列宽与外层卡片流一致） */
+.st-inst-group .st-inst-group-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
+  gap: 10px;
+}
+
+/* 数值型输入的「未设置」灰显（0=不设的预算线）：提示该值不是用户认真设的线 */
+.st-input.st-input-muted {
+  color: var(--text-4);
+}
+
+/* ===== 卡片拖拽排序（2026-10-03，shared/Sortable.tsx 配套；@dnd-kit） =====
+   手柄为「顶边小标签」：悬浮卡片时在右上角浮现，半浮于卡片顶边线——
+   不与卡内任何按钮/开关重叠；隐身期 pointer-events:none 绝不挡点击，
+   指针拖拽与点击靠 5px 位移阈值互斥。键盘排序：聚焦手柄后空格拾起、
+   方向键移动、空格放下（dnd-kit 内建，focus-visible 时手柄常显）。
+   全局 prefers-reduced-motion 收束（App.css 尾部）已覆盖让位过渡，此处不重复 */
+
+/* 排序单元（网格格子）：display:grid 让卡片段重新拉伸填满格子——包装层
+   替卡片成为网格子项后，默认 stretch 不再直达卡片，同排卡片会失去等高；
+   grip 以此为定位锚 */
+.sort-cell {
+  position: relative;
+  display: grid;
+}
+
+/* 组排序单元（分组形态）：包装层成为网格子项，承接 .st-inst-group 的跨满列 */
+.st-insts .sort-box {
+  grid-column: 1 / -1;
+  position: relative;
+}
+
+/* grip 手柄标签：默认隐身且不可点，卡片悬浮/手柄聚焦时浮现 */
+.sort-grip {
+  position: absolute;
+  top: 0;
+  right: 10px;
+  transform: translateY(-50%);
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--option-bg);
+  color: var(--text-3);
+  cursor: grab;
+  touch-action: none; /* 指针拖拽的接触面不吃触摸滚动 */
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-base) var(--ease-out),
+    color var(--dur-base) var(--ease-out);
+}
+
+.sort-cell:hover .sort-grip,
+.sort-grip:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sort-grip:hover {
+  color: var(--text-1);
+}
+
+.sort-grip:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 拖动中的单元：提起层次（投影挂卡片段——包装层透明无面可投影） */
+.sort-cell.sort-dragging {
+  z-index: 10;
+}
+
+.sort-dragging .sort-grip {
+  opacity: 1;
+  pointer-events: auto;
+  cursor: grabbing;
+  color: var(--accent);
+}
+
+.sort-dragging .st-agent,
+.sort-dragging .pc-card {
+  border-color: var(--accent);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* 组头拖动：整组提起为浮层面板 */
+.sort-box.sort-dragging .st-inst-group {
+  background: var(--surface);
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+/* 组头内联 grip 提示（组头整钮即拖拽激活器，图标只是可拖性的视觉信号；
+   点击折叠/拖动排序共存：位移阈值区分） */
+.st-inst-grip {
+  display: inline-flex;
+  color: var(--text-4);
+  touch-action: none;
+}
+
+.st-inst-group-head:hover .st-inst-grip {
+  color: var(--text-2);
+}

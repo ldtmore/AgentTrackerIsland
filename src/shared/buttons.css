@@ -1,0 +1,46 @@
+/*
+ * 五窗按钮共享基类（07-UX 3.5 工程债收敛）：
+ * rp-btn／ss-btn／qt-btn／st-btn／ab-btn 五套逐字近似的样式收敛为组选择器
+ * 单源；各页 CSS 仅保留真实差异（st/ab 的 padding 6px 14px 与 nowrap、
+ * st 的 disabled 0.55 与无守卫 hover、rp/ss 的 .active 强调变体、st 的
+ * sm/primary 变体）。TSX 零改动——类名原样保留，只收敛声明来源。
+ *
+ * 级联保障：本文件经 App.css 顶部 @import 进入主 chunk，五个页面 CSS 均在
+ * lazy chunk（运行期后插入文档），同特异性下页内差异规则恒胜出，保证
+ * 「零用户可见变化」硬约束。未来新页面的按钮加入上方组即可获得基类
+ */
+
+.rp-btn,
+.ss-btn,
+.qt-btn,
+.st-btn,
+.ab-btn {
+  background: var(--btn-bg);
+  border: 1px solid var(--border-strong);
+  color: var(--text-1);
+  border-radius: 8px;
+  /* 内边距取三页公有值 5px 12px；st/ab 的 6px 14px 属页级差异覆写 */
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+/* 禁用态不响应悬停；:not(.active) 排除选中态——accent 反色字配的是强调底，
+   基类悬停换灰底会让反色字失去依托（深底深字／浅底白字均不可读，2026-10-08
+   所有者验收发现）。选中态悬停反馈由各页 .active:hover 复述（accent 底＋
+   opacity 0.88，同 st-btn-primary 先例） */
+.rp-btn:hover:not(:disabled):not(.active),
+.ss-btn:hover:not(:disabled):not(.active),
+.qt-btn:hover:not(:disabled):not(.active) {
+  background: var(--btn-bg-hover);
+}
+
+.rp-btn:disabled,
+.ss-btn:disabled,
+.qt-btn:disabled,
+.st-btn:disabled,
+.ab-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}

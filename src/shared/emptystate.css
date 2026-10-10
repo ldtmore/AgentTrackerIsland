@@ -1,0 +1,59 @@
+/* 真空态统一模板（07-UX 2.1）：结构对齐额度页 .qt-empty 既有档位——
+   flex 居中、标题 text-2、说明 text-3、主按钮 accent 实底圆角。
+   色板全走 App.css 既有令牌（零新增色），深浅主题自动跟随 */
+
+.es-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 48px 20px;
+  color: var(--text-3);
+  text-align: center;
+}
+
+/* 大号线性图标：复用 icons.tsx 语义图标（12px、24 视框、strokeWidth 2）放大。
+   SVG 的 width/height 属性可被 CSS 覆盖；strokeWidth 随视框等比缩放，44px 下
+   视觉约 3.7px 过粗——压回 1.1（≈12px 原尺寸的 1px 视觉重量，2×12/24） */
+.es-icon {
+  color: var(--text-4);
+  margin-bottom: 2px;
+}
+
+.es-icon svg {
+  width: 44px;
+  height: 44px;
+  stroke-width: 1.1;
+}
+
+.es-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.es-desc {
+  max-width: 380px;
+  line-height: 1.6;
+  /* 错误描述可能携带长 URL/路径，允许在标点处折行兜底 */
+  overflow-wrap: anywhere;
+}
+
+/* 主按钮：与 qt-empty-btn 同档（accent 实底圆角），动作由调用方传入 */
+.es-btn {
+  margin-top: 6px;
+  font-size: 13px;
+  padding: 7px 18px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.es-btn:hover {
+  filter: brightness(1.08);
+}

@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "window-ops-island",
+  "description": "岛窗专属窗口操作：自适应尺寸（App.tsx setSize）与胶囊拖拽（drag-region）。四轮审查收窄：原先三项权限授予全部 7 窗口，实际仅岛窗/托盘菜单有消费者",
+  "windows": ["island"],
+  "permissions": [
+    "core:window:allow-set-size",
+    "core:window:allow-start-dragging"
+  ]
+}
