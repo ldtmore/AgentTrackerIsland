@@ -106,12 +106,17 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "publisher": "LDT",
+    "homepage": "https://github.com/ldtmore/AgentTrackerIsland",
+    "copyright": "Copyright (c) 2026 LDT",
     "licenseFile": "../LICENSE",
     "windows": {
       "nsis": {
         "template": "nsis/installer.nsi",
         "installMode": "currentUser",
-        "languages": ["SimpChinese", "English"]
+        "languages": ["SimpChinese", "English"],
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico"
       }
     },
     "icon": [
