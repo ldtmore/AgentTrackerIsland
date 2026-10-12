@@ -6,7 +6,7 @@
 
 > **定位**：主流 Agent 状态实时监控灵动岛工作台 —— 旁路观测，只看，不碰。
 
-[![release](https://img.shields.io/badge/release-v0.6.0-blue)](https://github.com/ldtmore/AgentTrackerIsland/releases)
+[![release](https://img.shields.io/badge/release-v0.7.0-blue)](https://github.com/ldtmore/AgentTrackerIsland/releases)
 [![tauri](https://img.shields.io/badge/Tauri-2-orange)](https://tauri.app)
 [![rust](https://img.shields.io/badge/Rust-stable-success)](https://www.rust-lang.org)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
