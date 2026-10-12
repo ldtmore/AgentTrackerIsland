@@ -54,6 +54,9 @@
   --dur-fast: 0.12s;
   --dur-base: 0.15s;
   --dur-enter: 0.18s;
+  /* 弹簧曲线（07-TOP-ISLAND §3.3 小岛↔大岛 clip-path 形变专用）：宽度轻微
+     过冲 ~3%——iOS 灵动岛形变的克制版；仅用于容器级形态生长，微交互勿用 */
+  --ease-spring: cubic-bezier(0.34, 1.28, 0.36, 1);
 }
 
 [data-theme="light"] {

@@ -18,14 +18,13 @@
   /* 岛收缩态胶囊 / 展开面板的半透明面层（窗口本身全透明）。
      RGB 与 alpha 拆分：alpha 由设置页「背景不透明度」滑块运行时注入覆盖
      （shared/islandOpacity.ts 按基准值派生：面板 +0.16）；
-     此处静态值 = 默认基准 72% 的派生结果，仅作 JS 未生效前的兜底。
-     贴边隐藏态不在此体系（2026-09-28 定论：恒近黑不透明，见 .edge-tab 注释） */
+     此处静态值 = 默认基准 80% 的派生结果（B30 顺带对齐 72%→80% 的过期
+     兜底值），仅作 JS 未生效前的兜底。左右端帽 B30 起同用本配方
+     （.edge-body 直接消费 --pill-rgb/--pill-alpha，随主题与滑块） */
   --pill-rgb: 20, 20, 24;
   --panel-rgb: 20, 20, 24;
-  /* 贴边隐藏态底色：恒近黑，不随主题/壁纸变（Apple 式硬件物件） */
-  --edge-rgb: 15, 17, 22;
-  --pill-alpha: 0.72;
-  --panel-alpha: 0.88;
+  --pill-alpha: 0.8;
+  --panel-alpha: 0.96;
   /* 共用浮层投影（设置页弹层/搜索下拉等；名字沿自历史，勿再用于贴边件） */
   --edge-shadow: rgba(0, 0, 0, 0.35);
   /* 常规窗口（设置/报表）不透明根背景 */
@@ -83,18 +82,26 @@
 
 /* 浅色色板：半透明面层改白系 RGB（alpha 与深色共用，随「背景不透明度」滑块统一调节），
    边框/悬停改黑系低透明度；状态色（绿/琥珀/红）双主题通用。
-   贴边隐藏态不在此列（--edge-rgb 恒近黑，见 .edge-tab 注释） */
+   B31（2026-10-13 所有者实机反馈）：纯白 255 太亮刺眼（端帽在彩点上呈"发白光"），
+   两步压暗 255→240→**233（#e9ebef，所有者复验后再压一档）**——与深色侧不用
+   纯黑（20,20,24 带蓝调）对称，保留同款冷调；左右端帽随 --pill-rgb 自动跟随；
+   顶部横线恒定色独立（D4） */
 [data-theme="light"] {
   --text-1: #1f2328;
   --text-2: #424a53;
   --text-3: #57606a;
   /* 再加深一档（五轮审查实算）：#62707e 在 root-bg 上 4.69:1，但 text-4 的
-     消费位多在卡片面（rgba 3% 黑 ≈#ededee）上＝4.33:1，11px 信息字需 4.5；
-     #5a6672 卡面 ≈5.1:1（深色侧不变） */
+     消费位多在卡片面（rgba 3% 黑）上＝4.33:1，11px 信息字需 4.5；
+     #5a6672 卡面 ≈5.1:1（深色侧不变）。
+     B32 重算（底色压暗后）：#5a6672 对新 root #e9ebef 4.92:1、新卡面
+     （3% 黑合成 ≈#e2e4e8）4.61:1——仍达标但余量收窄为全库最薄，跌破
+     4.5 时再加深一档 */
   --text-4: #5a6672;
-  --pill-rgb: 255, 255, 255;
-  --panel-rgb: 255, 255, 255;
-  --root-bg: #f5f6f8;
+  --pill-rgb: 233, 235, 239;
+  --panel-rgb: 233, 235, 239;
+  /* B32 常规窗口同步：root 与岛面层同值（深色侧本就恒等：#141418＝20,20,24），
+     五窗口（设置/报表/额度/会话/关于）经 var(--root-bg) 全量联动 */
+  --root-bg: #e9ebef;
   --surface: rgba(0, 0, 0, 0.03);
   --surface-hover: rgba(0, 0, 0, 0.07);
   --border: rgba(0, 0, 0, 0.1);
@@ -107,23 +114,28 @@
   --scroll-thumb-hover: rgba(0, 0, 0, 0.36);
   --btn-bg: rgba(0, 0, 0, 0.06);
   --btn-bg-hover: rgba(0, 0, 0, 0.11);
-  --option-bg: #ffffff;
+  /* select 弹出 option 背景（原生控件不吃半透明变量；B32 恒亮页面半档，
+     与深色侧 #1f1f26 亮于 #141418 的关系对称） */
+  --option-bg: #f0f1f4;
   /* 浅色强调绿加深一档（2026-10-03 审查修复）：#059669 白字仅 3.77:1，
      12px 按钮小字需 4.5——emerald-700 白字 4.9:1 达标；深色侧不变 */
   --accent: #047857;
   /* 深翠绿底配白字 */
   --accent-contrast: #ffffff;
   /* 浅色危险红加深一档（四轮审查实算）：#dc2626 浅底 4.45:1 差一线
-     （红字多为 11~12px 需 4.5），red-700 #b91c1c 达 5.96:1；深色侧不变 */
+     （红字多为 11~12px 需 4.5），red-700 #b91c1c 达 5.96:1；深色侧不变。
+     B32 重算：#b91c1c 对新底 #e9ebef 5.36:1、新卡面 5.02:1，达标余量足 */
   --danger: #b91c1c;
   /* 浅色琥珀深二档（五轮审查实算）：#b45309 白底 5.1 达标但叠加卡片面
      （≈#ededee）＝4.29:1，差 4.5 一线——而琥珀的消费位（卡片摘要百分比/
      脚注徽标/节奏小字）恰全在卡片面内；amber-800 #92400e 卡面 6.05:1，
-     色块通道同步加深无违规（图形 3:1 余量更大）。深色侧不变 */
+     色块通道同步加深无违规（图形 3:1 余量更大）。深色侧不变。
+     B32 重算：#92400e 对新卡面 #e2e4e8 5.57:1（原 6.05），达标余量足 */
   --warn-amber: #92400e;
   --switch-off: rgba(0, 0, 0, 0.2);
-  /* 浅色吸顶底色：#f5f6f8 叠 3% 黑的不透明合成近似（与深色同一算法） */
-  --sec-head-bg: #eeeff1;
+  /* 浅色吸顶底色：#e9ebef 叠 3% 黑的不透明合成近似（与深色同一算法；
+     B32 随 root-bg 联动重算 226,228,232） */
+  --sec-head-bg: #e2e4e8;
   --edge-shadow: rgba(0, 0, 0, 0.12);
   /* 浅色玻璃：高光近白（白底上仍可辨）、底部阴影减淡；罩层反向——黑系轻压暗 */
   --hl-top: rgba(255, 255, 255, 0.9);
@@ -161,10 +173,12 @@ body,
   height: 48px;
   flex: none;
   border-radius: 24px;
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: 0 var(--sp-4);
+  /* 形变（07-TOP-ISLAND §3.3）：容器恒全宽 × 48，小岛态用 clip-path 裁出居中
+     小胶囊——纯合成器属性（动效纪律合规），圆角随裁剪同步插值（18↔24），
+     胶囊端形不变；两侧/底部裁掉的区域由 Rust 穿透调停放行点击。
+     过渡写在目标态上实现不对称：展开（进入本态）＝弹簧 400ms */
+  clip-path: inset(0 0 0 0 round 24px);
+  transition: clip-path 400ms var(--ease-spring);
   /* 玻璃材质：极缓纵向渐变（顶部略提亮）+ 上下 1px 内高光/内阴影，立体而不花哨。
      窗口矩形与胶囊贴合，外投影会被裁平——悬浮深度一律由内高光/边框承担 */
   background: linear-gradient(
@@ -174,7 +188,74 @@ body,
   );
   box-shadow: inset 0 1px 0 var(--hl-top), inset 0 -1px 0 var(--hl-bottom);
   border: 1px solid var(--border);
-  position: relative; /* 悬停罩层 ::before / 氛围光 ::after 的定位基准 */
+  position: relative; /* 悬停罩层 ::before / 氛围光 ::after / 双层内容的定位基准 */
+}
+
+/* 小岛态（07 §3.2）：--isle-w 由 JS 按 mini_line_width 注入（缺省 200 兜底，
+   与 Rust MINI_W_MIN 同源）；B27 中心锚定——上下各裁 6px＝小岛 36px 垂直
+   居中于 48px 窗口（原「底部裁 12px」的顶锚定使两层内容中心错位 6px，收缩
+   交叉淡变时文字上跳＝「收回弹跳」，2026-10-13 所有者实机确认后改）；
+   收缩（进入本态）＝ease-in 300ms 干脆离场 */
+.island.isle-mini {
+  clip-path: inset(
+    6px calc(50% - var(--isle-w, 200px) / 2) 6px calc(50% - var(--isle-w, 200px) / 2)
+    round 18px
+  );
+  transition: clip-path 300ms var(--ease-in);
+}
+
+/* 双层内容（07 §3.3）：小岛层与大岛层恒在 DOM、仅 opacity 交叉淡变——形变中
+   零挂载零卸载；两层绝对叠放（不参与容器 flex），原 .island 的排布职责
+   （间距/内边距）转移到各层。子元素仍受 `.island > * { pointer-events:none }`
+   管辖（整条可拖拽），层自身也不可点 */
+.isle-body {
+  box-sizing: border-box;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  transition: opacity 120ms ease;
+}
+
+/* 大岛内容层：继承旧 .island 的排布（四段 + 16px 内边距）；展开时延迟淡入
+   （错峰交叉：小岛层先淡出，大岛层后浮现，避免两层数字同屏混读） */
+.isle-full-body {
+  gap: var(--sp-2);
+  padding: 0 var(--sp-4);
+  opacity: 1;
+  transition-delay: 100ms;
+}
+
+/* 小岛内容层：宽度＝裁剪可见区宽（--isle-w）且与 clip 居中对齐；内容团
+   **紧凑居中**＋间距舒展（gap 10，2026-10-13 观感调优：两端分布在内容少时
+   中间留 70px 空洞，居中＋舒展间距才是 iOS 小灵动岛的语言；文案盒勿设
+   flex-grow——grow 会吃掉中段使视觉退回两端分布）。
+   ⚠ 层不可铺满窗口（B11 教训）：left 必须＝50% 居中对齐裁剪区。
+   垂直：仅可见区（B27 中心锚定＝clip 上下各裁 6px）内居中——与大岛层内容
+   中心同恒 y24，形变交叉淡变中文字不再上下跳；对齐＝容器 center＋文字
+   line-height:1（盒心即视觉心）——flex baseline 会贴顶（实机证伪，勿改回） */
+.isle-mini-body {
+  left: 50%;
+  right: auto;
+  top: 6px;
+  bottom: 6px;
+  width: var(--isle-w, 200px);
+  transform: translateX(-50%);
+  justify-content: center;
+  gap: 10px;
+  padding: 0 14px;
+  opacity: 0;
+  transition-delay: 0ms;
+}
+
+.island.isle-mini .isle-full-body {
+  opacity: 0;
+  transition-delay: 0ms;
+}
+
+.island.isle-mini .isle-mini-body {
+  opacity: 1;
+  transition-delay: 60ms;
 }
 
 /* 状态氛围光（批次一）：::after 静态着色层，aggregated 状态驱动——
@@ -255,9 +336,11 @@ body,
 }
 
 /* 边缘微光呼吸（2026-09-28 验收评审拍板标配化，删设置项）：胶囊边框一圈
-   极淡强调色光晕 8s 起伏——「活体感」的最低成本表达，强度刻意做淡：
+   极淡光晕 8s 起伏——「活体感」的最低成本表达，强度刻意做淡：
    「注意不到它在呼吸，只觉得它是活的」；只动 opacity（合成器属性）。
-   基础态 opacity 0.55 = reduced-motion 下动画被压成瞬时后的静止落点；
+   2026-10-13 三轮审查 #8：恒绿改中性白——绿只归状态语义（工作/空闲），
+   等待琥珀 tint 叠绿晕、灰灯叠绿晕都是语义混杂，中性白只表「活着」不表
+   状态。基础态 opacity 0.55 = reduced-motion 下动画被压成瞬时后的静止落点；
    出错态红边框优先，光晕让位 */
 .island-glow {
   position: absolute;
@@ -265,9 +348,15 @@ body,
   border-radius: inherit;
   pointer-events: none;
   opacity: 0.55;
-  box-shadow: inset 0 0 10px rgba(52, 211, 153, 0.16);
-  border: 1px solid rgba(52, 211, 153, 0.2);
+  box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   animation: glow-breathe 8s ease-in-out infinite;
+}
+
+/* 浅色主题：白玻璃上白光不可辨，换黑系轻晕（与 veil-hover 反向压暗同思路） */
+[data-theme="light"] .island-glow {
+  box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.07);
+  border-color: rgba(0, 0, 0, 0.09);
 }
 
 .island.st-error .island-glow {
@@ -350,6 +439,9 @@ body,
   border-radius: 50%;
   flex: none;
   position: relative; /* 出错波纹 ::after 的定位基准 */
+  /* 状态切换颜色平滑（2026-10-13 三轮审查 #2）：breathe/pulse 只动
+     opacity/transform，与颜色过渡互不冲突 */
+  transition: background-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .dot-green {
@@ -541,6 +633,79 @@ body,
   margin-left: 2px;
 }
 
+/* ===== 小岛内容层（07 §3.2）：与大岛同构的浓缩四段 ===== */
+
+/* 紧凑文案：只列最高优先级的非零项（"2 出错"/"1 等输入"/"3 工作"），
+   600 字重与大岛主文案同一层级；flex 基础值 auto 不 grow（居中布局——
+   grow 会吃掉中段空隙使视觉退回两端分布，B12 留痕）；line-height:1 使
+   盒心＝视觉心（中文/mono 混排在 center 对齐下同一水平线的关键）；
+   超长省略号兜底（全文在根 title） */
+.isle-mini-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  line-height: 1;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 小岛竖线：大岛 .island-sep 的缩短版（12px，同一分组语言） */
+.isle-mini-body .island-sep {
+  height: 12px;
+}
+
+/* 小岛状态灯：10px（观感调优——9px 在 12px 字旁偏轻，回 10 与字号平衡） */
+.isle-mini-body .dot {
+  width: 10px;
+  height: 10px;
+}
+
+/* 紧凑额度数字（07 §3.2）：tensestAccount 同源——窗口口径"96%"／余额口径
+   紧凑金额；正常档＝主文本色，告警档变色（与大岛仪表同一档位色语义） */
+.isle-mini-quota {
+  flex: none;
+  line-height: 1;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
+.isle-mini-quota.quota-warn {
+  color: var(--warn-amber);
+}
+
+.isle-mini-quota.quota-danger {
+  color: var(--danger);
+}
+
+/* 今日段（四段阶梯的第二数据位）：「今」单字弱标签＋mono 数值——与大岛
+   「今日」段同一仪表语言；仅宽屏（miniW≥280）渲染内容，窄屏由 .isle-narrow
+   隐藏（07 §3.2 D5 阶梯制），信息进根 title */
+.isle-mini-today {
+  flex: none;
+  line-height: 1;
+  font-size: var(--fs-xs);
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.isle-mini-today b {
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-2);
+  margin-left: 2px;
+}
+
+.island.isle-narrow .isle-mini-today {
+  display: none;
+}
+
 /* ===== 宽度降级阶梯（F7）：App.tsx 按 island_metrics 宽度注根类 =====
    ≥560（w-lg）全量四段；460~559（w-md）隐「今日」；<460（w-sm）再隐窗口类
    厂商短名（余额金额单元必须保留厂商，否则金额失主语）。
@@ -554,13 +719,14 @@ body,
   display: none;
 }
 
-/* 采集异常（C7）：红色警示，比灰字更易被注意到；--danger 随主题换深红 */
+/* 采集异常（C7；2026-10-13 三轮审查统一 F3 口径：琥珀＝降级、红＝错误——
+   原红标与横线/端帽/面板/托盘的琥珀口径分裂，废止）：琥珀警示随主题自动换深版 */
 .island-degraded {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   margin-left: 8px;
-  color: var(--danger);
+  color: var(--warn-amber);
 }
 
 /* 键盘焦点统一基线（四轮审查）：原先仅 4 处自定义 accent 焦点环，其余交互件
@@ -575,8 +741,8 @@ body,
 /* 单色 SVG 图标与文字基线对齐（G3）。
    图标颜色一律继承父级 currentColor（四轮审查）：曾有的 .ico-warn 硬编码
    #f87171 会把琥珀「采集异常」标里的图标染红（状态语言矩阵：琥珀=降级、
-   红=错误），且不随浅色主题加深——删规则后岛收缩态（--danger）、面板/托盘
-   （--warn-amber）各归其位 */
+   红=错误），且不随浅色主题加深——删规则后图标随父级走，岛/面板/托盘统一
+   --warn-amber（2026-10-13 三轮审查：岛收缩态由 --danger 归一为琥珀） */
 .ico {
   display: inline-block;
   vertical-align: -1.5px;
@@ -1189,8 +1355,10 @@ body,
 }
 
 /* 浅色主题下气泡翻白（双主题通用，同 dot 语义色的处理思路） */
+/* 浅色主题下气泡随 B31 收进浅面层同族（原 0.98 纯白＝全屏最亮一块，
+   两步压暗与面板底同步、恒亮半档保悬浮分离感；分离感由边框＋投影承担） */
 [data-theme="light"] .tip {
-  background: rgba(255, 255, 255, 0.98);
+  background: rgba(238, 239, 242, 0.98);
   border-color: rgba(0, 0, 0, 0.12);
   color: #374151;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
@@ -1476,22 +1644,24 @@ body,
 
 /* ===== 贴边隐藏态标签（M1-6）：独立微 UI，不是胶囊的截取 ===== */
 
+/* ===== 贴边隐藏态标签（M1-6）：左右件的定位与行为基础类 =====
+   （2026-10-12 07-TOP-ISLAND 改版：顶部隐藏态改由 .top-line 信标线承载，
+   本族只剩左右端帽；顶部旧「矩形切片」样式族已删除） */
+
 .edge-tab {
   position: absolute;
   box-sizing: border-box;
-  /* 形状分家（2026-10-08）：底色/边框/受光是「矩形切片」语言，归顶部件
-     （.edge-tab-top）；左右件的真实端帽弓形由 SVG path 承载（矩形 div 的
-     border-radius 会被相邻半径压缩规则画成尖椭圆，出不了饱满圆头），
-     本类只留行为与动效 */
+  /* 左右件的真实端帽弓形由 SVG path 承载（矩形 div 的 border-radius 会被
+     相邻半径压缩规则画成尖椭圆，出不了饱满圆头），本类只留行为与动效 */
   display: flex;
   align-items: center;
   justify-content: center;
-  overflow: hidden; /* 分段条被容器圆角裁切，首尾段贴合隐藏态边缘 */
+  overflow: hidden;
   cursor: pointer;
   /* 挂载即淡显（滑出隐藏的滑动过程中标签随之浮现，替代生硬的内容切换）；
      hover 探出走 transform（合成器属性） */
   animation: edge-in 180ms var(--ease-out) backwards;
-  transition: filter var(--dur-base) ease, border-color var(--dur-base) ease,
+  transition: filter var(--dur-base) ease,
     transform var(--dur-enter) var(--ease-out);
 }
 
@@ -1501,57 +1671,143 @@ body,
   }
 }
 
-/* 悬停反馈 = 轮廓光提亮 + 轻微提亮 + 向屏幕外"探出" 2px（transform 不动布局，
-   且暗示可交互）。恒近黑后 brightness 单独作用不明显，配合轮廓光增亮；
-   border-color 提亮只作用于顶部件（左右件无 border，轮廓光在 SVG 弧上随
-   brightness 一同提亮） */
+/* 悬停反馈 = 轮廓光提亮（brightness 随 SVG 弧线一同提亮）+ 向屏幕内"探出" 2px
+   （transform 不动布局，且暗示可交互） */
 .edge-tab:hover {
-  border-color: rgba(255, 255, 255, 0.28);
   filter: brightness(1.3);
+}
+
+/* 浅色主题悬停改轻压暗（B30）：白玻璃已到亮度上限，brightness 提亮无效——
+   与浅色主题 veil-hover 的压暗悬停语言一致 */
+[data-theme="light"] .edge-tab:hover {
+  filter: brightness(0.94);
 }
 
 .edge-tab * {
   pointer-events: auto; /* 拖拽经各段自身的 drag-region 属性（隐藏态无 tooltip：悬停即滑入，见 EdgeTab.tsx 头注） */
 }
 
-/* 出错：描边 + 红光，不悬停也能感知（顶部件语言；左右件经 .edge-rim 变色发光） */
-.edge-tab-top.edge-error {
-  border-color: rgba(248, 113, 113, 0.6);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    inset 0 0 8px rgba(248, 113, 113, 0.35);
-}
+/* ===== 顶部横线（07-TOP-ISLAND §3.1）：贴顶隐藏态的信标线，替代旧 14px 底条 =====
+   窗口滑出至屏内留 16px（3px 可见线体＋13px 透明热区），线体在窗口内 y=32~35
+   （贴屏幕顶边）；宽度＝mini_line_width（居中于停靠位）。唯一内容通道＝状态色＋
+   节律（通道补偿 P3），刻意不做分段/额度/「！」（D2/D3） */
 
-/* 采集异常（F3 状态语言矩阵）：容器琥珀描边——degraded 不再因位置沉默；
-   与出错同发时红描边优先（EdgeTab 只挂其一，更严重语义独占边框通道）。
-   左右件同语义走 .edge-rim 琥珀（见下） */
-.edge-tab-top.edge-degraded {
-  border-color: rgba(251, 191, 36, 0.55);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14),
-    inset 0 0 8px rgba(251, 191, 36, 0.25);
-}
-
-/* 顶部贴边：胶囊的底部切片（宽 = peek_top_width，JS 内联注入；高与 Rust
-   PEEK_TOP_H 对应）。窗口保持全宽，切片水平居中——悬停后「由远及近」长回
-   全宽胶囊；底部两端弧＝胶囊端弧的忠实半径（14=条高，纯 quarter circle，
-   与 EdgeTab 轮廓路径同一几何，杜绝「16px 被 clamp」的不精确）。
-   恒近黑不透明＋极淡轮廓光＋1px 顶部受光高光（原 .edge-tab 基础样式，
-   2026-10-08 随形状分家归入本类） */
-.edge-tab-top {
+.top-line {
+  position: absolute;
   left: 50%;
-  bottom: 0;
-  height: 14px;
+  /* 顶部留 4px 间隙（参照 iOS 小白条与底边的呼吸距离，2026-10-13 所有者
+     微调 5→4）：窗口滑出后屏内为窗口 y=32~48，线体落在窗口 y=36~39＝
+     屏幕 y=4~7。⚠ 与 Rust TOP_LINE_GAP 同源双端维护（32+GAP=top） */
+  top: 36px;
   transform: translateX(-50%);
-  background: rgb(var(--edge-rgb));
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
-  border-radius: 0 0 14px 14px;
-  border-top: none;
-  gap: 1px;
+  width: 100%; /* JS 内联注入实际宽度（metrics.mini_line_w）；此值为兜底 */
+  height: 3px;
+  border-radius: 2px; /* 两端全圆角（不贴边后线体是独立悬浮件） */
+  /* 空闲态＝中灰恒值（D4：不做主题变量——背后是壁纸不是本软件面板，主题与
+     壁纸明暗错配时主题变量会隐形）；上白下黑双晕保证任何底色上"芯＋一侧晕"
+     必成对比（图形 3:1 兜底） */
+  background: #888;
+  opacity: 0.9;
+  box-shadow:
+    0 -1px 1px rgba(255, 255, 255, 0.35),
+    0 1px 2px rgba(0, 0, 0, 0.5);
+  /* 状态色切换 0.4s 平滑（2026-10-13 三轮审查 #2）：与岛端氛围光同一节奏，
+     状态翻转不再硬切 */
+  transition: height var(--dur-base) ease, filter var(--dur-base) ease,
+    background-color 0.4s ease;
 }
 
-/* 悬停探出：顶部向下伸 2px（与容器的居中位移叠加） */
-.edge-tab-top:hover {
-  transform: translateX(-50%) translateY(2px);
+/* 预响应（07 §3.1，一期必做）：光标进 16px 热区、穿透解除的瞬间，线体先
+   提亮增厚至 4px（向下生长）再开始滑入——消除"隐形热区触发"的困惑；
+   根 :hover 覆盖整个热区（透明部分也在 .root 内） */
+.root:hover .top-line {
+  height: 4px;
+  filter: brightness(1.5);
+}
+
+/* 状态色（07 §6.2）：饱和语义色双主题通用（dot 体系既有定论）；暗晕＋1px
+   暗描边增强浅底可见（2026-10-13 三轮审查 #6 第一步：状态色芯对纯白壁纸
+   实算仅 1.7~2.8:1，低于图形 3:1 口径——先加描边靠轮廓定义而非芯对比
+   （保 400 系色板统一），纯白壁纸三向实测仍不过线再加深线芯一档，见 07 B26）；
+   节律＝状态灯的线性化，与左右药丸同源（出错＝双脉冲 1.6s（#5 模式区分——
+   与等待单闪的周期差无参照不可辨）＜等待缓闪 1.2s＜降级慢呼吸 4s＜工作
+   微光 8s；岛端出错红灯有文案兜底，维持 0.9s 单脉冲不动） */
+.top-line.st-working {
+  background: #34d399;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(0, 0, 0, 0.22);
+  animation: seg-breathe 8s ease-in-out infinite;
+}
+
+.top-line.st-waiting {
+  background: #fbbf24;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(0, 0, 0, 0.22);
+  animation: seg-blink 1.2s ease-in-out infinite;
+}
+
+.top-line.st-error {
+  background: #f87171;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(0, 0, 0, 0.22);
+  animation: seg-alert 1.6s ease-in-out infinite;
+}
+
+/* 采集异常：琥珀慢呼吸——与等待同为琥珀，靠节律区分性质（快闪＝要看、
+   慢呼吸＝降级；仅无等待/出错时 EdgeTab 才挂此类，07 §6.2） */
+.top-line.st-degraded {
+  background: #fbbf24;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(0, 0, 0, 0.22);
+  animation: seg-breathe 4s ease-in-out infinite;
+}
+
+/* 出错警觉双脉冲（2026-10-13 三轮审查 #5）：两下快闪＋停顿的循环模式——
+   出错 0.9s 与等待 1.2s 的周期差在无并排参照时不可辨（色盲下红/琥珀同
+   谱系，节律是唯一通道），改"模式"区分：双脉冲＝紧急、单闪＝要看、
+   慢呼吸＝降级。横线与左右药丸两处同源；岛端红灯有文案兜底不迁 */
+@keyframes seg-alert {
+  0%,
+  20%,
+  40%,
+  100% {
+    opacity: 1;
+  }
+  10%,
+  30% {
+    opacity: 0.45;
+  }
+}
+
+/* 一次性状态标点（2026-10-13 三轮审查 #4）：进入出错/等待的瞬间播一次宽度
+   脉冲（0.6s 自熄，700ms 后组件摘类）——岛端 halo 光环的横线对等物；宽度
+   通道（增厚＝hover 预响应专用，词汇单一）；scaleX 与 translateX(-50%)
+   复合保居中、origin 默认居中＝两侧对称"心搏"；复合 animation 与状态节律
+   并列（transform 与 opacity 各司其职互不打架，单独 .top-line-beat 不带
+   状态类的规则会在特异性上顶掉节律——故按状态分写两条）；
+   reduced-motion 全局收敛压瞬时 */
+.top-line.st-error.top-line-beat {
+  animation: top-line-beat 0.6s var(--ease-out), seg-alert 1.6s ease-in-out infinite;
+}
+
+.top-line.st-waiting.top-line-beat {
+  animation: top-line-beat 0.6s var(--ease-out), seg-blink 1.2s ease-in-out infinite;
+}
+
+@keyframes top-line-beat {
+  0% {
+    transform: translateX(-50%) scaleX(1);
+  }
+  35% {
+    transform: translateX(-50%) scaleX(1.18);
+  }
+  100% {
+    transform: translateX(-50%) scaleX(1);
+  }
 }
 
 /* 左右贴边悬停：向屏幕内探出 2px */
@@ -1581,67 +1837,16 @@ body,
   height: 48px;
 }
 
-/* ===== Agent 占比分段：颜色 = 身份（内联注入），状态用亮度/动效表达 ===== */
-
-/* 顶部横条：等宽分段，撑满隐藏态高度。
-   seg-wrap 包裹层保持等宽布局，出错"！"叠加在其上不参与伸缩 */
-.edge-seg-wrap {
-  flex: 1 1 0;
-  min-width: 18px;
-  align-self: stretch;
-  display: flex;
-  position: relative;
-}
-
-.edge-seg {
-  flex: 1 1 0;
-  align-self: stretch;
-  overflow: hidden;
-  transition: opacity 0.3s ease;
-}
-
-/* 出错分段叠加"！"（E4）：微 UI 放不下文案，用符号表达异常 */
-.edge-bang {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.8));
-}
-
-.edge-bang .ico {
-  width: 9px;
-  height: 9px;
-  stroke-width: 3;
-}
-
-/* 工作中：全亮 + 慢呼吸（4s/起伏 15%，保留"活着"暗示且不抢注意力） */
-.edge-seg.st-working {
-  animation: seg-breathe 4s ease-in-out infinite;
-}
-
-/* 等待输入：快闪（需要你注意，但仍不刺眼） */
-.edge-seg.st-waiting {
-  animation: seg-blink 1.2s ease-in-out infinite;
-}
-
-/* 出错：红圈描边 + 快闪（身份色保留在圈内） */
-.edge-seg.st-error {
-  box-shadow: inset 0 0 0 1.5px #f87171;
-  animation: seg-blink 0.9s ease-in-out infinite;
-}
+/* ===== Agent 状态档位（左右药丸用）：颜色 = 身份（内联注入），状态用亮度/动效表达 =====
+   （2026-10-12 07-TOP-ISLAND 改版：顶部旧等宽分段条随 14px 底条一并退役——
+   新横线不做分段（D2），此族只剩左右药丸消费；keyframes 由 .top-line 共用） */
 
 /* 空闲：55% 暗淡（批次三 0.45→0.55 提亮：告警靠「看见」，暗淡态先得可辨）；
-   离线：近隐没（离线分段 E2 过滤本就不渲染，档位留作防御）。顶部分段与
-   左右药丸共用同一状态语言 */
-.edge-seg.st-idle,
+   离线：近隐没（离线分段 E2 过滤本就不渲染，档位留作防御） */
 .edge-pill.st-idle {
   opacity: 0.55;
 }
 
-.edge-seg.st-offline,
 .edge-pill.st-offline {
   opacity: 0.18;
 }
@@ -1683,19 +1888,25 @@ body,
   pointer-events: none; /* SVG 根不拦截事件，悬停/拖拽落到药丸上 */
 }
 
-/* 弓形本体填充：恒近黑不透明（2026-09-28 验收评审定论的硬件物件材质，
-   与顶部件同源变量——哑光近黑、不随壁纸/主题变、退出不透明度滑块体系） */
+/* 弓形本体填充：与胶囊同一套玻璃配方（B30，2026-10-13 所有者实机反馈废止
+   2026-09-28「恒近黑硬件物件」定论——浅色主题下岛体白玻璃、端帽近黑＝材质
+   断裂违和，且与 02-DESIGN「胶囊遮蔽模型：隐藏态是胶囊本人被屏幕遮住的
+   局部」自相矛盾——遮蔽模型下端帽本就应是胶囊本人的材质）：rgba 消费
+   --pill-rgb/--pill-alpha，随主题换 RGB、随「背景不透明度」滑块调 alpha；
+   顺带消除 B29 记录的「玻璃圆头→近黑端帽」滑出末端材质跳变（深色侧视觉
+   几乎不变：深玻璃≈原近黑） */
 .edge-body {
-  fill: rgb(var(--edge-rgb));
+  fill: rgba(var(--pill-rgb), var(--pill-alpha));
 }
 
 /* 轮廓光弧本体：贴形全长勾边（替代旧 border——弓形没有直边可挂边框），深壁纸上
    勾出物件边缘；出错/采集异常经容器类改色（状态不再因位置沉默）。沿形光晕拆到
    裁剪内层 .edge-rim-glow（2026-10-09 直角修复：光晕在形外会越过窗口边界被
-   硬切成直角轮廓）——线负责全长轮廓、光只点形内 */
+   硬切成直角轮廓）——线负责全长轮廓、光只点形内。B30：描边走 --border-strong
+   （随主题换黑/白系，端帽玻璃化后浅色下白描边不可见） */
 .edge-rim {
   fill: none;
-  stroke: rgba(255, 255, 255, 0.12);
+  stroke: var(--border-strong);
   stroke-width: 1;
 }
 
@@ -1758,9 +1969,10 @@ body,
   transition: opacity 0.3s ease;
 }
 
-/* 药丸与顶部分段共用状态动效（逐参数一致：同一 keyframes 同一档位，三处
-   状态语言统一）；出错红圈走外描边——4px 高的粒被 inset 圈吃掉大半，
-   外圈保身份色完整（「红圈=出错」语义本体三处同义，顶部「！」是宽敞位增强） */
+/* 药丸与顶部横线共用状态动效（同一 keyframes 同一档位，节律族统一——出错
+   双脉冲 seg-alert 2026-10-13 起两处同源，07 §6.2）；出错红圈走外描边——
+   4px 高的粒被 inset 圈吃掉大半，外圈保身份色完整（「红圈＝出错」与横线
+   双脉冲同义） */
 .edge-pill.st-working {
   animation: seg-breathe 4s ease-in-out infinite;
 }
@@ -1771,7 +1983,7 @@ body,
 
 .edge-pill.st-error {
   box-shadow: 0 0 0 1.5px #f87171;
-  animation: seg-blink 0.9s ease-in-out infinite;
+  animation: seg-alert 1.6s ease-in-out infinite;
 }
 
 .edge-pill.st-idle {

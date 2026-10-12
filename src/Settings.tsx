@@ -341,16 +341,16 @@ export default function Settings() {
             <Switch checked={autoHide} onChange={toggleAutoHide} />
           </Row>
           <Row
-            title="悬停展开信息卡片"
-            desc="鼠标移入岛即展开信息卡片"
-            tip="关闭后改为点击展开、再点收回，移出后自动收起"
+            title="悬停展开信息面板"
+            desc="鼠标移入岛停留后依次展开大岛与信息面板"
+            tip="开启：悬停渐进入面板；关闭：悬停仅展开大岛浏览，点击直达面板（再点收回）"
           >
             <Switch checked={hoverCard} onChange={toggleHoverCard} />
           </Row>
           <Row
             title="背景不透明度"
             desc="灵动岛胶囊与信息面板共用的底色深浅"
-            tip="面板比胶囊实一档；贴边隐藏态为恒定近黑，不随滑块（Apple 式硬件物件）"
+            tip="面板比胶囊实一档；左右贴边端帽与胶囊同档联动（随主题与滑块），顶部横线为恒定色不随滑块（信标线，背后是壁纸）"
           >
             <span className="st-slider-val">{islandOpacity}%</span>
             <input

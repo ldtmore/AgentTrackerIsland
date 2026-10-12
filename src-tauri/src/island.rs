@@ -22,8 +22,30 @@ pub(crate) const ISLAND_EXPANDED_H: i32 = 520;
 pub(crate) const ISLAND_W_RATIO: f64 = 0.30;
 pub(crate) const ISLAND_W_MIN: i32 = 380;
 pub(crate) const ISLAND_W_MAX: i32 = 800;
-/// 顶部贴边隐藏的露出高度（≈胶囊 48 的 1/5 略加余量：胶囊底部的独立信息条）
-pub(crate) const PEEK_TOP_H: i32 = 14;
+/// 顶部贴边隐藏（横线态）屏内窗口留量（逻辑像素）：隐藏位窗口滑出至屏内
+/// 恰留本值（hidden_pos 滑出量的真源）
+pub(crate) const TOP_LINE_HIT_H: i32 = 16;
+/// 横线离屏幕顶边的呼吸间隙（逻辑像素；与 App.css .top-line top:36px 同源
+/// 双端维护——窗口内 y36＝屏内 y4＝屏顶间隙 4px。2026-10-13 所有者微调
+/// 5→4：再近一点点）
+pub(crate) const TOP_LINE_GAP: i32 = 4;
+/// 横线可见线体厚度（逻辑像素；CSS 真源同上，Rust 命中高度推导用）
+pub(crate) const TOP_LINE_VIS_H: i32 = 3;
+/// 收纳形态（顶部横线/小岛）宽度下限：恰容纳三段内容＋呼吸余量（07 §3.2）。
+/// 2026-10-12 实机反馈由 240 收窄至 200——200% 缩放屏（逻辑 1280）上 240 的
+/// 两侧留白占近半，观感空洞；200＝内容 ~130＋两侧各 35 呼吸
+pub(crate) const MINI_W_MIN: i32 = 200;
+/// 收纳形态宽度上限：防超宽屏细长条化
+pub(crate) const MINI_W_MAX: i32 = 320;
+/// 小岛高度（逻辑像素，恒定——07 §3.2 D10：宽度服务搜索、高度服务形态）；
+/// Rust 命中矩形与前端 CSS（.isle-mini-body 可见区 36px）同源双端手工维护
+pub(crate) const MINI_ISLAND_H: i32 = 36;
+/// 小岛在 48px 窗口内的顶部偏移（2026-10-13 B27 中心锚定：上下各留 6px——
+/// 形变对称生长、两层内容中心恒 y24，消除顶锚定时收缩交叉淡变的「文字上跳
+/// 6px」弹跳（所有者实机确认）；贴顶停靠时 mini 顺带获得 6px 呼吸间隙。
+/// 与前端 CSS（.isle-mini clip 上下各裁 6px／.isle-mini-body top/bottom 6px）
+/// 同源双端手工维护
+pub(crate) const MINI_ISLAND_TOP: i32 = (ISLAND_H - MINI_ISLAND_H) / 2;
 /// 左右贴边隐藏的伸出宽度（半圆 D 形标签）
 pub(crate) const PEEK_SIDE_W: i32 = 20;
 /// 贴靠判定阈值（逻辑像素）：拖放位置距屏幕边小于该值即吸附到该边
@@ -38,12 +60,12 @@ pub(crate) fn island_width(mon_logical_w: i32) -> i32 {
         .clamp(ISLAND_W_MIN, ISLAND_W_MAX)
 }
 
-/// 顶部贴边隐藏态宽度：胶囊公式的常数全部减半（比例/上下限各取 1/2），
-/// 与胶囊恒保持 2:1——任意屏幕上"窄标签 → 全宽胶囊"的生长比例一致。
-/// 1366→205 / 1920→288 / 2560→384 / ≥2667→400；经 island_metrics 下发前端渲染
-pub(crate) fn peek_top_width(mon_logical_w: i32) -> i32 {
-    ((mon_logical_w as f64 * ISLAND_W_RATIO * 0.5).round() as i32)
-        .clamp(ISLAND_W_MIN / 2, ISLAND_W_MAX / 2)
+/// 收纳形态（顶部横线/小岛）宽度：大岛宽 × 40%，夹取 [240， 320]（07-TOP-ISLAND §3.2，
+/// 所有者拍板「尺寸服务职能，幅度由内容承载」）。与大岛同源联动（收纳恒为大岛的
+/// 40% 附近），各屏：1366→240 / 1920→240 / 2560→307 / 3440→320 / 3840→320；
+/// 经 island_metrics 下发前端渲染，与穿透命中矩形共用同一结果
+pub(crate) fn mini_line_width(island_w: i32) -> i32 {
+    ((island_w as f64 * 0.40).round() as i32).clamp(MINI_W_MIN, MINI_W_MAX)
 }
 
 /// 岛的运动/贴边状态（内存态，setup 时创建并全局共享；位置与开关持久化在 app_settings）
@@ -61,6 +83,11 @@ pub(crate) struct IslandMotion {
     pub(crate) edge: String,
     /// 是否处于滑出隐藏态
     pub(crate) hidden: bool,
+    /// 前端渲染形态（07-TOP-ISLAND §4.4 穿透契约）：true=小岛/横线收纳态
+    /// （窗口两侧需穿透放行）；false=大岛/面板态（恒不穿透）。前端 phase
+    /// 变化经 island_set_mode 上报，相位驱动（mouseenter 判定通过即报
+    /// expanded、150ms 宽限到期即报 mini——动画期误差窗口取"宁拦截"，可自愈）
+    pub(crate) mini_mode: bool,
     /// 启动原位展示待回位（2026-10-08 改版：启动定位把胶囊放在记忆坐标原位
     /// 展示「启动中…」后置位；前端收到首个数据快照调用 island_boot_settled 时
     /// 消费——贴边按自动隐藏设置转 Peek/Pill，自由位原地不动）；用户拖放
@@ -82,8 +109,8 @@ pub(crate) struct IslandMetrics {
     width: i32,
     collapsed_h: i32,
     expanded_h: i32,
-    /// 顶部贴边隐藏态宽度（peek_top_width：胶囊常数减半，恒 2:1）
-    peek_top_w: i32,
+    /// 收纳形态（横线/小岛）宽度（mini_line_width：大岛宽×40% 夹取 [240， 320]）
+    mini_line_w: i32,
     /// 工作区底缘（逻辑 y，五轮审查批次三）：前端展开封顶用——岛窗口左上角
     /// 锚定、面板向下生长，岛在屏幕下半部时须按「底缘 − 岛 y」限制展开高度，
     /// 否则面板伸出屏幕外（内容出屏且内部滚动也滚不到）
@@ -102,7 +129,7 @@ pub(crate) fn island_metrics(win: tauri::WebviewWindow) -> Option<IslandMetrics>
         width: island_width(ml.2),
         collapsed_h: ISLAND_H,
         expanded_h: ISLAND_EXPANDED_H,
-        peek_top_w: peek_top_width(ml.2),
+        mini_line_w: mini_line_width(island_width(ml.2)),
         work_bottom,
     })
 }
@@ -120,6 +147,9 @@ pub(crate) fn island_peek(
         let m = motion.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         (m.edge.clone(), m.hidden)
     };
+    // 入口留痕（B21：滑入失灵排障盲区——转换函数有尾日志但入口守卫静默，
+    // "Peek/Pill 都无日志"时无从区分是没调用还是被守卫拦）
+    log::debug!("[岛] peek 入口：show={show} edge={edge} hidden={hidden}");
     if edge == "none" {
         return;
     }
@@ -168,6 +198,19 @@ pub(crate) fn island_refresh(
 pub(crate) fn island_dock_state(motion: tauri::State<'_, Arc<Mutex<IslandMotion>>>) -> serde_json::Value {
     let m = motion.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     serde_json::json!({ "edge": m.edge, "hidden": m.hidden })
+}
+
+/// 前端上报当前渲染形态（07-TOP-ISLAND §4.4 穿透契约）：mode="mini"（小岛/横线
+/// 收纳态，窗口两侧穿透放行）|"expanded"（大岛/面板态，恒不穿透）。相位驱动：
+/// mouseenter 意图判定通过即报 expanded、离开 150ms 宽限到期即报 mini。
+/// 面板打开/退场动画在播时前端必须报 expanded（否则面板矩形被穿透、点击失效）
+#[tauri::command]
+pub(crate) fn island_set_mode(
+    mode: String,
+    motion: tauri::State<'_, Arc<Mutex<IslandMotion>>>,
+) {
+    let mut m = motion.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    m.mini_mode = mode != "expanded";
 }
 
 /// 启动完成回调（2026-10-08 启动原位展示改版）：前端收到首个数据快照时调用。
@@ -327,7 +370,8 @@ pub(crate) fn detect_edge(
 }
 
 /// 隐藏位坐标：按贴靠边把窗口滑出屏幕，仅留露出常量对应的信息条/半圆标签
-/// （显示器以纯数值传入：mon_pos=原点，mon_w=宽度；独立函数便于几何单测）
+/// （显示器以纯数值传入：mon_pos=原点，mon_w=宽度；独立函数便于几何单测）。
+/// top＝横线态：屏内留 16px 命中热区（其中顶部 3px 渲染可见线体，07 §3.1）
 pub(crate) fn hidden_pos(
     mon_pos: (i32, i32),
     mon_w: i32,
@@ -336,7 +380,7 @@ pub(crate) fn hidden_pos(
     island_w: i32,
 ) -> (i32, i32) {
     match edge {
-        "top" => (docked.0, mon_pos.1 - (ISLAND_H - PEEK_TOP_H)),
+        "top" => (docked.0, mon_pos.1 - (ISLAND_H - TOP_LINE_HIT_H)),
         "left" => (mon_pos.0 - (island_w - PEEK_SIDE_W), docked.1),
         "right" => (mon_pos.0 + mon_w - PEEK_SIDE_W, docked.1),
         _ => docked,
@@ -620,41 +664,120 @@ pub(crate) fn lbutton_down() -> bool {
     unsafe { GetAsyncKeyState(VK_LBUTTON.0.into()) as u16 & 0x8000 != 0 }
 }
 
-/// 光标是否落在顶部隐藏态标签矩形内（窗口内水平居中、底部 PEEK_TOP_H 逻辑像素）。
-/// 看护线程 90ms 一次调停穿透开关的依据；窗口不缩窄（缩窗会触发 WebView2 重布局
-/// 拉伸伪影，且宽窄跳变与 Moved 防误判协议互相干扰），改由穿透实现"窄标签"语义：
-/// 穿透时两侧透明区域把点击还给下层窗口，光标进标签才解除（悬停区=可见区）
-pub(crate) fn cursor_on_top_tab(win: &tauri::WebviewWindow) -> bool {
+/// 光标是否在窗口矩形内（B20：hidden 态与 full/panel 态的命中判定——
+/// hidden 态窗口屏外部分光标不可达，屏内部分（横线热区/端帽）天然即交互
+/// 边界；full/panel 态窗口全宽可交互＝可见区即窗口，本判定恰好满足
+/// "可见区域即触发区域"原则）。mini 态不适用（窗口恒全宽而小岛居中收窄，
+/// 用 cursor_in_mini）
+pub(crate) fn cursor_in_window(win: &tauri::WebviewWindow) -> bool {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
-    let Ok(Some(mon)) = win.current_monitor() else {
+    let (Ok(p), Ok(sz)) = (win.outer_position(), win.outer_size()) else {
         return false;
     };
-    let Ok(p) = win.outer_position() else {
+    let mut pt = POINT::default();
+    // SAFETY:GetCursorPos 仅查询系统全局光标坐标，无指针/生命周期风险
+    if unsafe { GetCursorPos(&mut pt) }.is_err() {
+        return false;
+    }
+    pt.x >= p.x && pt.x < p.x + sz.width as i32 && pt.y >= p.y && pt.y < p.y + sz.height as i32
+}
+
+/// 小岛命中物理矩形（纯函数便于单测；B22 定水平带，B27 改垂直居中）。
+/// **可见区域即触发区域**（07 §3.2 设计原则，唯一豁免＝顶部横线）——mini 态
+/// 命中收窄到小岛可见区（窗口 y = MINI_ISLAND_TOP ~ +36，居中），不能沿用
+/// 窗口矩形（恒全宽，两侧透明区各宽 (iw−mw)/2＝提前触发的来源，2026-10-13
+/// 实机实测 184 物理 px 提前量）。⚠ B14 教训：每个逻辑量都必须乘 scale，
+/// 集中本函数一处换算并由单测锁定
+pub(crate) fn mini_hit_rect(
+    win_phys: (i32, i32),
+    iw: i32,
+    mw: i32,
+    s: f64,
+) -> (f64, f64, f64, f64) {
+    let x0 = win_phys.0 as f64 + (iw as f64 - mw as f64) / 2.0 * s;
+    let y0 = win_phys.1 as f64 + MINI_ISLAND_TOP as f64 * s;
+    (
+        x0,
+        y0,
+        x0 + mw as f64 * s,
+        y0 + MINI_ISLAND_H as f64 * s,
+    )
+}
+
+/// 光标是否在小岛命中矩形内（mini 态专用；full/panel 用 cursor_in_window）
+pub(crate) fn cursor_in_mini(win: &tauri::WebviewWindow) -> bool {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let (Ok(p), Ok(Some(mon))) = (win.outer_position(), win.current_monitor()) else {
         return false;
     };
     let s = mon.scale_factor();
-    let ml_w = monitor_logical(&mon).2;
-    let w = island_width(ml_w) as f64;
-    let pw = peek_top_width(ml_w) as f64;
-    // 标签矩形（物理像素）：水平居中（窗口恒全宽，标签中心与胶囊中心天然对齐）、贴窗口底
-    let x0 = p.x as f64 + (w - pw) / 2.0 * s;
-    let y0 = p.y as f64 + (ISLAND_H - PEEK_TOP_H) as f64 * s;
-    let y1 = p.y as f64 + ISLAND_H as f64 * s;
+    let iw = island_width(monitor_logical(&mon).2);
+    let mw = mini_line_width(iw);
+    let (x0, y0, x1, y1) = mini_hit_rect((p.x, p.y), iw, mw, s);
     let mut pt = POINT::default();
     // SAFETY:GetCursorPos 仅查询系统全局光标坐标，无指针/生命周期风险
     if unsafe { GetCursorPos(&mut pt) }.is_err() {
         return false;
     }
     let (px, py) = (pt.x as f64, pt.y as f64);
-    px >= x0 && px < x0 + pw * s && py >= y0 && py < y1
+    px >= x0 && px < x1 && py >= y0 && py < y1
 }
 
-/// 切换岛窗口鼠标穿透。带状态缓存：期望与缓存一致时不发系统调用，
-/// 避免 90ms 看护节拍下重复 SetWindowLong；island_transition 显示路径绕过缓存
-/// 直接解除后，此处下一轮比对会自动收敛（缓存与实际短暂失配无害）
+/// 顶部横线命中物理矩形（纯函数便于单测；B23）。**"可见区域即触发区域"原则
+/// 下横线的唯一豁免几何**（07 §4.4）：左右＝横线可见宽度（居中 miniW，无
+/// 冗余）；上下冗余＝横线距屏顶的间隙值（TOP_LINE_GAP）——命中高
+/// 2×GAP+VIS_H=11px（B24：GAP 5→4 后由 13 收窄），上缘恰封口在屏幕顶边（窗口内 y32）。所有者拍板，
+/// 勿再放宽
+pub(crate) fn top_line_hit_rect(
+    win_phys: (i32, i32),
+    iw: i32,
+    mw: i32,
+    s: f64,
+) -> (f64, f64, f64, f64) {
+    let x0 = win_phys.0 as f64 + (iw as f64 - mw as f64) / 2.0 * s;
+    let y0 = win_phys.1 as f64 + (ISLAND_H - TOP_LINE_HIT_H) as f64 * s;
+    (
+        x0,
+        y0,
+        x0 + mw as f64 * s,
+        y0 + (2 * TOP_LINE_GAP + TOP_LINE_VIS_H) as f64 * s,
+    )
+}
+
+/// 光标是否在顶部横线命中矩形内（hidden 且 edge=top 专用）
+pub(crate) fn cursor_on_top_line(win: &tauri::WebviewWindow) -> bool {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let (Ok(p), Ok(Some(mon))) = (win.outer_position(), win.current_monitor()) else {
+        return false;
+    };
+    let s = mon.scale_factor();
+    let iw = island_width(monitor_logical(&mon).2);
+    let mw = mini_line_width(iw);
+    let (x0, y0, x1, y1) = top_line_hit_rect((p.x, p.y), iw, mw, s);
+    let mut pt = POINT::default();
+    // SAFETY:GetCursorPos 仅查询系统全局光标坐标，无指针/生命周期风险
+    if unsafe { GetCursorPos(&mut pt) }.is_err() {
+        return false;
+    }
+    let (px, py) = (pt.x as f64, pt.y as f64);
+    px >= x0 && px < x1 && py >= y0 && py < y1
+}
+
+/// 切换岛窗口鼠标穿透（2026-10-13 B17：值变化即调用＋每 20 轮低频强制校准）。
+/// 两个相反教训的平衡：① B16 的每轮直发会以 90ms 节拍重复 SetWindowLong 同值，
+/// 持续扰动 Chromium 的 TrackMouseEvent＝mouseleave 丢失＝面板移开不收缩
+/// （实机复现）；② 更早的"纯缓存跳过"又让 Tauri startDragging 的穿透残留
+/// （WS_EX_TRANSPARENT 中断清理不彻底）永不纠正＝hover 全灭。折中：同值跳过，
+/// 但每 20 轮（≈1.8s）无条件重发一次——扰动归零，任何错位最多存活 1.8s。
+/// last 参数同时是调用方命中转变沿 emit 的记忆，语义不变）
 pub(crate) fn set_click_through(win: &tauri::WebviewWindow, on: bool, last: &mut bool) {
-    if on == *last {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CAL_TICK: AtomicU64 = AtomicU64::new(0);
+    let tick = CAL_TICK.fetch_add(1, Ordering::Relaxed);
+    if on == *last && tick % 20 != 0 {
         return;
     }
     *last = on;

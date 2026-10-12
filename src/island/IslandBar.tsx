@@ -1,16 +1,17 @@
 /**
- * 收缩态胶囊（2026-09-28 视觉改版批次一重排）：状态灯 + 主文案 ｜分隔线｜ 额度仪表单元 + 今日。
- * 分组结构回应「元素漂在两端」：主文案区（灯+600 字重文案）与数据区（额度/今日）
- * 用细竖线分成两组，数据区内部走「标签灰＋数字 mono 加粗」的仪表语言；
- * 状态氛围光：aggregated 状态驱动整仓 4%~8% 着色（st-* 类，详见 App.css）；
- * 数字补间：百分比/今日 token 变化 300ms 滚动（useTween，reduced-motion 直落）。
+ * 岛容器·双形态（2026-10-12 07-TOP-ISLAND 改版）：
+ * 同一粒岛的两个尺寸——mini（小岛，200~320×36 常驻态）与 full（大岛，48px 全宽
+ * 信息中心）。容器恒全宽 × 48，形态切换＝clip-path 形变（App.css .isle-mini），
+ * 两层内容（.isle-mini-body/.isle-full-body）恒在 DOM、仅 opacity 交叉淡变。
+ * 大岛层＝2026-09-28 视觉改版批次一的四段胶囊（零重做）；小岛层＝与大岛同构的
+ * 浓缩排布（灯＋最高优先级计数｜额度｜今日，内容阶梯见 miniW）。
  *
  * 历史行为保留：主文案"现在时"口径、额度最紧张实例选择（M3-6 归一）、
- * 整条可拖拽（位移阈值判别，见下方拖拽注释）。
+ * 整条可拖拽（位移阈值判别，见下方拖拽注释）、根 title 聚合气泡。
  *
- * ⚠ 原生 title 全部聚合在根 div（2026-10-03 审查修复）：App.css
- * `.island > * { pointer-events: none }` 使子元素 title 永不触发，深化信息
- * （状态说明/会话对账/额度明细/今日口径）统一挂根节点单气泡。
+ * ⚠ 原生 title 全部聚合在根 div（App.css `.island > *` 系 pointer-events:none
+ * 使子元素 title 永不触发）——深化信息（状态说明/会话对账/额度明细/今日口径）
+ * 统一挂根节点单气泡，小岛被阶梯隐藏的「今日」也在此恒可查。
  *
  * ⚠ 宽度降级阶梯（F7）：App.tsx 按岛宽注根类 w-lg/w-md/w-sm——
  * 窄档隐藏的「今日/厂商短名」信息由根 title 恒定承接，不丢口径
@@ -103,6 +104,27 @@ function compactCountdown(resetAt: number): string | null {
 function resetPhraseCompact(resetAt: number): string {
   const cd = compactCountdown(resetAt);
   return cd != null ? `${cd}后重置` : "等待供应商刷新";
+}
+
+/** 小岛紧凑文案（07 §3.2）：只列最高优先级的非零项（错误类＞等待＞工作），
+ *  大岛 activeText 的浓缩版——递增原则：小岛信息 ⊂ 大岛信息 */
+function compactText(snap: IslandSnapshot): string {
+  const count = (st: string) => snap.sessions.filter((s) => s.state === st).length;
+  const err = count("error");
+  if (err > 0) return `${err} 出错`;
+  // 额度耗尽属错误类语义（红灯同源），仅在无会话出错时占位
+  if (snap.quota_exhausted) return "额度耗尽";
+  const waiting = count("waiting");
+  if (waiting > 0) return `${waiting} 等输入`;
+  const working = count("working");
+  if (working > 0) return `${working} 工作`;
+  if (snap.sessions.length > 0) {
+    const alive = snap.sessions.filter(
+      (s) => !displayState(s.state, s.last_activity_at).ended,
+    ).length;
+    return alive > 0 ? `空闲 · ${alive}` : "空闲";
+  }
+  return "无会话";
 }
 
 /** 窗口固定排序权重：5h → 7d → 其他（2026-10-10 拍板：不再跟随快照数组序——
@@ -232,19 +254,69 @@ function QuotaSegment({ snap, thresholds }: { snap: IslandSnapshot; thresholds: 
   return <QuotaGauge account={pick.account} quota={pick.quota} thresholds={thresholds} />;
 }
 
+/** 小岛紧凑额度单元（07 §3.2）：tensestAccount 同源选择器，只显数字——
+ *  窗口口径"96%"／余额口径紧凑金额；跌破警戒线红字；档位色与大岛仪表同一语义。
+ *  展示集为空（未配置/显式清空）＝整段隐藏（竖线随隐）；有实例但无数据＝
+ *  灰字"--"（降级可见，与大岛"额度 --"同口径，title 承载原因） */
+function MiniQuota({ snap, thresholds }: { snap: IslandSnapshot; thresholds: Thresholds }) {
+  const islandAccounts = snap.accounts.filter((a) => a.in_island);
+  const pick = islandAccounts.length > 0 ? tensestAccount(islandAccounts, thresholds) : null;
+  // 窗口口径百分比补间（2026-10-13 三轮审查 #7）：与大岛 QuotaGauge 同款——
+  // 快照 10s 一刷不再直跳；hook 必须无条件调用，故先算目标值再早返回。
+  // 余额金额刻意不补间：tensest 跨实例切换时补间会显示不存在的中间金额
+  // （诚实优先）；档位/警戒判定恒用真值，补间只作用于显示数字
+  const pct =
+    pick?.reason === "window"
+      ? Math.min(100, Math.max(0, pick.quota.used_percent ?? 0))
+      : 0;
+  const shown = useTween(pct);
+  if (islandAccounts.length === 0) return null;
+  if (!pick) {
+    return (
+      <span className="isle-mini-quota quota-off" style={{ color: "var(--text-4)", fontWeight: 400 }}>
+        --
+      </span>
+    );
+  }
+  if (pick.reason === "balance") {
+    const b = pick.account.balance;
+    const line = balanceWarnFor(thresholds, b.currency);
+    const low = line != null && b.total < line;
+    return (
+      <span className={`isle-mini-quota${low ? " quota-danger" : ""}`}>
+        {fmtMoney(b.currency, b.total)}
+      </span>
+    );
+  }
+  const cls = quotaLevel(pct, thresholds.warn, thresholds.danger);
+  return (
+    <span className={`isle-mini-quota${cls !== "normal" ? ` quota-${cls}` : ""}`}>
+      {Math.round(shown)}%
+    </span>
+  );
+}
+
 export default function IslandBar({
   snap,
   thresholds,
   enterEdge,
   onToggle,
+  mode = "full",
+  miniW = 240,
 }: {
   snap: IslandSnapshot | null;
   thresholds: Thresholds;
   /** 贴边隐藏态滑回显示时的贴边边（top/left/right）：触发"由远及近"入场动画，
    *  决定缩放 origin 与位移方向；null = 无动画（自由悬浮/启动直显） */
   enterEdge?: string | null;
-  /** 悬停展开关闭时：点击胶囊切换信息卡片展开/收起 */
+  /** 点击岛直达面板／再点收起（07 §4.2：强意图通道，hover_expand 开关不再影响
+   *  本回调的有无——关闭时 hover 只到大岛，点击仍是唯一的面板直达入口） */
   onToggle?: () => void;
+  /** 当前形态（07 §3.3）：mini＝小岛常驻态（clip-path 裁剪）；full＝大岛 */
+  mode?: "mini" | "full";
+  /** 收纳形态宽度（Rust mini_line_width 经 metrics 下发）：驱动 clip-path 裁剪
+   *  宽度与小岛内容阶梯（≥280 显今日段，D5） */
+  miniW?: number;
 }) {
   // 额度耗尽时胶囊整体按出错态展示（会话状态本身保持真实值）
   const islandState = snap?.quota_exhausted ? "any_error" : snap?.island;
@@ -370,11 +442,16 @@ export default function IslandBar({
   const quotaNode = snap != null ? <QuotaSegment snap={snap} thresholds={thresholds} /> : null;
   const hasQuotaSeg =
     snap != null && (snap.accounts.length === 0 || snap.accounts.some((a) => a.in_island));
+  // 小岛层额度：同一"是否有段"判定口径（in_island 非空），有段才伴竖线
+  const hasMiniQuota = snap != null && snap.accounts.some((a) => a.in_island);
+  // 收纳宽防御（07 §7）：后端旧版本缺字段时 miniW 可能是 undefined——非法值流进
+  // --isle-w 会让整条 clip-path 声明失效（岛变全宽大胶囊，2026-10-12 实机事故）
+  const safeMiniW = Number.isFinite(miniW) && miniW > 0 ? miniW : 200;
 
   return (
     <div
-      className={`island${ambient ? ` ${ambient}` : ""}${onToggle ? " island-clickable" : ""}${enterEdge ? " island-peek-in" : ""}`}
-      style={enterStyle}
+      className={`island${ambient ? ` ${ambient}` : ""}${mode === "mini" ? " isle-mini" : ""}${onToggle ? " island-clickable" : ""}${enterEdge ? " island-peek-in" : ""}`}
+      style={{ ...({ "--isle-w": `${safeMiniW}px` } as React.CSSProperties), ...enterStyle }}
       title={rootTitle}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
@@ -390,28 +467,55 @@ export default function IslandBar({
       {/* 边缘微光呼吸（标配，2026-09-28 验收评审拍板删设置项）：强度刻意做淡——
           「注意不到它在呼吸，只觉得它是活的」；出错红边让位 */}
       <span className="island-glow" />
-      <span className={`dot ${meta.dot}`} />
-      <span className="island-text">
-        {snap ? activeText(snap) : "「去你的岛」启动中…"}
+      {/* 小岛层（07 §3.2）：与大岛同构的浓缩排布；opacity 由 CSS 随 isle-mini 切换 */}
+      <div className="isle-body isle-mini-body">
+        <span className={`dot ${meta.dot}`} />
+        <span className="isle-mini-text">
+          {snap ? compactText(snap) : "启动中…"}
+        </span>
+        {hasMiniQuota && <span className="island-sep" />}
+        {snap != null && hasMiniQuota && <MiniQuota snap={snap} thresholds={thresholds} />}
         {
-          // 降级可见（审查 1.1 + C7）：警示图标强化，与正常文案拉开视觉差
-          snap?.degraded && (
+          // 采集异常优先于今日段（D5：异常让位常态数据）；今日段仅宽屏渲染（阶梯制）
+          snap?.degraded ? (
             <span className="island-degraded">
               <WarnIcon /> 采集异常
             </span>
+          ) : (
+            safeMiniW >= 280 &&
+            showTokens && (
+              <span className="isle-mini-today">
+                今 <b>{fmtTokens(todayShown)}</b>
+              </span>
+            )
           )
         }
-      </span>
-      {hasQuotaSeg && <span className="island-sep" />}
-      {
-        // 额度段（M3-6 跨实例归一）：归一选择与三态降级收进 QuotaSegment
-        quotaNode
-      }
-      {showTokens && (
-        <span className="island-tokens">
-          今日 <b>{fmtTokens(todayShown)}</b>
+      </div>
+      {/* 大岛层：2026-09-28 视觉改版的四段胶囊原样包裹（零重做） */}
+      <div className="isle-body isle-full-body">
+        <span className={`dot ${meta.dot}`} />
+        <span className="island-text">
+          {snap ? activeText(snap) : "「去你的岛」启动中…"}
+          {
+            // 降级可见（审查 1.1 + C7）：警示图标强化，与正常文案拉开视觉差
+            snap?.degraded && (
+              <span className="island-degraded">
+                <WarnIcon /> 采集异常
+              </span>
+            )
+          }
         </span>
-      )}
+        {hasQuotaSeg && <span className="island-sep" />}
+        {
+          // 额度段（M3-6 跨实例归一）：归一选择与三态降级收进 QuotaSegment
+          quotaNode
+        }
+        {showTokens && (
+          <span className="island-tokens">
+            今日 <b>{fmtTokens(todayShown)}</b>
+          </span>
+        )}
+      </div>
     </div>
   );
 }

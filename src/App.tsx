@@ -50,8 +50,8 @@ interface IslandMetrics {
   width: number;
   collapsed_h: number;
   expanded_h: number;
-  /** 顶部贴边隐藏态宽度（胶囊公式常数减半，恒 2:1） */
-  peek_top_w: number;
+  /** 收纳形态（横线/小岛）宽度（mini_line_width：大岛宽×40% 夹取 [240， 320]） */
+  mini_line_w: number;
   /** 工作区底缘（逻辑 y）：展开封顶用（五轮审查批次三）——岛窗口左上角锚定、
    *  面板向下生长，岛在屏幕下半部时须按「底缘 − 岛 y」限制展开高度 */
   work_bottom: number;
@@ -61,12 +61,17 @@ const DEFAULT_METRICS: IslandMetrics = {
   width: 380,
   collapsed_h: 48,
   expanded_h: 520,
-  peek_top_w: 288,
+  // 200 与 Rust MINI_W_MIN 同源（07 §7：DEFAULT_METRICS 必须与 Rust 常量同步，防首帧闪错）
+  mini_line_w: 200,
   work_bottom: 672,
 };
 
 /** 面板与胶囊的间距（与 App.css .panel-wrap 的 margin-top 保持一致） */
 const PANEL_GAP_PX = 6;
+/** 滑出隐藏的渲染切换延迟（#3「延迟切换」）：与 Rust SLIDE_HIDE_MS（160ms）
+ *  同源双端维护＋10ms 裕量——等窗口滑出动画播完再挂贴边信标，期间胶囊随窗
+ *  自然退场，信标不再从滑出起点"横穿"到落位 */
+const EDGE_SWAP_DELAY_MS = 170;
 /** 展开态窗口高度下限：空会话时骨架（汇总条+标题+空态+额度区）仍完整可用的最小高度 */
 const MIN_EXPANDED_H = 240;
 
@@ -74,11 +79,39 @@ const MIN_EXPANDED_H = 240;
 // 三处各写一份 80/95/10/5 与逐项校验，口径有漂移风险）——R5：设置页可配，
 // 启动时加载一次，重启生效
 
+/** 岛的渲染相位（07-TOP-ISLAND §4）：mini＝小岛常驻态；full＝大岛；panel＝面板展开。
+ *  一粒岛的三次生长——形态切换全在 CSS（clip-path 形变），本相位只驱动类名/挂载/上报 */
+type IslePhase = "mini" | "full" | "panel";
+
+/** 静止相位（hover 离开后回到的常态，07 §4.2）：左右停靠不隐藏＝大岛常驻（现状
+ *  胶囊停靠）；自由位/贴顶（含隐藏态恢复）＝小岛。位置只决定停靠几何与静止形态，
+ *  不决定信息层级 */
+function restPhase(dock: { edge: string; hidden: boolean }): IslePhase {
+  if (!dock.hidden && (dock.edge === "left" || dock.edge === "right")) return "full";
+  return "mini";
+}
+
+/** island_metrics 返回值归一（07 §7 防御）：后端旧版本缺 mini_line_w 字段时
+ *  回落默认——严禁 undefined 流进 --isle-w/width（非法 var 会让整条 clip-path
+ *  失效、width undefined 回落 100%，2026-10-12 实机"小岛全宽/横线全宽"事故根因）。
+ *  bootstrap 与 island-dock 事件刷新两条路径共用，防一边修一边漏 */
+function normalizeMetrics(m: Partial<IslandMetrics> | null): IslandMetrics {
+  if (!m) return DEFAULT_METRICS;
+  return {
+    width: m.width ?? DEFAULT_METRICS.width,
+    collapsed_h: m.collapsed_h ?? DEFAULT_METRICS.collapsed_h,
+    expanded_h: m.expanded_h ?? DEFAULT_METRICS.expanded_h,
+    mini_line_w: m.mini_line_w ?? DEFAULT_METRICS.mini_line_w,
+    work_bottom: m.work_bottom ?? DEFAULT_METRICS.work_bottom,
+  };
+}
+
 function IslandApp() {
   // 主题应用与跟随（M1-4）：结果写 <html> 的 data-theme，CSS 变量自动切换；岛无需感知返回值
   useTheme();
   const [snap, setSnap] = useState<IslandSnapshot | null>(null);
-  const [expanded, setExpanded] = useState(false);
+  // 岛相位（2026-10-12 改版）：原 expanded:boolean 扩展为三态，mini＝默认
+  const [phase, setPhase] = useState<IslePhase>("mini");
   // 面板动画相位：in=挂载且入场中/展开，out=退场动画在播，null=未挂载。
   // 退场必须等动画播完才卸载并缩窗——窗口先缩会拦腰截断动画
   const [panelPhase, setPanelPhase] = useState<"in" | "out" | null>(null);
@@ -106,14 +139,20 @@ function IslandApp() {
   const [hoverCard, setHoverCard] = useState(true);
   // 监控的 Agent 列表（设置项 agents_enabled；岛内只展示所选 Agent）
   const [agents, setAgents] = useState<string[]>(AGENT_DEFS.map((a) => a.id));
-  // 贴边隐藏态下"滑入完成后再展开"的定时器
+  // 贴边隐藏态下"滑入完成后再展开"的定时器（第一级停留：160ms 形变/240ms 面板链）
   const enterTimer = useRef<number | undefined>(undefined);
+  // 第二级停留定时器（大岛→面板：光标入岛累计 480ms / 左右停靠 320ms）
+  const panelTimer = useRef<number | undefined>(undefined);
   // 移出后滑出隐藏的宽限定时器（400ms 内回来则取消，防误触）
   const leaveTimer = useRef<number | undefined>(undefined);
   // 面板收起宽限定时器（五轮审查 P1 修复）：见根节点 onMouseLeave 注释
   const collapseTimer = useRef<number | undefined>(undefined);
   // 托盘"显示"召唤后的自动收起定时器（3s；鼠标移入即取消——用户正在看/用岛）
   const summonTimer = useRef<number | undefined>(undefined);
+  // 滑出隐藏的渲染切换定时器（#3 延迟切换，见 dock effect 注释）
+  const edgeSwapTimer = useRef<number | undefined>(undefined);
+  // 滑出动画进行中的渲染保持标记：true＝dock.hidden 已真但继续渲染胶囊
+  const [edgeDelay, setEdgeDelay] = useState(false);
 
   // 启动引导：读取岛尺寸/提醒阈值/悬停展开开关/贴边状态。
   // 初始贴边状态必须主动拉取：启动恢复在 setup 阶段已把窗口滑出隐藏，
@@ -122,14 +161,14 @@ function IslandApp() {
   // promise 永不落定（2026-09-17 实测），故每 1s 重试直至三项各成功一次；
   // 成功后停表，之后贴边状态改由 island-dock 事件流维护
   useEffect(() => {
-    const done = { metrics: false, dock: false, settings: false };
+    const done = { metrics: false, dock: false, settings: false, setMode: false };
     // 展示常量同步（#20）：「已结束」阈值从后端拉取（Rust 单真值源），失败保持默认
     void syncDisplayConstants();
     const bootstrap = async () => {
       if (!done.metrics) {
         try {
           const m = await invoke<IslandMetrics>("island_metrics");
-          if (m) setMetrics(m); // 取不到显示器时后端返回 null，保持默认尺寸即可
+          if (m) setMetrics(normalizeMetrics(m)); // 字段兜底归一（见 normalizeMetrics 注释）
           done.metrics = true;
         } catch {
           /* 通道未就绪，下轮重试 */
@@ -140,9 +179,30 @@ function IslandApp() {
           const d = await invoke<{ edge: string; hidden: boolean }>("island_dock_state");
           dockRef.current = d;
           setDock(d);
+          // prevHiddenRef 同步推进（B29：原 [dock] effect 已删，监听器只覆盖
+          // 事件流——启动恢复早于监听建立，此处不推进则首次滑入的入场
+          // 动画参数（peekEnter）不触发）
+          prevHiddenRef.current = d.hidden;
           done.dock = true;
         } catch {
           /* 通道未就绪，下轮重试 */
+        }
+      }
+      if (!done.setMode) {
+        // 形态上报首达保障（2026-10-13 B16）：挂载期 invoke 可能无声悬挂
+        // （永不落定，2026-09-17 实测先例），phase 不变则 phase effect 永不
+        // 重发＝穿透调停失去 mini_mode 输入。race 超时防悬挂卡死 bootstrap；
+        // 首达必为 mini（启动默认态，先于任何 hover）
+        try {
+          await Promise.race([
+            invoke("island_set_mode", { mode: "mini" }),
+            new Promise((_, rej) =>
+              window.setTimeout(() => rej(new Error("setMode timeout")), 1500),
+            ),
+          ]);
+          done.setMode = true;
+        } catch {
+          /* 悬挂/失败：下轮重试 */
         }
       }
       if (!done.settings) {
@@ -184,7 +244,7 @@ function IslandApp() {
     // （60 轮＝1 分钟，足够覆盖启动竞态；后端真死时窗口随主进程消亡）
     let tries = 0;
     const timer = window.setInterval(() => {
-      if (done.metrics && done.dock && done.settings) {
+      if (done.metrics && done.dock && done.settings && done.setMode) {
         window.clearInterval(timer);
         return;
       }
@@ -269,10 +329,51 @@ function IslandApp() {
     };
   }, []);
 
-  // 订阅贴边状态（吸附/滑出/滑入时由 Rust 推送）
+  // 订阅贴边状态（吸附/滑出/滑入时由 Rust 推送）。⚠ B28：隐藏事件的渲染冻结
+  // （edgeDelay）与 panelPhase 复位必须在监听器内与 setDock **同批 setState**——
+  // B25 曾经 effect([dock.hidden]) 补设，而 useEffect 晚于首帧绘制：dock.hidden=true
+  // 的第一帧以 edgeDelay=false 渲染＝EdgeTab 闪现一帧、IslandBar 被卸载重挂
+  // （重挂元素 clip-path 无过渡起点＝收缩动画被拦腰打断、「大岛瞬灭→小岛
+  // 闪现」跳变，2026-10-13 实机取证）。同批 setState 一次渲染到位，零中间帧；
+  // 启动引导的 island_dock_state 直拉不经此逻辑（恢复隐藏时窗口本已在隐藏位，
+  // 无滑出动画可衔接）
   useEffect(() => {
     const un = listen<{ edge: string; hidden: boolean }>("island-dock", (e) => {
       dockRef.current = e.payload;
+      if (e.payload.hidden) {
+        // #3 延迟切换（B25）：滑出动画期间继续渲染胶囊随窗退场，播完再挂
+        // 信标；panelPhase 立即复位（B21 不变量：隐藏卸载路径动画回调不可达，
+        // 不复位＝卡死 "out" 劫持后续滑入）；setPhase(mini) 推迟到切换回调——
+        // 期间保持 full 让整条胶囊退场（穿透等式只看 hidden，mini_mode 晚到
+        // 无实害）；期间回悬停：hoverEnter 走隐藏分支调 island_peek(true) →
+        // hidden=false 事件到达下方 else 分支撤销定时器，全程事件驱动
+        setPanelPhase(null);
+        setEdgeDelay(true);
+        window.clearTimeout(edgeSwapTimer.current);
+        edgeSwapTimer.current = window.setTimeout(() => {
+          setEdgeDelay(false);
+          setPhase((p) => (p === "mini" ? p : "mini"));
+        }, EDGE_SWAP_DELAY_MS);
+      } else {
+        // 重新显示（回悬停/托盘召回/吸附落位/Gone 预切）：撤销待切换定时器，
+        // 恢复即时渲染。B29 三连补（均须与 setDock 同批，理由同上）：
+        // ① peekEnter 同批注入——经 effect 补设晚一帧＝IslandBar 首帧无
+        //    island-peek-in 类（全不透明落帧）再补类重播＝启动后首次滑入
+        //    边缘碎片闪现（B28 同族）；
+        // ② panelPhase 一并复位——Gone（托盘隐藏）预切事件只发 hidden:false，
+        //    面板开着被整窗隐藏时退场动画 onAnimationEnd 永不触发（B21 族
+        //    盲区）＝panelPhase 卡 "out"；且 Rust 侧已把窗口压回 48px、前端
+        //    lastSetSize 缓存仍是高值＝下次召唤面板被裁剪，在此断源；
+        // ③ prevHiddenRef 随事件推进（原 [dock] effect 已删；启动直拉路径
+        //    在 bootstrap 内自行更新）
+        window.clearTimeout(edgeSwapTimer.current);
+        setEdgeDelay(false);
+        setPanelPhase(null);
+        if (prevHiddenRef.current && e.payload.edge !== "none") {
+          setPeekEnter(e.payload.edge);
+        }
+      }
+      prevHiddenRef.current = e.payload.hidden;
       setDock(e.payload);
     });
     return () => {
@@ -280,20 +381,21 @@ function IslandApp() {
     };
   }, []);
 
-  // 隐藏 → 显示的瞬间标记胶囊入场动画（悬停滑入与托盘召唤共用此链路）；
-  // prevHiddenRef 只在 dock 变化时推进，避免启动引导首次拉取误触发
-  useEffect(() => {
-    if (prevHiddenRef.current && !dock.hidden && dock.edge !== "none") {
-      setPeekEnter(dock.edge);
-    }
-    prevHiddenRef.current = dock.hidden;
-  }, [dock]);
+  // 隐藏 → 显示的入场动画参数（peekEnter）已随 island-dock 监听器同批注入
+  //（B29，原 [dock] effect 补设晚一帧＝首次滑入闪现，见监听器注释）
 
-  // expanded 翻转映射到面板相位：展开即挂载入场；收起先进退场动画，播完自动卸载
+  // phase=panel 翻转映射到面板动画相位：展开即挂载入场；收起先进退场动画，播完自动卸载
   useEffect(() => {
-    if (expanded) setPanelPhase("in");
+    if (phase === "panel") setPanelPhase("in");
     else setPanelPhase((p) => (p === "in" ? "out" : p));
-  }, [expanded]);
+  }, [phase]);
+
+  // 形态上报（07 §4.4 穿透契约）：mini 态窗口两侧需穿透放行；full/panel 恒不穿透。
+  // 相位驱动——mouseleave 的 150ms 宽限到期才回到 mini（收缩期宁拦截，可自愈）；
+  // 面板退场动画在播时 phase 已非 panel，但面板正在消失、不可交互，穿透无实害
+  useEffect(() => {
+    invoke("island_set_mode", { mode: phase === "mini" ? "mini" : "expanded" }).catch(() => {});
+  }, [phase]);
 
   // 托盘"显示"召唤（island-summon）：贴边停靠的岛滑回后 3s 自动滑出收回——
   // 召唤是"临时亮位提醒"，无人理会就自己收好；鼠标移入则取消（交给常规
@@ -303,6 +405,10 @@ function IslandApp() {
       // 召唤的入场由 Rust 物理滑入承担（island_transition Pill），此处只负责
       // 3s 自动收回计时；不重播 CSS 入场动画（避免胶囊已亮出又闪回动画起点）
       window.clearTimeout(summonTimer.current);
+      // 召唤形态（B29）：贴边用户按 07 §4.2 应「滑入大岛亮出」——此前 phase
+      // 沿用滑出时残留的 mini（召唤无 hover 事件驱动形态）＝召唤出小岛，与
+      // 规格不符；显式升 full（自由位 edge=none 不动，保持原地常驻语义）
+      if (dockRef.current.edge !== "none") setPhase("full");
       summonTimer.current = window.setTimeout(() => {
         if (
           dockRef.current.edge !== "none" &&
@@ -353,7 +459,7 @@ function IslandApp() {
   // 先按 520 闪一拍。取不到（IPC 失败）保持 null＝退回 520 常量行为
   const [availBelow, setAvailBelow] = useState<number | null>(null);
   useEffect(() => {
-    if (!expanded) return;
+    if (phase !== "panel") return;
     let alive = true;
     const win = getCurrentWebviewWindow();
     void (async () => {
@@ -370,7 +476,7 @@ function IslandApp() {
     return () => {
       alive = false;
     };
-  }, [expanded, metrics]);
+  }, [phase, metrics]);
 
   // 展开态窗口高度上限：屏幕常量与「下方可用高度」取小；与 MIN_EXPANDED_H
   // 冲突时保下限（宁可贴底微溢出，不出畸形窄条）
@@ -380,12 +486,13 @@ function IslandApp() {
   );
 
   useEffect(() => {
+    const panelOpen = phase === "panel";
     if (panelPhase == null && panelH != null) setPanelH(null); // 面板卸载后清测量值，下次展开重新上报
-    if (!expanded && panelPhase != null) return; // 退场动画在播：窗口高度按兵不动
+    if (!panelOpen && panelPhase != null) return; // 退场动画在播：窗口高度按兵不动
     const win = getCurrentWebviewWindow();
     const target = {
       w: metrics.width,
-      h: expanded
+      h: panelOpen
         ? Math.min(
             expandedCap,
             Math.max(
@@ -402,12 +509,7 @@ function IslandApp() {
     win
       .setSize(new LogicalSize(target.w, target.h))
       .catch(() => {});
-  }, [expanded, metrics, panelH, panelPhase, expandedCap]);
-
-  // 进入贴边隐藏态时自动收起面板（Rust 已把窗口缩回收缩态，保持渲染一致）
-  useEffect(() => {
-    if (dock.hidden && expanded) setExpanded(false);
-  }, [dock.hidden, expanded]);
+  }, [phase, metrics, panelH, panelPhase, expandedCap]);
 
   // 显示器/缩放变化后重拉岛尺寸（2026-10-03 审查修复）：metrics 原先仅挂载
   // 拉取一次，拖岛跨屏或系统缩放变化后宽度档位/标签宽仍用旧值；贴边吸附
@@ -416,7 +518,9 @@ function IslandApp() {
     const refresh = () => {
       invoke<IslandMetrics>("island_metrics")
         .then((m) => {
-          if (m) setMetrics(m);
+          // 字段兜底归一（与 bootstrap 共用）：island-dock 事件（吸附/滑入滑出）
+          // 都会触发本刷新，旧后端缺字段时 undefined 会从这里回流污染 metrics
+          if (m) setMetrics(normalizeMetrics(m));
         })
         .catch(() => {});
     };
@@ -438,64 +542,117 @@ function IslandApp() {
   const widthClass =
     metrics.width >= 560 ? "w-lg" : metrics.width >= 460 ? "w-md" : "w-sm";
 
+  // 点击直达面板（07 §4.2 强意图通道）：任何形态点击＝跳过停留等待直达面板；
+  // 面板开着时再点＝收回到当前静止形态（hover_expand 开关不影响本通道）
+  const togglePanel = () =>
+    setPhase((p) => (p === "panel" ? restPhase(dockRef.current) : "panel"));
+
+  // ===== 悬停引擎（2026-10-13 B20 定稿）=====
+  // 唯一真源＝Rust island-hover-on/off 事件（光标在窗口矩形内 ⇔ 悬停，90ms
+  // 轮询沿检测）；DOM mouseenter/mouseleave 完全弃用——穿透翻转的合成事件
+  // 污染无法根除（B18/B19 实锤），弃用即免疫。onMouseDown（拖拽）与点击保留。
+  // 收缩冷却（B18）：收缩后 ≤90ms 内穿透翻转可能再合成一次 on 事件，250ms
+  // 冷却吸收之
+  const lastCollapseRef = useRef(0);
+
+  const hoverEnter = () => {
+    if (performance.now() - lastCollapseRef.current < 250) return;
+    window.clearTimeout(leaveTimer.current);
+    window.clearTimeout(collapseTimer.current);
+    window.clearTimeout(enterTimer.current);
+    window.clearTimeout(panelTimer.current);
+    // 用户正在看/用岛：托盘召唤的自动收起作废，收起交给移出逻辑
+    window.clearTimeout(summonTimer.current);
+    // 面板退场未完即返回：直接续看，不闪收闪开（收起是 150ms 宽限的推测，
+    // 人回来了就推翻它）。⚠ 仅非隐藏态（B21）：隐藏态必须优先滑入分支——
+    // 续看分支的 return 会吞掉 island_peek
+    if (panelPhase === "out" && !dockRef.current.hidden) {
+      setPhase("panel");
+      return;
+    }
+    if (dockRef.current.hidden) {
+      // 隐藏态入口（横线/左右端帽，07 §4.2）：强意图——滑入直达大岛（前端立即
+      // 渲染 full，物理滑入由 Rust 承担），累计 480ms 后面板
+      invoke("island_peek", { show: true }).catch(() => {});
+      setPhase("full");
+      if (hoverCard) {
+        panelTimer.current = window.setTimeout(() => setPhase("panel"), 480);
+      }
+    } else if (dockRef.current.edge === "left" || dockRef.current.edge === "right") {
+      // 左右停靠态：大岛常驻，320ms 后面板（D6）
+      if (hoverCard) {
+        enterTimer.current = window.setTimeout(() => setPhase("panel"), 320);
+      }
+    } else {
+      // 小岛常态：160ms 停留形变大岛（防误触闸门），累计 480ms 面板
+      enterTimer.current = window.setTimeout(() => setPhase("full"), 160);
+      if (hoverCard) {
+        panelTimer.current = window.setTimeout(() => setPhase("panel"), 480);
+      }
+    }
+  };
+  const hoverEnterRef = useRef(hoverEnter);
+  hoverEnterRef.current = hoverEnter;
+
+  /** 悬停离开（island-hover-off 驱动）：150ms 宽限后收缩（宽限期内 on 再来
+   *  即取消——Rust 光标真值的对冲，无需 DOM :hover 探测）；贴边停靠另排
+   *  400ms 后滑出隐藏 */
+  const hoverLeave = () => {
+    window.clearTimeout(enterTimer.current);
+    window.clearTimeout(panelTimer.current);
+    window.clearTimeout(collapseTimer.current);
+    collapseTimer.current = window.setTimeout(() => {
+      lastCollapseRef.current = performance.now();
+      setPhase(restPhase(dockRef.current));
+    }, 150);
+    if (dockRef.current.edge !== "none") {
+      // 400ms 宽限后滑出隐藏（期间重新进入则取消）
+      window.clearTimeout(leaveTimer.current);
+      leaveTimer.current = window.setTimeout(() => {
+        invoke("island_peek", { show: false }).catch(() => {});
+      }, 400);
+    }
+  };
+  const hoverLeaveRef = useRef(hoverLeave);
+  hoverLeaveRef.current = hoverLeave;
+
+  // 悬停真源监听（挂载即建，ref 保新鲜闭包）
+  useEffect(() => {
+    const unOn = listen("island-hover-on", () => hoverEnterRef.current());
+    const unOff = listen("island-hover-off", () => hoverLeaveRef.current());
+    return () => {
+      unOn.then((f) => f());
+      unOff.then((f) => f());
+    };
+  }, []);
+
+  // 右键菜单堵漏（2026-10-13 三轮审查 N1）：岛窗口全只读、无文本输入场景，
+  // 禁用 WebView2 默认右键菜单——误触「刷新」会重载整个岛 webview、重走启动
+  // 引导；仅岛窗口生效（本组件只在岛窗口渲染），设置/会话等常规窗口保留
+  // 原生菜单（输入框右键粘贴等）
+  useEffect(() => {
+    const stop = (e: Event) => e.preventDefault();
+    window.addEventListener("contextmenu", stop);
+    return () => window.removeEventListener("contextmenu", stop);
+  }, []);
+
   return (
     <div
       className={`root ${widthClass}`}
-      onMouseEnter={() => {
-        window.clearTimeout(leaveTimer.current);
-        window.clearTimeout(collapseTimer.current);
-        // 用户正在看/用岛：托盘召唤的自动收起作废，收起交给移出逻辑
-        window.clearTimeout(summonTimer.current);
-        if (dockRef.current.hidden) {
-          // 贴边隐藏态：先滑入显示独立标签→胶囊；悬停展开开启时滑入完成后再展开面板
-          invoke("island_peek", { show: true }).catch(() => {});
-          window.clearTimeout(enterTimer.current);
-          if (hoverCard) {
-            enterTimer.current = window.setTimeout(() => setExpanded(true), 260);
-          }
-        } else if (hoverCard) {
-          setExpanded(true);
-        }
-      }}
       onMouseDown={() => {
         // 拖拽开始：取消在播滑动动画，防止程序化移动打断系统拖拽
         invoke("island_drag_start").catch(() => {});
       }}
-      onMouseLeave={() => {
-        window.clearTimeout(enterTimer.current);
-        // 收起加 150ms 宽限（五轮审查 P1 修复）：面板内经 portal 挂 body 的
-        // 弹层（历史筛选菜单）不在 .root 子树内——React mouseleave 按命中元素
-        // 的 DOM 祖先链判定，指针移入菜单瞬间根节点就会收到 mouseleave，
-        // 无宽限则面板连带菜单当场塌掉（160ms 退场后菜单一起卸载），筛选
-        // 实际不可用。到期再探测：弹层/面板/根任一仍悬停则不收（菜单自身
-        // 的 200ms 关闭宽限只护它的计时器，救不了根节点）
-        window.clearTimeout(collapseTimer.current);
-        collapseTimer.current = window.setTimeout(() => {
-          if (
-            document.querySelector(".history-menu:hover") ||
-            document.querySelector(".panel-wrap:hover") ||
-            document.querySelector(".root:hover")
-          )
-            return;
-          setExpanded(false);
-        }, 150);
-        if (dockRef.current.edge !== "none") {
-          // 400ms 宽限后滑出隐藏（期间重新进入则取消）
-          window.clearTimeout(leaveTimer.current);
-          leaveTimer.current = window.setTimeout(() => {
-            invoke("island_peek", { show: false }).catch(() => {});
-          }, 400);
-        }
-      }}
     >
-      {dock.hidden && !expanded ? (
-        // 贴边隐藏态：独立信息标签（非胶囊截取）；面板收起完成后才渲染，避免错位闪现。
-        // peekW：标签宽度（胶囊常数减半），窗口保持全宽，由 CSS 居中呈现窄标签
+      {dock.hidden && !edgeDelay && phase !== "panel" ? (
+        // 贴边隐藏态：顶部横线/左右端帽信标；面板收起后才渲染，避免错位闪现。
+        // edgeDelay＝滑出动画期间继续渲染胶囊（#3 延迟切换，见 dock effect 注释）。
+        // peekW＝收纳宽（mini_line_width），顶部横线以此宽度居中呈现
         <EdgeTab
           edge={dock.edge}
           snap={visibleSnap}
           thresholds={thresholds}
-          peekW={metrics.peek_top_w}
+          peekW={metrics.mini_line_w}
         />
       ) : (
         <>
@@ -503,7 +660,9 @@ function IslandApp() {
             snap={visibleSnap}
             thresholds={thresholds}
             enterEdge={peekEnter}
-            onToggle={hoverCard ? undefined : () => setExpanded((v) => !v)}
+            onToggle={togglePanel}
+            mode={phase === "mini" ? "mini" : "full"}
+            miniW={metrics.mini_line_w}
           />
           {/* 面板挂载由相位驱动：in=入场/展开，out=退场动画在播（播完 onAnimationEnd 卸载） */}
           {panelPhase && visibleSnap && (

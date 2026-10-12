@@ -127,6 +127,7 @@ pub fn run() {
             island_peek,
             island_refresh,
             island_dock_state,
+            island_set_mode,
             island_boot_settled,
             island_drag_start,
             island_metrics,
@@ -243,8 +244,10 @@ pub fn run() {
                 let store2 = store.clone();
                 let win2 = win.clone();
                 std::thread::spawn(move || {
-                    // 穿透开关缓存：期望与缓存一致时不发系统调用（见 set_click_through）
+                    // 穿透期望缓存（B17：变化即调＋每 20 轮低频校准，见 set_click_through）
                     let mut last_ct = false;
+                    // hover 上拍记忆（B20 沿事件检测，与穿透缓存解耦）
+                    let mut hover_prev = false;
                     loop {
                         std::thread::sleep(Duration::from_millis(90));
                         // 单轮 panic 不杀线程（四轮审查）：看护线程死＝贴边评估与
@@ -274,20 +277,51 @@ pub fn run() {
                             if let Some((x, y)) = fire {
                                 apply_snap(&app2, &store2, &motion2, (x, y));
                             }
-                            // 顶部隐藏态：光标进标签矩形才解除穿透（悬停区=可见区），
-                            // 其余状态一律确保解除，防止拖离顶部后岛整体不可点
-                            let ct_want = {
+                            // ===== 光标真源与穿透调停（2026-10-13 B20 重构）=====
+                            // 规则一（光标真源）：光标在窗口矩形内 ⇔ 悬停
+                            // （cursor_in_window 物理坐标直比零换算；隐藏态窗口屏外
+                            //  部分光标不可达，屏内热区天然即交互边界，三态统一）。
+                            // 规则二（穿透等式）：穿透 = 收纳态（隐藏或 mini）且
+                            // 光标不在窗口——单一布尔式，无中间态。
+                            // 沿事件 island-hover-on/off 是前端唯一悬停真源：DOM
+                            // mouseenter/mouseleave 会被穿透翻转的合成事件污染
+                            // （B18/B19 实锤振荡），前端已完全不消费。
+                            // 历史教训勿翻案：B2~B19 的"居中带矩形+scale 换算+
+                            // 相位过滤 DOM 事件"三件套在 200% 缩放实机连环翻车
+                            //（几何换算错/语义反转/合成事件振荡），此为第四版定稿
+                            let (hidden, mini_mode, edge_top) = {
                                 let m = motion2
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                m.edge == "top" && m.hidden
+                                (m.hidden, m.mini_mode, m.edge == "top")
                             };
-                            let ct_on = if ct_want {
-                                cursor_on_top_tab(&win2)
+                            // 命中矩形按相位（B22/B23：可见区域即触发区域）：
+                            // mini＝小岛可见区；hidden 且 top＝横线豁免几何
+                            //（左右＝可见宽无冗余，上下冗余＝屏顶间隙 4px，
+                            // 命中高 11px 上缘封口屏顶边——B23/B24 定稿）；
+                            // hidden 且左右＝窗口矩形（端帽屏内 20px 即可见区）；
+                            // full/panel＝窗口矩形（全宽可交互＝可见区）
+                            let hover = if hidden {
+                                if edge_top {
+                                    cursor_on_top_line(&win2)
+                                } else {
+                                    cursor_in_window(&win2)
+                                }
+                            } else if mini_mode {
+                                cursor_in_mini(&win2)
                             } else {
-                                false
+                                cursor_in_window(&win2)
                             };
-                            set_click_through(&win2, ct_on, &mut last_ct);
+                            if hover != hover_prev {
+                                hover_prev = hover;
+                                let _ = app2.emit_to(
+                                    ISLAND,
+                                    if hover { "island-hover-on" } else { "island-hover-off" },
+                                    (),
+                                );
+                            }
+                            let want_ct = (hidden || mini_mode) && !hover;
+                            set_click_through(&win2, want_ct, &mut last_ct);
                         }));
                         if let Err(payload) = result {
                             log::error!(
@@ -700,18 +734,69 @@ mod tests {
         assert_eq!(detect_edge((960, 25), mon, size, SNAP_THRESHOLD), "none");
     }
 
+    /// 小岛命中矩形（B22 水平带；B27 垂直居中——y 带自窗口顶 +6 逻辑起）：
+    /// 200% 缩放屏（2560×1600@200%＝逻辑 1280×800，大岛 384／小岛 200），
+    /// 窗口物理位 (948,348)——水平带 [1132,1532] 与 B15 期实机诊断快照逐值
+    /// 吻合（该值当时经实机验证）；y 带 [360,432]＝B27 中心锚定（+12 物理
+    /// 偏移）；100% 缩放对照＝同布局物理值减半
+    #[test]
+    fn test_mini_hit_rect() {
+        assert_eq!(
+            mini_hit_rect((948, 348), 384, 200, 2.0),
+            (1132.0, 360.0, 1532.0, 432.0)
+        );
+        assert_eq!(
+            mini_hit_rect((474, 174), 384, 200, 1.0),
+            (566.0, 180.0, 766.0, 216.0)
+        );
+    }
+
+    /// 横线命中矩形（B23，间隙 4px 版）：隐藏位窗口 y=屏顶−32 逻辑。200% 屏
+    /// （p=(948,−64)）：左右＝横线可见宽 [1132,1532]（无冗余），垂直＝屏顶
+    /// 封口 y[0,22]（命中高 11px＝上下各 4px 间隙冗余＋3px 线体）；
+    /// 100% 对照同布局减半
+    #[test]
+    fn test_top_line_hit_rect() {
+        assert_eq!(
+            top_line_hit_rect((948, -64), 384, 200, 2.0),
+            (1132.0, 0.0, 1532.0, 22.0)
+        );
+        assert_eq!(
+            top_line_hit_rect((474, -32), 384, 200, 1.0),
+            (566.0, 0.0, 766.0, 11.0)
+        );
+    }
+
     /// 隐藏位计算：三种贴靠边各露 PEEK_PX 在屏内
     #[test]
     fn test_hidden_pos() {
         let mon_pos = (0, 0);
         let mon_w = 1920;
         let width = island_width(mon_w); // 480
-        // 顶部：上滑，底部露出 PEEK_TOP_H（独立信息条）
-        assert_eq!(hidden_pos(mon_pos, mon_w, "top", (720, 0), width), (720, -(ISLAND_H - PEEK_TOP_H)));
+        // 顶部：上滑，屏内留 16px 窗口（TOP_LINE_HIT_H）；命中带＝11px 上缘封口
+        // 屏顶（B23/B24 定稿，top_line_hit_rect——与窗口留量无关，07 §4.4）
+        assert_eq!(hidden_pos(mon_pos, mon_w, "top", (720, 0), width), (720, -(ISLAND_H - TOP_LINE_HIT_H)));
         // 左侧：左滑，右侧露出 PEEK_SIDE_W（半圆标签）
         assert_eq!(hidden_pos(mon_pos, mon_w, "left", (0, 300), width), (-(width - PEEK_SIDE_W), 300));
         // 右侧：右滑，左缘留在 1920-PEEK_SIDE_W
         assert_eq!(hidden_pos(mon_pos, mon_w, "right", (1440, 300), width), (1920 - PEEK_SIDE_W, 300));
+    }
+
+    /// 收纳形态宽度：大岛宽 × 40% 夹取 [200， 320]（07-TOP-ISLAND §3.2 各屏验证值；
+    /// 2026-10-12 实机反馈下限 240→200，窄逻辑屏留白收窄）
+    #[test]
+    fn test_mini_line_width() {
+        // 1280 逻辑（2560 物理 @200%）：大岛 384 → 154 → 下限 200 兜底
+        assert_eq!(mini_line_width(island_width(1280)), 200);
+        // 1366 笔记本：大岛 410 → 164 → 下限 200 兜底
+        assert_eq!(mini_line_width(island_width(1366)), 200);
+        // 1920 主流：大岛 576 → 230（在 [200, 320] 区间内取值本身）
+        assert_eq!(mini_line_width(island_width(1920)), 230);
+        // 2560（2K）：大岛 768 → 307
+        assert_eq!(mini_line_width(island_width(2560)), 307);
+        // 3440 带鱼 / 3840（4K）：大岛 800 → 320 → 上限封顶
+        assert_eq!(mini_line_width(island_width(3440)), 320);
+        assert_eq!(mini_line_width(island_width(3840)), 320);
     }
 
     /// 自适应宽度：按屏幕逻辑宽 30% 夹取 [380， 800]

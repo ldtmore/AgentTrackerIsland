@@ -1,38 +1,23 @@
 /**
- * 贴边隐藏态标签（M1-6 立项，2026-10-08 左右侧「弓形＋药丸」改版）：
- * 独立微 UI，非胶囊截取——**它是「胶囊本人被屏幕边缘遮住大半后露出的局部」**：
- * 左右=端帽切片（真实圆头弓形），顶部=底部切片（横条，所有者的胶囊遮蔽模型）。
- * 设计语言与位置无关（状态统一原则）：
- * - **颜色 = Agent 身份**，顶部横条分段 / 左右竖向药丸点列——同一套
- *   "分段＋亮度动效"语言按形态适配（批次三删除旧扇形楔块：20px 宽的饼图
- *   隐喻信息带宽为零；2026-10-08 竖条改药丸：密度恒定＋中轴放置，不再被
- *   容器曲率裁切成碎条）；
- * - 状态用亮度/动效表达：工作中=全亮慢呼吸 / 等待=快闪 / 出错=红圈描边+快闪 /
- *   空闲=55% 暗淡 / 离线=近隐没；全部会话离线的 Agent 不渲染分段（E2）；
- *   三处逐参数一致（同一 keyframes/同一透明度档），出错「！」是顶部宽敞位
- *   的冗余增强，红圈才是三处同义的语义本体（左右药丸用外描边保身份色完整）；
- * - **额度线 = 隐藏态自己的边缘轮廓**：左右贴端帽圆弧（与容器轮廓同一条
- *   弧线），顶部贴底缘轮廓线（SVG path 按实际 peek 宽精确生成）——
- *   dasharray=已用%，点亮的是同一粒胶囊的不同边缘，与胶囊/面板/托盘同源
- *   选择器（tensestAccount）；F5：展示集有实例但无可用数据 → 空轮廓可见；
- *   余额告急 → 满线 danger（微 UI 无金额位，矩阵规定的降级表达）；
- * - 采集异常 → 轮廓光转琥珀（F3，与出错红同语言，状态不再因位置沉默）；
- * - 上岛深度（2026-10-08）：分段只渲染拖拽序前 N 个（默认 5、上限 6＝
- *   药丸列满配容量）；过滤仅在本渲染层——胶囊文案/容器描边的全局聚合
- *   不受限，界外 Agent 出错仍由红边＋文案兜底。
+ * 贴边隐藏态（M1-6 立项；2026-10-12 07-TOP-ISLAND 改版拆分）：
+ * - **顶部＝信标横线**（TopLine）：3px 状态色线贴屏幕顶边（宽 mini_line_w 居中于
+ *   停靠位），替代旧 14px 底部切片——旧形态是"胶囊被遮住的残缺局部"（下凸额头），
+ *   新形态是"完整的指示物"（借鉴 iOS 底部 Home Indicator 移到顶部并赋予状态色）。
+ *   唯一内容通道＝状态色＋节律（通道补偿），刻意不做分段/额度/"！"（D2/D3）；
+ *   可见 3px＋命中 16px 热区（可见区≠命中区），预响应（hover 提亮增厚）在 CSS。
+ * - **左右＝端帽弓形＋药丸点列**（2026-10-08「弓形＋药丸」改版，不动）：
+ *   颜色＝Agent 身份（竖向药丸点列，密度恒定＋中轴放置），状态用亮度/动效表达；
+ *   额度线＝端帽外沿弧（dasharray=已用%，tensestAccount 同源选择器）；
+ *   出错＝药丸外描边红圈＋轮廓光红；采集异常＝轮廓光琥珀。
  *
  * ⚠ 本区域明确不做 tooltip（2026-09-18 与用户确认的伪需求，勿再实现）：
  * 根容器的 onMouseEnter 在鼠标进入隐藏态瞬间触发 island_peek 滑入，
- * 本组件随即卸载换成胶囊渲染（App.tsx 悬停激活链路）——任何悬停提示
- * 都没有稳定展示时机。额度与状态详情由滑入后的胶囊 tooltip 承接
+ * 本组件随即卸载换成大岛渲染——任何悬停提示都没有稳定展示时机
  */
+import { useEffect, useRef, useState } from "react";
 import type { IslandSnapshot, SessionState, Thresholds } from "../shared/types";
 import { agentColor, quotaLevel, tensestAccount } from "../shared/types";
 import { agentLimit, orderAgentIds } from "../shared/agentOrder";
-import { BangIcon } from "../shared/icons";
-
-/** 顶部贴边条高（与 Rust PEEK_TOP_H 同值同义；轮廓路径端弧半径=条高，半圆收尾） */
-const EDGE_TOP_H = 14;
 
 /** 按 Agent 聚合最严重状态，等宽分段（大小不编码信息）；
  *  全离线 Agent 不占位（E2） */
@@ -92,16 +77,47 @@ const ARC_STROKE: Record<string, string> = {
   danger: "#f87171",
 };
 
-/** 顶部切片的下缘轮廓路径（额度线即轮廓本身）：左上角起笔→左端弧→底边直线→
- *  右端弧收笔。端弧半径=条高（quarter circle），与容器 border-radius 同一几何；
- *  path 按实际 peek 宽精确生成（无拉伸无变形），dasharray 沿轮廓推进＝「胶囊底缘
- *  被点亮到已用% 处」——与左右端帽弧同一套「线即边缘」语言。
- *  ⚠ 端弧 sweep=0（弧心在端的上方内侧：左端 (r,0)、右端 (w-r,0)），弧经靠下
- *  象限贴住条的左下/右下圆角剪影；sweep=1 会画成贴内上角的对角斜线
- *  （2026-09-28 所有者截图实認的返工点，两枚 flag 勿再翻转） */
-function topOutlinePath(w: number): string {
-  const r = EDGE_TOP_H;
-  return `M 0 0 A ${r} ${r} 0 0 0 ${r} ${r} L ${w - r} ${r} A ${r} ${r} 0 0 0 ${w} 0`;
+/** 横线状态类推导（07 §6.2）：出错（含额度耗尽）＞等待＞采集异常（仅无前两者时，
+ *  与等待同为琥珀、靠节律区分性质）＞工作中；空闲/无会话＝默认中灰（无类） */
+function topLineState(snap: IslandSnapshot | null): string {
+  if (snap?.island === "any_error" || snap?.quota_exhausted === true) return "st-error";
+  if (snap?.island === "any_waiting") return "st-waiting";
+  if (snap?.degraded === true) return "st-degraded";
+  if (snap?.island === "any_working") return "st-working";
+  return "";
+}
+
+/** 顶部信标横线（07 §3.1）：3px 状态色线，唯一内容通道＝色＋节律。
+ *  一次性状态标点（2026-10-13 三轮审查 #4）：进入出错/等待的瞬间播一次
+ *  宽度脉冲（~0.6s 自熄）——岛端有 halo 光环做「状态变化的标点」，横线此前
+ *  没有对等物，状态迁移错过就错过。选宽度而非增厚：增厚已被 hover 预响应
+ *  占用（词汇单一性）；仅升级态触发（进入出错/等待），首帧即处该态（启动
+ *  带病上线）不播——与岛端 halo 的 was==null 守卫同款；reduced-motion
+ *  由全局收敛兜底 */
+function TopLine({ snap, peekW }: { snap: IslandSnapshot | null; peekW: number }) {
+  const stCls = topLineState(snap);
+  const [beat, setBeat] = useState(false);
+  const prevStRef = useRef<string | null>(null);
+  useEffect(() => {
+    const was = prevStRef.current;
+    prevStRef.current = stCls;
+    if (was == null || was === stCls) return;
+    if (stCls !== "st-error" && stCls !== "st-waiting") return;
+    setBeat(true);
+    const t = window.setTimeout(() => setBeat(false), 700);
+    return () => window.clearTimeout(t);
+  }, [stCls]);
+  // 宽度防御（07 §7）：后端旧版本缺 mini_line_w 字段时回落 200（undefined 会让
+  // style.width 失效、回落 CSS 的 width:100%＝横线全宽，2026-10-12 实机事故；
+  // 回落值与 Rust MINI_W_MIN 同源，B9 起 240→200——原注释"240"已过期一并修正）
+  const lineW = Number.isFinite(peekW) && peekW > 0 ? peekW : 200;
+  return (
+    <div
+      className={`top-line ${stCls}${beat ? " top-line-beat" : ""}`}
+      style={{ width: lineW }}
+      data-tauri-drag-region
+    />
+  );
 }
 
 export default function EdgeTab({
@@ -113,66 +129,23 @@ export default function EdgeTab({
   edge: string;
   snap: IslandSnapshot | null;
   thresholds: Thresholds;
-  /** 顶部贴边隐藏态的标签宽度（Rust peek_top_width：胶囊公式常数减半，恒 2:1）。
-   *  窗口保持全宽，标签以 CSS 居中呈现窄条；两侧透明区域由后端动态鼠标穿透放行点击 */
+  /** 顶部横线宽度（Rust mini_line_width：大岛宽×40% 夹取 [240， 320]，与小岛
+   *  等宽——横线是"藏起来的小岛"的水平投影）。窗口保持全宽，横线以 CSS 居中
+   *  呈现；两侧与下方透明热区由后端动态鼠标穿透放行点击（命中区 16px） */
   peekW: number;
 }) {
+  // 左右件的出错/降级描边语义（edge-error/edge-degraded 容器类）不变
   const error = snap?.island === "any_error" || snap?.quota_exhausted === true;
-  // 采集异常（F3）：容器琥珀描边；与出错同时发生时红描边优先（更严重的语义独占边框）
   const degraded = snap?.degraded === true && !error;
   const cls = `edge-tab edge-tab-${edge}${error ? " edge-error" : ""}${degraded ? " edge-degraded" : ""}`;
   const segments = agentSegments(snap);
   const q = quotaSignal(snap, thresholds);
   const pctClamped = q.pct != null ? Math.min(100, Math.max(0, q.pct)) : 0;
 
-  // 顶部贴边：胶囊的底部切片（横条），Agent 身份色横条分段＋底缘轮廓额度线
+  // 顶部贴边：信标横线（07 §3.1）——3px 状态色线，宽度居中，唯一通道＝色＋节律
+  // （一次性状态标点与宽度防御见 TopLine 子组件）
   if (edge !== "left" && edge !== "right") {
-    return (
-      <div className={cls} style={{ width: peekW }} data-tauri-drag-region>
-        {segments.map((seg) => (
-          // 出错分段叠加「！」（E4）：纯色微 UI 上唯一的文字级符号
-          <span key={seg.agent} className="edge-seg-wrap" data-tauri-drag-region>
-            <span
-              className={`edge-seg st-${seg.state}`}
-              style={{ background: agentColor(seg.agent) }}
-              data-tauri-drag-region
-            />
-            {seg.state === "error" && (
-              <span className="edge-bang" data-tauri-drag-region>
-                <BangIcon />
-              </span>
-            )}
-          </span>
-        ))}
-        {q.hasData && (
-          // 额度线＝切片下缘轮廓本身（含两端端弧），path 按实际 peek 宽生成；
-          // F5：pct=null（暂无数据）仅画空轮廓，明示「有实例但暂无数据」
-          <svg
-            className="edge-svg"
-            viewBox={`0 0 ${peekW} ${EDGE_TOP_H}`}
-            preserveAspectRatio="none"
-            data-tauri-drag-region
-          >
-            <path
-              d={topOutlinePath(peekW)}
-              pathLength={100}
-              className="edge-arc-track edge-arc-round"
-            />
-            {q.pct != null && (
-              // dasharray 经 style 下发（CSS 可观察）：用量变化时轮廓线平滑推进；
-              // color 供 .edge-arc 的 drop-shadow(currentColor) 取档位色
-              <path
-                d={topOutlinePath(peekW)}
-                pathLength={100}
-                className="edge-arc edge-arc-round"
-                style={{ strokeDasharray: `${pctClamped} 100`, color: ARC_STROKE[q.level] }}
-                stroke={ARC_STROKE[q.level]}
-              />
-            )}
-          </svg>
-        )}
-      </div>
-    );
+    return <TopLine snap={snap} peekW={peekW} />;
   }
 
   // 左右贴边（2026-10-08「弓形＋药丸」改版）：SVG 承载形状——真实端帽弓形
@@ -204,7 +177,8 @@ export default function EdgeTab({
               （与顶部件「轮廓线画在切片内」同一语义，壁纸上不再显色） */}
           <clipPath id="edge-cap-clip"><path d={bodyPath} /></clipPath>
         </defs>
-        {/* 弓形本体：真实端帽切片的近黑填充（形状真源在 SVG——矩形 div 画不出
+        {/* 弓形本体：真实端帽切片的玻璃填充（与胶囊同一套配方，B30——随主题
+            与不透明度滑块；形状真源在 SVG——矩形 div 画不出
             单边整条圆弧，CSS border-radius 会被相邻半径规则压缩成尖椭圆） */}
         <path d={bodyPath} className="edge-body" />
         {/* 额度线（底轨＋档位弧）：包两层 g——外层裁进弓形，内层 filter 让

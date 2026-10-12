@@ -766,7 +766,8 @@ export default function Report() {
 
   // 图表主题色（M1-4）：轴线/图例文字、网格线随主题切换；
   // 序列色与热力色阶同样随主题分档（四轮审查实算修正：原「高饱和双主题通用」
-  // 假设不成立——深色原值在浅底 #f5f6f8 上 1.5~2.5:1，低于 WCAG 图形 3:1）
+  // 假设不成立——深色原值在浅底上 1.5~2.5:1，低于 WCAG 图形 3:1；
+  // B32 底色压暗后重算：浅底现为 #e9ebef，深档序列色实测 ≥3.4:1，仍达标）
   const axisText = { color: theme === "dark" ? "#9ca3af" : "#57606a" };
   // splitLine 深色 0.06→0.09（五轮审查）：0.06 在深底上近不可见，参考线
   // 失去「对照刻度」的作用；仍属装饰性参考线（WCAG 豁免），不追 3:1
@@ -819,7 +820,7 @@ export default function Report() {
           textStyle: { color: "#d1d5db", fontSize: 11 },
         }
       : {
-          backgroundColor: "rgba(255,255,255,0.98)",
+          backgroundColor: "rgba(238,239,242,0.98)",
           borderColor: "rgba(0,0,0,0.12)",
           textStyle: { color: "#424a53", fontSize: 11 },
         };
