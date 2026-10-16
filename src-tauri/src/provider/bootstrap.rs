@@ -164,6 +164,14 @@ fn run_glm_migration(store: &Store) {
     };
     if migrated_account.is_some() {
         store.set_setting(MIGRATED_KEY, "1");
+        // 旧明文 key 清洗（2026-10-16 D1 决策）：真值已入钥匙串，SQLite 不再
+        // 保留明文副本（原注释「旧键保留兼容回滚」作废——回显诉求已由
+        // provider_account_reveal_key 正规通道承接，且应用尚无正式用户无回滚负担）。
+        // get_settings 出口另有同款剥离兜底（防其他路径残留）
+        if store.get_setting("glm_token").map(|t| !t.is_empty()).unwrap_or(false) {
+            let _ = store.set_setting("glm_token", "");
+            log::info!("[迁移] 旧 glm_token 明文已清洗（真值在钥匙串）");
+        }
         log::info!("[迁移] GLM 存量凭据迁移完成（防重入标志已写入）");
     }
 }

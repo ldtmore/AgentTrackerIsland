@@ -171,7 +171,11 @@ impl IncrementalFileReader {
         let total = meta.len();
         let mtime = meta_mtime_ms(&meta);
         let start = match self.offsets.get(path) {
-            Some((m0, _)) if *m0 == mtime => return Ok(None),
+            // mtime 相等且长度未增才视为无新字节（2026-10-16 审查）：文件时间戳
+            // 精度有限，同一粒度内的末次追加会让 mtime 不变而长度增长——原先
+            // 直接短路返回 None，该行被永久漏采（行级水位救不了根本没读出的
+            // 行，红线③）。长度比对零额外开销（metadata 已在手）
+            Some((m0, off)) if *m0 == mtime && *off == total => return Ok(None),
             Some((_, off)) if *off <= total => off.saturating_sub(BACKTRACK_BYTES),
             _ => 0,
         };
@@ -624,6 +628,31 @@ mod tests {
         assert_eq!(body_after_partial("a\nb", 0), Some("a\nb"));
         assert_eq!(body_after_partial("half\nrest", 7), Some("rest"));
         assert_eq!(body_after_partial("halfno-newline", 7), None);
+    }
+
+    /// mtime 粒度竞态回归（2026-10-16 审查修复）：上一轮游标为 (m0, total0)，
+    /// 同一时间戳粒度内追加使文件实际增长到 total1 而 mtime 仍为 m0——旧实现
+    /// 按「mtime 相等」直接短路返回 None，末次追加被永久漏采（红线③）；
+    /// 新实现 mtime 相等时补长度比对，长度增长照常增量读。
+    /// 构造方式：预填游标为（当前实际 mtime，旧长度），等价于「文件已增长但
+    /// 时间戳未跨粒度」的真实状态——不依赖文件系统时间戳精度，测试可复现
+    #[test]
+    fn test_incremental_reader_mtime_race() {
+        let dir = tmp_dir("incr-race");
+        let f = dir.join("race.jsonl");
+        std::fs::write(&f, "line1\n").unwrap();
+        let mut r = IncrementalFileReader::default();
+        let _ = r.changed(&f).unwrap().unwrap(); // 先正常读走一次（建立游标）
+        // 追加新行，游标保持「当前 mtime＋旧长度 6」——模拟追加未跨时间戳粒度
+        std::fs::write(&f, "line1\nline2\n").unwrap();
+        let meta = std::fs::metadata(&f).unwrap();
+        r.offsets.insert(f.clone(), (meta_mtime_ms(&meta), 6));
+        let d = r.changed(&f).unwrap().unwrap();
+        assert!(d.text.contains("line2"), "mtime 同粒度追加必须读出，不得短路");
+        assert_eq!(d.start, 0, "小文件回退区被钳到 0");
+        // 读到尾：新游标记录的长度与文件实际长度一致
+        assert_eq!(r.offsets.get(&f).unwrap().1, meta.len());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// ScanBudget：首次放行，窗口内拒绝，窗口外放行

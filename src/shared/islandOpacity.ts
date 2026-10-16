@@ -1,6 +1,6 @@
 /**
  * 灵动岛背景不透明度：设置页【灵动岛】节单滑块调基准值（存储键 island_opacity，
- * 0–100 整数字符串），两层背景按固定偏移派生 alpha，视觉层级恒定——
+ * 0～100 整数字符串），两层背景按固定偏移派生 alpha，视觉层级恒定——
  * 面板永远比胶囊实一档（文字密集，可读性要求更高）。
  * 应用方式与主题同构：派生 alpha 写根元素 CSS 变量，App.css 以
  * rgba(var(--pill-rgb), var(--pill-alpha)) 形式消费；深浅主题只换 RGB，alpha 通用。
@@ -41,7 +41,7 @@ export function asIslandOpacity(v: unknown): number {
   return Math.min(ISLAND_OPACITY_MAX, Math.max(ISLAND_OPACITY_MIN, Math.round(n)));
 }
 
-/** 基准 % → 两层派生 alpha（clamp 到 0–1） */
+/** 基准 % → 两层派生 alpha（clamp 到 0～1） */
 export function deriveAlphas(base: number): { pill: number; panel: number } {
   const a = base / 100;
   const clamp01 = (x: number) => Math.min(1, Math.max(0, x));

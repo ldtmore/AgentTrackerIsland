@@ -15,7 +15,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import type { AccountOverview, ProviderKindView, TestResult } from "./providerTypes";
-import { fmtDT, currencySymbol } from "./format";
+import { fmtDT, fmtMoney } from "./format";
 import { quotaLevel, windowLabel, windowLabelCN, type Thresholds } from "./types";
 import "./providercard.css";
 
@@ -31,7 +31,9 @@ function worstWindow(a: AccountOverview) {
  *  百分比按阈值水位分色（warn 琥珀/danger 红，阈值缺省 80/95 与后端一致） */
 function summaryOf(a: AccountOverview, thresholds?: Thresholds): React.ReactNode {
   if (a.balance) {
-    return <>余额 {currencySymbol(a.balance.currency)}{a.balance.total.toFixed(2)}</>;
+    // 走 fmtMoney（2026-10-16 审查修复）：原手拼货币符＋toFixed 会把负余额渲染
+    // 成「¥-5.20」——负号藏在货币符后易漏读，与岛端/托盘两套格式
+    return <>余额 {fmtMoney(a.balance.currency, a.balance.total)}</>;
   }
   const worst = worstWindow(a);
   if (worst) {

@@ -202,7 +202,7 @@ impl Store {
         model: Option<&[String]>,
         provider: Option<&[String]>,
     ) -> Option<ReportFilter> {
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         build_filter(&conn, range, agent, project, model, provider)
     }
 
@@ -212,7 +212,7 @@ impl Store {
         f: &ReportFilter,
         ov: &std::collections::HashMap<String, crate::modelcat::PriceOverride>,
     ) -> SummaryStats {
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let (where_sql, params) = filter_where(f);
         let sql = format!(
             "SELECT COALESCE(SUM({TOTAL_EXPR}),0), COALESCE(SUM(NOT u.is_background),0),
@@ -322,7 +322,7 @@ impl Store {
         range: &str,
         ov: &std::collections::HashMap<String, crate::modelcat::PriceOverride>,
     ) -> Vec<TrendRow> {
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let bucket = bucket_expr(range);
         let (where_sql, params) = filter_where(f);
         let sql = format!(
@@ -399,7 +399,7 @@ impl Store {
     /// 趋势维度切片（#9a）：时间桶×维度值分组的 token 合计（Agent/模型两种），
     /// 供趋势图切"按 Agent／按模型"堆叠；与 report_trend 同一套 WHERE 与分桶
     fn report_trend_slices(&self, f: &ReportFilter, range: &str, dim: &str) -> Vec<TrendSlice> {
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let bucket = bucket_expr(range);
         let (where_sql, params) = filter_where(f);
         let sql = format!(
@@ -438,7 +438,7 @@ impl Store {
         dim: &str,
         ov: &std::collections::HashMap<String, crate::modelcat::PriceOverride>,
     ) -> Vec<SliceUsage> {
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let group = dim_expr(dim);
         let (where_sql, params) = filter_where(f);
         let sql = format!(
@@ -503,7 +503,7 @@ impl Store {
 
     /// 周×小时热力图（本机时区，token 与次数双指标）
     fn report_heatmap(&self, f: &ReportFilter) -> Vec<HeatCell> {
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let (where_sql, params) = filter_where(f);
         let sql = format!(
             "SELECT CAST(strftime('%w', u.ts/1000,'unixepoch','localtime') AS INTEGER),
@@ -534,7 +534,7 @@ impl Store {
 
     /// 筛选下拉选项（仅按范围过滤，维度互不遮蔽）
     fn report_options(&self, f: &ReportFilter) -> FilterOptions {
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let mut out = FilterOptions::default();
         let lists: [(&str, &str); 3] = [
             ("agent", "SELECT DISTINCT u.agent FROM usage_records u WHERE u.ts >= ? ORDER BY 1"),
@@ -615,7 +615,7 @@ impl Store {
 
     /// 错误类型分布（限流/取消/网络等；仅统计 error_type 非空的记录）
     fn report_by_error(&self, f: &ReportFilter) -> Vec<SliceUsage> {
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let (where_sql, params) = filter_where(f);
         let sql = format!(
             "SELECT u.error_type AS label, COUNT(*)
@@ -646,7 +646,7 @@ impl Store {
     /// 按模型平均首字延迟（仅统计上报了 ttft 的前台调用；
     /// total=平均毫秒、calls=有首字记录的调用条数，前端据此展示置信度）
     fn report_ttft_by_model(&self, f: &ReportFilter) -> Vec<SliceUsage> {
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let (where_sql, params) = filter_where(f);
         let sql = format!(
             "SELECT LOWER(u.model) AS label, CAST(AVG(u.ttft_ms) AS INTEGER), COUNT(u.ttft_ms)
@@ -678,7 +678,7 @@ impl Store {
     /// （USD，与报表汇总卡同源算法——逐模型乘当前单价；无可计价模型为 None）。
     /// today 走公共 report_snapshot 的 today 档；本月自建月起点 filter
     pub fn budget_usage(&self) -> Option<(Option<f64>, Option<f64>)> {
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let today_cutoff = today_start_ms(&conn)?;
         let month_cutoff = month_start_ms(&conn)?;
         drop(conn);
@@ -707,7 +707,7 @@ impl Store {
     /// 恒近 365 天全量，不随报表页范围/维度筛选联动（2026-09-29 评审后暂缓：
     /// 范围联动下短档只有一两列格子、all 档轴起点口径含糊，等口径想清楚再做）
     pub fn year_heatmap(&self) -> Vec<(String, i64, i64)> {
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let sql = format!(
             "SELECT date(u.ts/1000,'unixepoch','localtime'),
                     COALESCE(SUM({TOTAL_EXPR}),0),
@@ -764,7 +764,7 @@ impl Store {
         // 7d/30d/90d→紧邻上一段；all→全部历史无上期，不比
         let prev_window: Option<(i64, i64)> = match range {
             "today" => {
-                let t = today_start_ms(&self.lock_conn())?;
+                let t = today_start_ms(&self.lock_read())?;
                 Some((t - 86_400_000, t))
             }
             "7d" | "30d" | "90d" => {
@@ -814,7 +814,7 @@ impl Store {
     /// 四轮审查：原先按目标供应商逐家扫描（多选 N 家＝同结果集全范围扫 N 遍），
     /// 现单次扫描分桶，多选只查表一次
     fn provider_models_map(&self, f: &ReportFilter) -> std::collections::HashMap<String, Vec<String>> {
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let (where_sql, params) = filter_where(f);
         let sql = format!(
             "SELECT DISTINCT LOWER(u.model) FROM usage_records u
@@ -882,11 +882,17 @@ impl Store {
             "errored" => " AND errors > 0",
             _ => return None,
         };
+        // 排序键白名单（2026-10-16 加 :asc 升序变体——纯字符串枚举无注入面；
+        // 默认降序维持原口径，升序服务「找最早/最小」的排查场景）
         let order_sql: &str = match sort {
             "recent" => "last_ts DESC",
+            "recent:asc" => "last_ts ASC",
             "tokens" => "total_tokens DESC",
+            "tokens:asc" => "total_tokens ASC",
             "calls" => "calls DESC",
+            "calls:asc" => "calls ASC",
             "duration" => "duration_ms DESC",
+            "duration:asc" => "duration_ms ASC",
             _ => return None,
         };
         // 会话窗口保持单选语义：单值包成单元素集合进多选 filter（#9b 改造适配）
@@ -898,7 +904,7 @@ impl Store {
             one(model).as_deref(),
             None,
         )?;
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let (where_sql, mut params) = filter_where(&f);
         // 内层子查询：按会话聚合（别名供外层过滤/排序引用，避免脆弱的列号）；
         // calls 不含后台校准行（cost-state 差值非真实调用）
@@ -937,47 +943,65 @@ impl Store {
         } else {
             " AND (COALESCE(title,'') LIKE ? ESCAPE '\\' OR COALESCE(project_dir,'') LIKE ? ESCAPE '\\')"
         };
-        // 总数：同一聚合子查询＋同一套过滤，口径与行查询完全一致
-        let count_sql =
-            format!("SELECT COUNT(*) FROM ({inner}) WHERE 1=1{kw_sql}{status_sql}");
-        let total: i64 = conn
-            .prepare(&count_sql)
-            .and_then(|mut s| s.query_row(rusqlite::params_from_iter(params.iter()), |r| r.get(0)))
-            .unwrap_or(0);
-        // 行查询：LIMIT/OFFSET 参数追加在过滤参数之后
-        let mut all_params = params;
+        // 总数＋首页行合并为一次查询（2026-10-16 翻页合并）：原 count/rows 各自
+        // 完整执行一遍聚合子查询——全范围扫描双倍开销，一年百万行下每次翻页
+        // 两次秒级聚合。COUNT(*) OVER() 窗口函数在 LIMIT 之前求值（SQL 逻辑
+        // 顺序 FROM→WHERE→窗口→ORDER→LIMIT），一次拿到过滤后总数＋当前页行，
+        // total 口径与行查询天然一致（同一语句）
+        // clone 而非 move：空页兜底的 count 查询仍需原始过滤参数（Vec 几个
+        // 元素，克隆成本可忽略）
+        let mut all_params = params.clone();
         all_params.push(page_size.into());
         all_params.push(offset.into());
-        let rows_sql =
-            format!("SELECT * FROM ({inner}) WHERE 1=1{kw_sql}{status_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?");
+        let rows_sql = format!(
+            "SELECT *, COUNT(*) OVER() AS _filt_total FROM ({inner}) WHERE 1=1{kw_sql}{status_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?"
+        );
         let mut rows = Vec::new();
+        let mut total: i64 = 0;
         if let Ok(mut stmt) = conn.prepare(&rows_sql) {
             let mapped = stmt.query_map(rusqlite::params_from_iter(all_params.iter()), |r| {
-                Ok(SessionRow {
-                    session_id: r.get("session_id")?,
-                    agent: r.get("agent")?,
-                    state: r.get("state")?,
-                    model: r.get("model")?,
-                    project_dir: r.get("project_dir")?,
-                    title: r.get("title")?,
-                    first_ts: r.get("first_ts")?,
-                    last_ts: r.get("last_ts")?,
-                    calls: r.get("calls")?,
-                    input_tokens: r.get("input_tokens")?,
-                    output_tokens: r.get("output_tokens")?,
-                    cache_read_tokens: r.get("cache_read_tokens")?,
-                    cache_creation_tokens: r.get("cache_creation_tokens")?,
-                    reasoning_tokens: r.get("reasoning_tokens")?,
-                    total_tokens: r.get("total_tokens")?,
-                    duration_ms: r.get("duration_ms")?,
-                    ttft_avg_ms: r.get("ttft_avg_ms")?,
-                    errors: r.get("errors")?,
-                    error_types: r.get("error_types")?,
-                })
+                Ok((
+                    r.get::<_, i64>("_filt_total")?,
+                    SessionRow {
+                        session_id: r.get("session_id")?,
+                        agent: r.get("agent")?,
+                        state: r.get("state")?,
+                        model: r.get("model")?,
+                        project_dir: r.get("project_dir")?,
+                        title: r.get("title")?,
+                        first_ts: r.get("first_ts")?,
+                        last_ts: r.get("last_ts")?,
+                        calls: r.get("calls")?,
+                        input_tokens: r.get("input_tokens")?,
+                        output_tokens: r.get("output_tokens")?,
+                        cache_read_tokens: r.get("cache_read_tokens")?,
+                        cache_creation_tokens: r.get("cache_creation_tokens")?,
+                        reasoning_tokens: r.get("reasoning_tokens")?,
+                        total_tokens: r.get("total_tokens")?,
+                        duration_ms: r.get("duration_ms")?,
+                        ttft_avg_ms: r.get("ttft_avg_ms")?,
+                        errors: r.get("errors")?,
+                        error_types: r.get("error_types")?,
+                    },
+                ))
             });
             if let Ok(it) = mapped {
-                rows = it.filter_map(|x| x.ok()).collect();
+                for x in it.filter_map(|x| x.ok()) {
+                    total = x.0;
+                    rows.push(x.1);
+                }
             }
+        }
+        // 空页读不到窗口值（无行＝无 OVER 结果）：首页空即 total=0 正确；
+        // 越界偏移的空页（如筛选收紧后仍停在大偏移）补一次 count 兜底——
+        // 罕见路径，不影响常态性能
+        if rows.is_empty() && offset > 0 {
+            let count_sql =
+                format!("SELECT COUNT(*) FROM ({inner}) WHERE 1=1{kw_sql}{status_sql}");
+            total = conn
+                .prepare(&count_sql)
+                .and_then(|mut s| s.query_row(rusqlite::params_from_iter(params.iter()), |r| r.get(0)))
+                .unwrap_or(0);
         }
         Some(SessionPage {
             total,
@@ -992,7 +1016,7 @@ impl Store {
     /// 快照按 "{agent}:{id}" 命名空间 id——两个都查才不漏；
     /// 另查两表真实总数（COUNT），列表被 LIMIT 截断时前端诚实展示「N / 共 M」
     pub fn session_detail(&self, session_id: &str) -> SessionDetail {
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let mut detail = SessionDetail::default();
         // 原始 id：剥掉 "{agent}:" 前缀（无前缀时原样，防御）
         let raw_id = session_id.split_once(':').map(|x| x.1).unwrap_or(session_id);
@@ -1068,7 +1092,7 @@ impl Store {
         let snap = self.report_snapshot(range, agent, project, model, provider)?;
         // 生成时间走 SQLite 本地时区格式化（与页面「数据截至」同源口径）
         let gen_at: String = self
-            .lock_conn()
+            .lock_read()
             .query_row("SELECT strftime('%Y-%m-%d %H:%M:%S','now','localtime')", [], |r| r.get(0))
             .unwrap_or_default();
         let range_label = match range {
@@ -1194,11 +1218,17 @@ impl Store {
             "errored" => " AND errors > 0",
             _ => return None,
         };
+        // 排序键白名单（2026-10-16 加 :asc 升序变体——纯字符串枚举无注入面；
+        // 默认降序维持原口径，升序服务「找最早/最小」的排查场景）
         let order_sql: &str = match sort {
             "recent" => "last_ts DESC",
+            "recent:asc" => "last_ts ASC",
             "tokens" => "total_tokens DESC",
+            "tokens:asc" => "total_tokens ASC",
             "calls" => "calls DESC",
+            "calls:asc" => "calls ASC",
             "duration" => "duration_ms DESC",
+            "duration:asc" => "duration_ms ASC",
             _ => return None,
         };
         // 会话导出与 session_page 同一套单选语义（#9b 改造适配：单值包集合）
@@ -1210,7 +1240,7 @@ impl Store {
             one(model).as_deref(),
             None,
         )?;
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let (where_sql, mut params) = filter_where(&f);
         // 内层子查询按会话聚合；first_ts/last_ts 保持整数毫秒——状态档要拿它和
         // ENDED_AFTER_MS 阈值做数值比较（若在此处格式化成文本，SQLite 类型序

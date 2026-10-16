@@ -22,6 +22,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { asThemeMode, useTheme, type ThemeMode } from "./shared/theme";
+import { takeDeepLink } from "./shared/deeplink";
 import { invokeReady } from "./shared/invokeReady";
 import {
   ISLAND_OPACITY_DEFAULT,
@@ -84,6 +85,8 @@ export default function Settings() {
   const [cleanupDays, setCleanupDays] = useState(CLEANUP_DEFAULT_DAYS);
   // 本地只读 API（#25）：开关与端口，变更重启生效
   const [localApi, setLocalApi] = useState(false);
+  // 本地 API 访问 token（2026-10-16 鉴权）：开启时按需拉取展示
+  const [apiToken, setApiToken] = useState<string | null>(null);
   const [apiPort, setApiPort] = useState("6737");
   const [apiPortError, setApiPortError] = useState("");
   // —— 页面级 ——
@@ -255,12 +258,23 @@ export default function Settings() {
     setLocalApi(v);
     if (!(await saveKey("local_api_enabled", v ? "1" : "0"))) setLocalApi(!v);
   };
+  // 本地 API token 按需拉取（2026-10-16 鉴权）：开关开启即拉（后端惰性生成，
+  // 无需重启应用）；关闭时清空（Row 条件渲染本就不展示）
+  useEffect(() => {
+    if (!localApi) {
+      setApiToken(null);
+      return;
+    }
+    invoke<string | null>("local_api_token")
+      .then((t) => setApiToken(t ?? null))
+      .catch(() => setApiToken(null));
+  }, [localApi]);
   // 上次成功落库的端口（失败回滚显示用，防「假保存」）
   const savedApiPortRef = useRef("6737");
   const commitApiPort = async () => {
     const p = Number(apiPort);
     if (!Number.isInteger(p) || p < 1 || p > 65535) {
-      setApiPortError("端口须为 1–65535 的整数");
+      setApiPortError("端口须为 1～65535 的整数");
       return;
     }
     setApiPortError("");
@@ -300,8 +314,8 @@ export default function Settings() {
   }, [computeSection]);
 
   // 额度页空态「去设置添加」直达：滚动定位到「额度与凭据」分区（M3-5）。
-  // 设置窗口常驻隐藏（监听器一直存活），事件在 show 之后到达也能命中；
-  // 隐藏期间滚动事件可能缺失，滚动后立即＋延迟各补算一次高亮
+  // 已开窗口走 emit（监听器存活）；隐藏期间滚动事件可能缺失，滚动后立即＋
+  // 延迟各补算一次高亮
   useEffect(() => {
     const un = listen("goto-quota-section", () => {
       scrollToSection(QUOTA_SECTION_ID);
@@ -312,6 +326,16 @@ export default function Settings() {
       un.then((f) => f());
     };
   }, [computeSection]);
+
+  // 同上场景的懒创建路径（2026-10-16）：本窗口由额度页「去设置」创建时
+  // emit 已丢，挂载时从深链中转读取（与监听器同一段定位逻辑）
+  useEffect(() => {
+    if (takeDeepLink("goto-quota-section") == null) return;
+    scrollToSection(QUOTA_SECTION_ID);
+    computeSection();
+    window.setTimeout(computeSection, 600);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /** 锚点跳转：平滑滚动到分区顶（减弱动态效果时瞬时定位） */
   const jumpToSection = (id: string) => {
@@ -488,6 +512,36 @@ export default function Settings() {
               />
             </div>
           </Row>
+
+          {/* 访问 Token（2026-10-16 鉴权）：开启时展示＋复制——请求须携带，
+              本机其他进程无 token 读不到数据 */}
+          {localApi && (
+            <Row
+              title="访问 Token"
+              desc="请求须携带 Authorization: Bearer ＜token＞ 或 ?token=＜token＞"
+              tip="Token 用于挡住本机其他进程的未授权读取；泄露后可删除数据库 local_api_token 键重新生成（重启生效）"
+            >
+              <div className="st-th">
+                <code className="st-api-token">
+                  {apiToken ?? "生成中…"}
+                </code>
+                {apiToken && (
+                  <button
+                    type="button"
+                    className="st-btn st-btn-sm"
+                    onClick={() => {
+                      navigator.clipboard
+                        .writeText(apiToken)
+                        .then(() => showToast("Token 已复制", "ok"))
+                        .catch(() => showToast("复制失败", "error"));
+                    }}
+                  >
+                    复制
+                  </button>
+                )}
+              </div>
+            </Row>
+          )}
 
           <Row
             title="开发者模式"

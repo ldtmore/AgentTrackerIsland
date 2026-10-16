@@ -210,7 +210,7 @@ impl Store {
     /// 额度消耗历史采样（额度曲线用）：fetched_at 升序、跳过无百分比的历史行；
     /// 超上限时按等步长抽样并保留首尾——锯齿（用满→重置）形态靠首点极值不丢
     pub fn quota_history(&self, cutoff_ms: i64) -> Vec<QuotaPoint> {
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let Ok(mut stmt) = conn.prepare(
             "SELECT provider, IFNULL(account_id,''), window_kind, fetched_at, used_percent
              FROM quota_snapshots

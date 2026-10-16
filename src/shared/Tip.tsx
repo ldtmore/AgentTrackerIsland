@@ -20,6 +20,7 @@
 import {
   cloneElement,
   useCallback,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -71,6 +72,9 @@ export default function Tip({
   const [pos, setPos] = useState<TipPos | null>(null);
   const tipRef = useRef<HTMLDivElement>(null);
   const timer = useRef<number | undefined>(undefined);
+  // 卸载清理（2026-10-16 审查）：悬浮中的触发元素若在延迟窗口内被卸载
+  //（列表行随快照刷新移除），残留 timeout 会对已卸载组件 setMeasure 白跑
+  useEffect(() => () => window.clearTimeout(timer.current), []);
 
   /** 进入：记录光标横坐标；延迟到显示时刻才测触发元素矩形（面板高度自适应
    *  改变窗口时也能拿到最新位置，避免坐标过期） */

@@ -5,6 +5,19 @@
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>去你的岛</title>
+    <style>
+      /* 首帧过渡（2026-10-16 懒创建白屏治理，二稿定稿）：只设 body 底色、
+         不放任何骨架形状/动画——React 挂载前的过渡窗仅 100~300ms，此生命
+         周期里任何「需要被看懂」的视觉（形状/文字/动画）都来不及被理解，
+         反而制造「有个东西在动又看不清」的认知负担（所有者实测反馈）。
+         纯底色＝零认知负担，色值与 App.css 的 --root-bg 双主题同色系；
+         主题按系统偏好适配（应用内主题由 theme.ts 挂载后接管）；窗口显示
+         到本样式生效之间的几十毫秒由后端 background_color 同色兜底 */
+      body { background: #141418; }
+      @media (prefers-color-scheme: light) {
+        body { background: #e9ebef; }
+      }
+    </style>
   </head>
 
   <body>

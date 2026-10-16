@@ -13,6 +13,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import SearchSelect from "../shared/SearchSelect";
+import { takeDeepLink } from "../shared/deeplink";
 import { useFocusTrap } from "../shared/useFocusTrap";
 import EmptyState from "../shared/EmptyState";
 import Toast, { type ToastData } from "../shared/Toast";
@@ -127,7 +128,8 @@ const statusFilters = (): { key: string; label: string; tip: string }[] => [
   { key: "errored", label: "有错误", tip: "范围内出现过出错的调用" },
 ];
 
-/** 排序键（与 Rust session_page 白名单同步；方向固定降序，升序对管理场景无意义） */
+/** 排序键（与 Rust session_page/导出白名单同步；默认降序，键名加 ":asc" 后缀
+ *  为升序——2026-10-16 双向排序改版，升序服务「找最早/最小」的排查场景） */
 const SORTS: Record<string, string> = {
   recent: "最近",
   tokens: "Token",
@@ -193,6 +195,11 @@ export default function Sessions() {
   const [range, setRange] = useState("today");
   const [status, setStatus] = useState("all");
   const [sort, setSort] = useState("recent");
+  // 排序解析（2026-10-16 双向排序）：sort 形如 "recent"（降序，默认）或
+  // "recent:asc"（升序）——后端 session_page/导出白名单同款键位，此处拆出
+  // 键与方向供表头 caret 高亮判定
+  const sortKey = sort.replace(/:asc$/, "");
+  const sortAsc = sort.endsWith(":asc");
   const [agent, setAgent] = useState<string | null>(null);
   const [project, setProject] = useState<string | null>(null);
   const [model, setModel] = useState<string | null>(null);
@@ -207,6 +214,8 @@ export default function Sessions() {
   // 当前页码，不留陈旧草稿误导
   const [jumpDraft, setJumpDraft] = useState("");
   const [loaded, setLoaded] = useState(false);
+  // 拉取中（非首载）：表格降透明保留旧内容，不再整表塌「加载中」
+  const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stamp, setStamp] = useState("");
   // 导出反馈 toast（2026-10-09 toast 化，与报表页/设置页同一范式）：成功带
@@ -240,7 +249,7 @@ export default function Sessions() {
   }, []);
 
   // M2-UX-1：岛面板历史区筛选中点「查看更多会话」→ 带 Agent 预筛选跳转。
-  // 窗口常驻隐藏（关闭即 hide 不销毁），监听常挂；空负载视作清除筛选
+  // 已开窗口走 emit（监听常挂）；空负载视作清除筛选
   useEffect(() => {
     const un = listen<string | null>("sessions-prefilter", (e) =>
       setAgent(e.payload || null),
@@ -248,6 +257,13 @@ export default function Sessions() {
     return () => {
       un.then((f) => f());
     };
+  }, []);
+
+  // 同上场景的懒创建路径（2026-10-16）：本窗口由岛面板点击创建时 emit 已丢，
+  // 挂载时从深链中转读取预筛选（setAgent 触发筛选 effect 首拉，时序无缝）
+  useEffect(() => {
+    const agent = takeDeepLink<string>("sessions-prefilter");
+    if (agent) setAgent(agent);
   }, []);
 
   // 页请求令牌（四轮审查）：session_page 是 async 命令（线程池执行），连续切
@@ -262,6 +278,10 @@ export default function Sessions() {
   const fetchPage = useCallback(
     async (o: number) => {
       const seq = ++pageSeq.current;
+      // 拉取中只降透明不塌表（2026-10-16 审查，对齐报表页 fetching 模式）：
+      // 本地毫秒级查询让表格消失再出现是纯损失——切筛选/排序/翻页时保留
+      // 旧内容，数据到达原位替换；首载（无旧内容）仍走整表「加载中」
+      setFetching(true);
       try {
         const p = await invoke<SessionPage>("session_page", {
           range,
@@ -290,16 +310,19 @@ export default function Sessions() {
           setToast({ text: `刷新失败：${String(e)}`, kind: "error" });
         }
       } finally {
-        if (seq === pageSeq.current) setLoaded(true);
+        if (seq === pageSeq.current) {
+          setLoaded(true);
+          setFetching(false);
+        }
       }
     },
     [range, agent, project, model, status, keyword, sort, pageSize],
   );
 
   // 筛选/搜索/排序变更：回到第一页重拉；下拉选项只随范围变化（四轮审查拆出：
-  // 原先挂在同一 effect 里，防抖击键/切排序也会多触发一次 session_options）
+  // 原先挂在同一 effect 里，防抖击键/切排序也会多触发一次 session_options）。
+  // 不再 setLoaded(false)（2026-10-16）：塌陷改由 fetching 降透明承接
   useEffect(() => {
-    setLoaded(false);
     setOffset(0);
     void fetchPage(0);
   }, [range, status, agent, project, model, keyword, sort, fetchPage]);
@@ -458,28 +481,33 @@ export default function Sessions() {
     return () => window.removeEventListener("keydown", onKey);
   }, [detail]);
 
-  /** 可排序表头单元格：点击切换排序键，当前键带 ▼ 指示（顺序须与数据行一致）。
-   *  键盘可达（四轮审查）：原先纯 onClick 的 th 不可聚焦，排序功能键盘不可达
-   *  ——对齐报表维度条（rp-dim-row）的 role+tabIndex+Enter 先例 */
-  const sortTh = (k: keyof typeof SORTS) => (
-    <th
-      key={k}
-      className="sortable"
-      role="button"
-      tabIndex={0}
-      aria-sort={sort === k ? "descending" : undefined}
-      onClick={() => setSort(k)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          setSort(k);
-        }
-      }}
-    >
-      {SORTS[k]}
-      {sort === k && <span className="ss-sort-mark"> <ArrowIcon dir="down" /></span>}
-    </th>
-  );
+  /** 可排序表头单元格（2026-10-16 排序指示改版＋语义修复）：文字右侧常驻
+   *  上下双箭头（caret 组，默认低调半透明）——哪些列可排序一眼可辨；当前列
+   *  激活方向全亮（降序亮下箭头/升序亮上箭头，accent 色）。
+   *  点击循环：非当前列 → 该列降序（默认）→ 升序 → 降序。
+   *  语义（2026-10-16 批次五）：th 内嵌真 button 承载交互（原生 Enter/Space
+   *  键盘支持），替代原先 th 上的 role="button"——role 覆盖会破坏读屏的
+   *  columnheader 语义；aria-sort 保留在 th（标准归属位置）
+   */
+  const sortTh = (k: keyof typeof SORTS) => {
+    const active = sortKey === k;
+    const next = active ? (sortAsc ? k : `${k}:asc`) : k;
+    return (
+      <th
+        key={k}
+        className={`sortable${active ? " sorted" : ""}`}
+        aria-sort={active ? (sortAsc ? "ascending" : "descending") : undefined}
+      >
+        <button type="button" className="ss-sort-btn" onClick={() => setSort(next)}>
+          {SORTS[k]}
+          <span className="ss-sort-carets" aria-hidden="true">
+            <i className={`up${active && sortAsc ? " active" : ""}`} />
+            <i className={`down${active && !sortAsc ? " active" : ""}`} />
+          </span>
+        </button>
+      </th>
+    );
+  };
 
   const rows = page?.rows ?? [];
   // 服务端回显的每页行数（权威值）——与用户选择的 pageSize 状态区分命名
@@ -672,7 +700,7 @@ export default function Sessions() {
         )
       ) : (
         <>
-          <table className="ss-table">
+          <table className={`ss-table${fetching ? " fetching" : ""}`}>
             <thead>
               <tr>
                 <th>序号</th>

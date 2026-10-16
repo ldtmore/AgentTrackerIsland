@@ -31,6 +31,7 @@ import {
 } from "./shared/islandOpacity";
 import { DEFAULT_THRESHOLDS, sanitizeThresholds } from "./shared/types";
 import type { IslandSnapshot, Thresholds } from "./shared/types";
+import { ErrorBoundary } from "./shared/ErrorBoundary";
 import "./App.css";
 
 // 报表页 lazy 分割：echarts 只在报表窗口加载，岛窗口 bundle 不受影响（01-RESEARCH §9）
@@ -45,7 +46,7 @@ const About = lazy(() => import("./about/About"));
 // 托盘菜单页 lazy 分割：托盘右键弹出的自绘菜单（M1-9），独立窗口独立加载
 const TrayMenu = lazy(() => import("./traymenu/TrayMenu"));
 
-/** 岛自适应尺寸（Rust island_metrics：显示器逻辑宽 × 30%，夹取 380–800） */
+/** 岛自适应尺寸（Rust island_metrics：显示器逻辑宽 × 30%，夹取 380～800） */
 interface IslandMetrics {
   width: number;
   collapsed_h: number;
@@ -115,6 +116,22 @@ function IslandApp() {
   // 面板动画相位：in=挂载且入场中/展开，out=退场动画在播，null=未挂载。
   // 退场必须等动画播完才卸载并缩窗——窗口先缩会拦腰截断动画
   const [panelPhase, setPanelPhase] = useState<"in" | "out" | null>(null);
+  // 面板焦点归还（2026-10-16 审查）：挂载时记录当时焦点元素，卸载（收起/贴边
+  // 滑出）后归还——焦点若停留在面板内会话卡/链接上，面板卸载后掉到 body、
+  // Tab 序从头再来（useFocusTrap 的归焦同哲学；岛本体已隐藏时 focus 静默无效，
+  // 焦点自然落 body 兜底）
+  const panelPrevFocus = useRef<Element | null>(null);
+  useEffect(() => {
+    if (panelPhase != null) {
+      if (panelPrevFocus.current == null) {
+        panelPrevFocus.current = document.activeElement;
+      }
+    } else if (panelPrevFocus.current != null) {
+      const el = panelPrevFocus.current;
+      panelPrevFocus.current = null;
+      if (el instanceof HTMLElement) el.focus();
+    }
+  }, [panelPhase]);
   // 面板内容自然高度（Panel 上报）：展开高度自适应的依据，null = 未测得
   const [panelH, setPanelH] = useState<number | null>(null);
   // 胶囊"由远及近"入场：隐藏态滑回显示的瞬间置为贴边边（决定动画 origin 与位移方向）。
@@ -538,7 +555,7 @@ function IslandApp() {
 
   // 宽度降级阶梯（F7，2026-09-28 视觉改版批次一）：按岛宽注根类，
   // CSS 据此收窄胶囊段落（≥560 全量 / 460~559 隐今日 / <460 再隐窗口类厂商短名）；
-  // metrics 未就绪的默认 360 归 w-sm（兜底最小形态，就绪后由事件刷新）
+  // metrics 未就绪的默认 380 归 w-md（兜底形态，就绪后由事件刷新）
   const widthClass =
     metrics.width >= 560 ? "w-lg" : metrics.width >= 460 ? "w-md" : "w-sm";
 
@@ -639,8 +656,10 @@ function IslandApp() {
   return (
     <div
       className={`root ${widthClass}`}
-      onMouseDown={() => {
-        // 拖拽开始：取消在播滑动动画，防止程序化移动打断系统拖拽
+      onMouseDown={(e) => {
+        // 拖拽开始：取消在播滑动动画，防止程序化移动打断系统拖拽。
+        // 仅左键触发（2026-10-16 审查）：右键点岛不该打断在播动画
+        if (e.button !== 0) return;
         invoke("island_drag_start").catch(() => {});
       }}
     >
@@ -696,50 +715,75 @@ function filterSnap(
   return { ...snap, sessions: snap.sessions.filter((s) => agents.includes(s.agent)) };
 }
 
-/** 按 URL hash 分流：设置窗口 / 报表窗口 / 额度窗口 / 会话窗口 / 关于窗口 / 托盘菜单窗口 / 灵动岛窗口 */
+/** 路由真值源（2026-10-16 懒创建修复）：非岛窗口一律按窗口 label 路由——
+ *  动态创建窗口的 URL fragment 存在不可靠路径（白屏事故的一半根因：hash
+ *  丢失时误渲染灵动岛组件＝大片空白），label 由 Tauri 保证可靠；
+ *  hash 仅作岛窗口（静态配置、无 label 分流需求）的兜底 */
+function windowRoute(): string {
+  const label = getCurrentWebviewWindow().label;
+  return label !== "island" ? `#${label}` : window.location.hash;
+}
+
+/** 按窗口分流：设置窗口 / 报表窗口 / 额度窗口 / 会话窗口 / 关于窗口 / 托盘菜单窗口 / 灵动岛窗口 */
 function App() {
-  if (window.location.hash === "#settings") {
+  const route = windowRoute();
+  if (route === "#settings") {
     // lazy 分割（四轮审查补漏）：设置页原是唯一静态导入的窗口页，打进岛窗口
-    // 入口 chunk（实测 306KB）；与其余五窗「独立窗口独立加载」的既有注释意图对齐
+    // 入口 chunk（实测 306KB）；与其余五窗「独立窗口独立加载」的既有注释意图对齐。
+    // 每页独立错误边界（2026-10-16 审查）：原先仅 main.tsx 一层根边界，任一页
+    // 子组件渲染崩溃整窗降级；lazy chunk 加载失败（Suspense fallback=null）更是
+    // 静默白屏——分层后崩溃只降级本页且带组件栈留痕
     return (
-      <Suspense fallback={null}>
-        <Settings />
-      </Suspense>
+      <ErrorBoundary name="settings">
+        <Suspense fallback={null}>
+          <Settings />
+        </Suspense>
+      </ErrorBoundary>
     );
   }
-  if (window.location.hash === "#tray-menu") {
+  if (route === "#tray-menu") {
     return (
-      <Suspense fallback={null}>
-        <TrayMenu />
-      </Suspense>
+      <ErrorBoundary name="tray-menu">
+        <Suspense fallback={null}>
+          <TrayMenu />
+        </Suspense>
+      </ErrorBoundary>
     );
   }
-  if (window.location.hash === "#report") {
+  if (route === "#report") {
     return (
-      <Suspense fallback={null}>
-        <Report />
-      </Suspense>
+      <ErrorBoundary name="report">
+        <Suspense fallback={null}>
+          <Report />
+        </Suspense>
+      </ErrorBoundary>
     );
   }
-  if (window.location.hash === "#quotas") {
+  if (route === "#quotas") {
     return (
-      <Suspense fallback={null}>
-        <Quotas />
-      </Suspense>
+      <ErrorBoundary name="quotas">
+        <Suspense fallback={null}>
+          <Quotas />
+        </Suspense>
+      </ErrorBoundary>
     );
   }
-  if (window.location.hash === "#sessions") {
+  if (route === "#sessions") {
     return (
-      <Suspense fallback={null}>
-        <Sessions />
-      </Suspense>
+      <ErrorBoundary name="sessions">
+        <Suspense fallback={null}>
+          <Sessions />
+        </Suspense>
+      </ErrorBoundary>
     );
   }
-  if (window.location.hash === "#about") {
+  if (route === "#about") {
     return (
-      <Suspense fallback={null}>
-        <About />
-      </Suspense>
+      <ErrorBoundary name="about">
+        <Suspense fallback={null}>
+          <About />
+        </Suspense>
+      </ErrorBoundary>
     );
   }
   return <IslandApp />;

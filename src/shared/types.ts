@@ -206,6 +206,13 @@ export function agentColor(agent: string): string {
   return hashColor(agent);
 }
 
+/** Agent 是否有注册身份色（自定义或内置）：报表「未知 Agent」系列的降级
+ *  判定依据——未知系列不走 agentColor 兜底（深色档散列色），改走主题感知
+ *  的 hashColor(l, theme)，浅色主题下不再深浅失衡（2026-10-16 审查修复） */
+export function agentColorKnown(agent: string): boolean {
+  return currentColors[agent] != null || AGENT_COLORS[agent] != null;
+}
+
 /** 按名字散列稳定取色（报表维度条/堆叠图/额度曲线用）：同一标签在任何筛选/
  *  排序下颜色不变，修掉此前按列表序号取色、筛选一变同一条目就换色的漂移问题。
  *  theme 默认深色＝历史行为；浅色主题的图表消费点必须显式传 "light"
@@ -226,11 +233,13 @@ export const SESSION_META: Record<SessionState, { dot: string; label: string }> 
   offline: { dot: "dot-gray", label: "离线" },
 };
 
-/** token 数值缩写（K/M/B；含缓存后总量可上 G 级） */
+/** token 数值缩写（K/M/B；含缓存后总量可上 G 级）。
+ *  K 档一位小数（2026-10-16 审查统一）：原 Math.round 四舍五入虚高
+ *  （1549→"2K"），与 M/B 档的 toFixed(1) 口径不一致 */
 export function fmtTokens(n: number): string {
   if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
 }
 

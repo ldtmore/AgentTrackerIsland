@@ -33,6 +33,7 @@ import {
   fmtTokens,
   fmtDuration,
   agentColor,
+  agentColorKnown,
   hashColor,
   errorReason,
   windowLabel,
@@ -937,8 +938,11 @@ export default function Report() {
       for (const sl of slices) {
         idx.set(`${sl.bucket}\u{0}${sl.label}`, sl.total);
       }
+      // Agent 维度的「未知」系列也传主题（2026-10-16 审查）：agentColor 兜底
+      // 走深色档散列色——浅色主题下高饱和深色与同图其余浅色档系列失衡
+      //（types.ts 注释自认的遗留）；已知 Agent 仍优先身份色
       const colorOf = (l: string) =>
-        stackDim === "agent" ? agentColor(l) : hashColor(l, theme);
+        stackDim === "agent" && agentColorKnown(l) ? agentColor(l) : hashColor(l, theme);
       // 图例＝紧凑位（2026-09-30 名称口径统一）：Agent 维度走短名，替换旧裸 id
       const nameOf = (l: string) =>
         stackDim === "agent"
@@ -1047,7 +1051,7 @@ export default function Report() {
   // 2026-09-29 审查修复 #8：原按 供应商+窗口 分组，同厂商多实例（多账号）的采样
   // 点混进一条线互相穿插跳变；account 维度由后端 QuotaPoint 携带，实例名走
   // options.quota_accounts（厂商中文名·用户别名），存量无实例快照归"默认"线。
-  // x 轴时间值轴，y 轴固定 0–100%；Rust 侧已按序列分组抽稀，前端直接画
+  // x 轴时间值轴，y 轴固定 0～100%；Rust 侧已按序列分组抽稀，前端直接画
   const quotaOption = useMemo<EChartsCoreOption>(() => {
     const pts = snap?.quota_curve ?? [];
     const accounts = snap?.options.quota_accounts ?? [];

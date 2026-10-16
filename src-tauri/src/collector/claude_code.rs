@@ -534,9 +534,12 @@ impl AgentAdapter for ClaudeCodeAdapter {
                             _ => continue,
                         },
                     };
-                    if ts <= watermark_ts {
-                        continue; // 旧行：累计未变化，免重算
-                    }
+                    // 不做水位过滤（2026-10-16 装机确证修复）：行内没有写入时间，
+                    // 只有会话开始时间（startTime，实测 2026-10-16 本机转录）——
+                    // 长会话后续快照 ts 恒 ≤ 水位会被永久丢弃，后台用量差值校准
+                    // 对进行中会话失效。重复重放无害：下方 keep-max 取最大累计
+                    // ＋ service 层差值幂等兜底（与 ai-title 行「后写覆盖」同款
+                    // 裁定）；文件级 mtime 过滤已挡住未变文件
                     let sid = j.session_id.unwrap_or_else(|| file_session.clone());
                     for (raw_model, u) in models {
                         let cum = u.input_tokens + u.output_tokens
@@ -1095,6 +1098,35 @@ mod tests {
         assert!(matches!(ad.hot_signals()[0], crate::collector::engine::HotSignal::DirScan { .. }));
         let pm = ad.process_match().unwrap();
         assert_eq!(pm.name_keywords, &["codebuddy"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// cost-state 不做水位过滤回归（2026-10-16 装机确证修复）：快照行没有
+    /// 写入时间、只有会话开始时间（startTime，本机转录实测）——水位已越过
+    /// startTime 的进行中会话，后续累计更新必须照常收集（旧行为按 ts<=水位
+    /// 过滤会永久丢弃，后台用量差值校准对长会话失效）。重复重放无害由
+    /// keep-max 幂等与 service 层差值兜底
+    #[test]
+    fn test_cost_state_snapshot_not_watermarked() {
+        let dir = std::env::temp_dir().join(format!("at-csw-{}", std::process::id()));
+        let proj = dir.join("F--csw-test");
+        std::fs::create_dir_all(&proj).unwrap();
+        let file = proj.join("sess-csw-0001.jsonl");
+        // startTime=1000（会话开始时刻），水位=5000（已被后续对话行推高越过）
+        std::fs::write(
+            &file,
+            r#"{"type":"cost-state","modelUsage":{"glm-5.3":{"inputTokens":500,"outputTokens":120,"cacheReadInputTokens":0,"cacheCreationInputTokens":0}},"startTime":1000,"sessionId":"sess-csw-0001"}"#,
+        )
+        .unwrap();
+        let ad = ClaudeCodeAdapter::with_root(dir.clone());
+        let out = ad.collect_usage(5000).unwrap();
+        assert_eq!(
+            out.cost_snapshots.len(),
+            1,
+            "水位越过 startTime 的快照不得被过滤（长会话累计更新必须到达校准层）"
+        );
+        assert_eq!(out.cost_snapshots[0].session_id, "claude-code:sess-csw-0001");
+        assert_eq!(out.cost_snapshots[0].cumulative_tokens, 620);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

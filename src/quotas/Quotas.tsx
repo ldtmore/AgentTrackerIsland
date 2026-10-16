@@ -14,9 +14,10 @@
  * ③ 厂商分组：>3 家按厂商折叠（默认展开可收起），≤3 家平铺。
  * 空态：引导直达设置页额度分区（goto-quota-section 事件，红线④零阻塞）。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
+import { sendDeepLink, takeDeepLink } from "../shared/deeplink";
 import Tip from "../shared/Tip";
 import EmptyState from "../shared/EmptyState";
 import Toast, { type ToastData } from "../shared/Toast";
@@ -41,7 +42,7 @@ import {
   windowLabelCN,
   type Thresholds,
 } from "../shared/types";
-import { fmtDT, fmtDTFull, currencySymbol } from "../shared/format";
+import { fmtDT, fmtDTFull, fmtMoney, currencySymbol } from "../shared/format";
 import "./quotas.css";
 
 /** 折叠分组记忆键（sessionStorage，会话级——窗口常驻隐藏形态下保持同一次
@@ -263,7 +264,6 @@ function QuotaDetail({
     // M3-7 按币种取警戒线：无对应线的币种不标红（不做凭空换算）
     const line = balanceWarnFor(thresholds, b.currency) ?? 0;
     const low = !neg && line > 0 && b.total < line;
-    const sym = currencySymbol(b.currency);
     return (
       <div>
         <div className="qt-amount-line">
@@ -271,8 +271,9 @@ function QuotaDetail({
             className={`qt-amount${neg || low ? " qt-amount-bad" : ""}`}
             title={`余额快照 · 最近数据 ${fmtDT(b.fetched_at)}${low ? "（已跌破警戒线）" : ""}`}
           >
-            {sym}
-            {b.total.toFixed(2)}
+            {/* fmtMoney 统一口径（2026-10-16 审查）：负号前置＋千分位，
+                与岛端/托盘/设置卡一致，不再手拼货币符＋toFixed */}
+            {fmtMoney(b.currency, b.total)}
           </span>
           {staleBadge}
           {neg && <span className="qt-amount-tag">欠费</span>}
@@ -282,9 +283,8 @@ function QuotaDetail({
             DeepSeek/硅基流动的 total 均为赠金＋充值之和）；无赠金数据不拆分 */}
         {b.granted != null && (
           <div className="qt-amount-split">
-            赠金 {sym}
-            {b.granted.toFixed(2)} · 充值 {sym}
-            {(b.total - b.granted).toFixed(2)}
+            赠金 {fmtMoney(b.currency, b.granted)} · 充值{" "}
+            {fmtMoney(b.currency, b.total - b.granted)}
           </div>
         )}
       </div>
@@ -309,7 +309,7 @@ function QuotaDetail({
                属性串里的 \n 是字面反斜杠＋n 不换行，悬浮显示成带「\n」字样的
                一行长串；改表达式形式走 JS 字符串才是真换行（悬浮提示优化批次
                「原生 title 天然支持 \n」的立意即此） */
-            title={"5h 限额为社区测算值\n仅统计 Claude Code 用量\n7 天合计无限额仅展示"}
+            title={"5h 限额为社区测算值\n仅统计 Claude Code 用量\n仅包含本应用运行期间观测到的用量，仅供参考\n7 天合计无限额仅展示"}
           >
             推算值
           </span>
@@ -425,10 +425,12 @@ function QuotaCard({
 }
 
 /** 打开设置窗口并滚动定位到「额度与凭据」分区（空态引导与凭据红字的
- *  「去设置页处理」出口共用；设置窗口常驻隐藏，监听器一直存活） */
+ *  「去设置页处理」出口共用）。sendDeepLink 兜底懒创建场景（2026-10-16）：
+ *  设置窗口可能未挂载、emit 无人接收，新窗挂载时从中转读取 */
 function goSettings() {
   invoke("show_settings_window").catch(() => {});
   emit("goto-quota-section").catch(() => {});
+  sendDeepLink("goto-quota-section");
 }
 
 export default function Quotas() {
@@ -529,39 +531,82 @@ export default function Quotas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 托盘深链（#12）：goto-quota-account 携带实例 id——展开所属厂商分组＋滚动
-  // 定位＋高亮 2.4s。事件由托盘明细行先 emit 再开窗（本窗口常驻已挂载监听）
+  // 设置页修改阈值后实时推送（2026-10-16 审查修复）：本页原先只在挂载时读一次，
+  // 设置页改 warn/danger/余额警戒线后岛与托盘即时分色、本页常驻旧值——同屏两套
+  // 判定。照抄岛端（App.tsx）的按字段校验合并模式，四字段语义完全一致
   useEffect(() => {
-    const un = listen<{ accountId: string }>("goto-quota-account", (ev) => {
-      const id = ev.payload?.accountId;
-      if (!id) return;
-      const acc = accounts.find((a) => a.id === id);
-      if (acc) {
-        // 厂商分组若收起先展开（否则卡片不在 DOM，无法定位）
-        setCollapsed((prev) => {
-          if (!prev.has(acc.kind_id)) return prev;
-          const next = new Set(prev);
-          next.delete(acc.kind_id);
-          return next;
-        });
-      }
-      setFocusId(id);
-      // 等分组展开渲染完成后再滚动（常驻隐藏窗口 rAF 挂起，用宏任务兜底一拍）；
-      // 高亮 2.4s 自清（组件卸载后 setState 为 no-op，无需额外清理）。
-      // 滚动尊重系统减弱动效（2026-10-03 审查补充，对齐设置页 scrollToSection 判定）
-      const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      setTimeout(() => {
-        document
-          .getElementById(`qt-card-${id}`)
-          ?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "center" });
-      }, 60);
-      setTimeout(() => setFocusId((cur) => (cur === id ? null : cur)), 2400);
+    const un = listen<{
+      warn?: number;
+      danger?: number;
+      balanceWarn?: number;
+      balanceWarnUsd?: number;
+    }>("thresholds-changed", (e) => {
+      const p = e.payload ?? {};
+      const fin = (v: number | undefined): v is number =>
+        v != null && Number.isFinite(v);
+      setThresholds((t) => ({
+        ...t,
+        ...(fin(p.warn) && fin(p.danger) && p.warn > 0 && p.danger <= 100 && p.warn < p.danger
+          ? { warn: p.warn, danger: p.danger }
+          : {}),
+        ...(fin(p.balanceWarn) && p.balanceWarn >= 0 ? { balanceWarn: p.balanceWarn } : {}),
+        ...(fin(p.balanceWarnUsd) && p.balanceWarnUsd >= 0
+          ? { balanceWarnUsd: p.balanceWarnUsd }
+          : {}),
+      }));
     });
     return () => {
       un.then((f) => f());
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 托盘深链定位（#12 抽出共用）：展开所属厂商分组＋滚动定位＋高亮 2.4s。
+  // 已开窗口（emit 监听）与新建窗口（深链中转，挂载时 accounts 未到位需
+  // 延后）两条路径统一走这一段
+  const focusAccount = useCallback((id: string) => {
+    const acc = accounts.find((a) => a.id === id);
+    if (acc) {
+      // 厂商分组若收起先展开（否则卡片不在 DOM，无法定位）
+      setCollapsed((prev) => {
+        if (!prev.has(acc.kind_id)) return prev;
+        const next = new Set(prev);
+        next.delete(acc.kind_id);
+        return next;
+      });
+    }
+    setFocusId(id);
+    // 等分组展开渲染完成后再滚动（隐藏窗口 rAF 挂起，用宏任务兜底一拍）；
+    // 高亮 2.4s 自清（组件卸载后 setState 为 no-op，无需额外清理）。
+    // 滚动尊重系统减弱动效（2026-10-03 审查补充，对齐设置页 scrollToSection 判定）
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    setTimeout(() => {
+      document
+        .getElementById(`qt-card-${id}`)
+        ?.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: "center" });
+    }, 60);
+    setTimeout(() => setFocusId((cur) => (cur === id ? null : cur)), 2400);
   }, [accounts]);
+
+  // 托盘深链（已开窗口路径）：goto-quota-account 携带实例 id，事件直达监听器
+  useEffect(() => {
+    const un = listen<{ accountId: string }>("goto-quota-account", (ev) => {
+      const id = ev.payload?.accountId;
+      if (id) focusAccount(id);
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, [focusAccount]);
+
+  // 托盘深链（新建窗口路径，2026-10-16 懒创建配套）：本窗口刚由托盘点击创建
+  // 时 emit 已丢——挂载时从中转取走暂存，等 accounts 首次到位再定位
+  const pendingFocusRef = useRef<string | null>(takeDeepLink<{ accountId: string }>("goto-quota-account")?.accountId ?? null);
+  useEffect(() => {
+    if (accounts.length === 0 || !pendingFocusRef.current) return;
+    const id = pendingFocusRef.current;
+    pendingFocusRef.current = null;
+    focusAccount(id);
+  }, [accounts, focusAccount]);
 
   const kindsMap = useMemo(
     () => new Map(kinds.map((k) => [k.id, k])),

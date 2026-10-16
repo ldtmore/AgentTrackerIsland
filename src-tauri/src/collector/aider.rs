@@ -146,15 +146,13 @@ impl AgentAdapter for AiderAdapter {
         "aider"
     }
 
-    /// 快轮信号：家目录浅层扫描（ext 限定 .md 有噪音（README 等变化也触发），
-    /// 但信号只唤醒全量 tick、scan 内部只认 .aider.chat.history.md，幂等无害）
+    /// 快轮信号：无（2026-10-16 审查移除）。原先以家目录为根做 6 层深 DirScan，
+    /// 每 1~2 秒无缓存裸遍历（AppData/OneDrive/node_modules 全扫）——CPU/磁盘
+    /// 底噪与耗电的结构性问题；且 aider 官方已一年多未发版、五个月零提交，
+    /// 非当前主流（2026-10-16 调研），不值得为其付高频扫描成本。活动感知改靠
+    /// 常规 tick（scan_sessions 的节流档），状态变化最多延迟一个常规周期
     fn hot_signals(&self) -> Vec<HotSignal> {
-        vec![HotSignal::DirScan {
-            root: self.root.clone(),
-            ext: Some(".md"),
-            depth: 6,
-            max_files: 200,
-        }]
+        vec![]
     }
 
     /// 进程匹配：aider/aider.exe（pip 安装；bat shim 命令行兼查）
@@ -279,9 +277,10 @@ mod tests {
         assert_eq!(export.project_dir, Some(proj_b.to_string_lossy().to_string()));
         // collect_usage 恒空（降级档语义）
         assert!(ad.collect_usage(0).unwrap().rows.is_empty());
-        // 进程/信号声明
+        // 进程/信号声明：快轮已移除（2026-10-16，家目录高频遍历不值得），
+        // 活动感知改靠常规 tick——信号恒空
         assert_eq!(ad.process_match().unwrap().name_keywords, &["aider"]);
-        assert!(matches!(ad.hot_signals()[0], HotSignal::DirScan { .. }));
+        assert!(ad.hot_signals().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

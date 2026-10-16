@@ -185,7 +185,8 @@
   white-space: nowrap;
 }
 
-.ab-btn:hover {
+.ab-btn:not(:disabled):hover {
+  /* 2026-10-16 守卫：禁用态悬停不提亮（与 buttons.css 基类同款） */
   background: var(--btn-bg-hover);
 }
 

@@ -48,10 +48,13 @@ export function felog(level: FelogLevel, message: string): void {
 /** 全局兜底钩子：未捕获 JS 错误 + 未处理 Promise 拒绝（已被 catch 的不经过这里） */
 export function installFelogs(): void {
   window.addEventListener("error", (e) => {
-    felog(
-      "error",
-      `未捕获错误：${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`,
-    );
+    // 优先错误对象堆栈（2026-10-16 审查）：打包后 filename/lineno 指向
+    // minify 产物基本无定位价值；与下方 rejection 分支的信息量对齐
+    const detail =
+      e.error instanceof Error
+        ? (e.error.stack ?? e.error.message)
+        : `${e.message} @ ${e.filename}:${e.lineno}:${e.colno}`;
+    felog("error", `未捕获错误：${detail}`);
   });
   window.addEventListener("unhandledrejection", (e) => {
     const reason =

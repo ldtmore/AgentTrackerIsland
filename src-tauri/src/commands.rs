@@ -182,6 +182,19 @@ pub fn activate_window(handle: isize) -> bool {
 mod tests {
     use super::*;
 
+    /// 接口地址 scheme 校验（2026-10-16 安全收口）：https 恒过；官方厂商
+    /// http 拒绝（明文传 key）；自定义中转 http 放行；无/异常 scheme 拒绝
+    #[test]
+    fn test_validate_base_scheme() {
+        assert!(validate_base_scheme("https://open.bigmodel.cn", false).is_ok());
+        assert!(validate_base_scheme("HTTPS://API.Z.AI", false).is_ok(), "大小写不敏感");
+        assert!(validate_base_scheme("http://relay.local", true).is_ok(), "自定义中转放行 http");
+        assert!(validate_base_scheme("http://open.bigmodel.cn", false).is_err(), "官方厂商拒绝 http");
+        assert!(validate_base_scheme("open.bigmodel.cn", false).is_err(), "裸域名拒绝");
+        assert!(validate_base_scheme("file:///etc/passwd", false).is_err(), "异常 scheme 拒绝");
+        assert!(validate_base_scheme("ftp://x.com", true).is_err(), "非 http(s) 拒绝");
+    }
+
     /// 真实桌面环境验证（手动：cargo test -- --ignored test_real_windows）
     #[test]
     #[ignore]
@@ -323,11 +336,14 @@ pub(crate) const SETTING_KEYS_ALLOW: &[&str] = &[
 ];
 
 /// 读取全部设置。
-/// glm_token 原样随设置下发（2026-09-17 所有者要求 API Key 回显输入框，
-/// 推翻原审查 2.1.2"敏感值不下发前端"的决策；仅下发到本机自身窗口）
+/// glm_token 不再随设置下发（2026-10-16 D1 决策推翻 2026-09-17 回显拍板）：
+/// 明文回显诉求已由 provider_account_reveal_key 编辑态正规通道承接，旧键
+/// 在迁移时清洗——出口再剥离一层兜底（防历史残留/外部写入）
 #[tauri::command]
 pub(crate) fn get_settings(store: tauri::State<'_, Arc<Store>>) -> std::collections::HashMap<String, String> {
-    store.all_settings()
+    let mut all = store.all_settings();
+    all.remove("glm_token");
+    all
 }
 
 /// 写单条设置（白名单外的键拒绝并报错，前端会显示"保存失败"）。
@@ -685,6 +701,30 @@ pub(crate) async fn provider_overview(
 /// 凭据与接口地址的限长兜底（2026-10-10 举一反三，与表单 maxLength 同规则）：
 /// 超长输入无崩溃风险（String/SQLite），但 base 无索引约束而 key 进钥匙串、
 /// env 变量名进注册表——上限取官方形态的宽裕倍数（最长官方 key 约 200 字符）
+/// 接口地址 scheme 校验（2026-10-16 安全收口）：
+/// - 必须带 scheme——裸域名进 reqwest 会报晦涩错误，file:// 等异常 scheme 同拦
+/// - 官方厂商端点必须 https：http 保存＝API Key 明文传输
+/// - 自定义中转（custom-openai）允许 http（内网自建中转是合法场景），
+///   放行但 warn 留痕；https 恒通过
+fn validate_base_scheme(base: &str, allow_http: bool) -> Result<(), String> {
+    let lower = base.trim().to_ascii_lowercase();
+    if lower.starts_with("https://") {
+        Ok(())
+    } else if lower.starts_with("http://") {
+        if allow_http {
+            log::warn!("[设置] 接口地址为 http 明文传输（自定义中转放行，内网场景请自行评估）：{base}");
+            Ok(())
+        } else {
+            Err("接口地址必须使用 https：http 会明文传输 API Key".into())
+        }
+    } else {
+        Err(format!(
+            "接口地址必须以 https:// 开头{}",
+            if allow_http { "（自定义中转可用 http://）" } else { "" }
+        ))
+    }
+}
+
 fn validate_field_lengths(
     env_var: Option<&str>,
     key: Option<&str>,
@@ -796,6 +836,14 @@ pub(crate) async fn provider_account_create(
     if kind_id == "custom-openai" && base_override.is_none() {
         return Err("自定义中转必须填写接口地址（base）".into());
     }
+    // scheme 校验（2026-10-16 安全收口）：厂商端点必须 https——http 保存即明文
+    // 发送 Bearer/裸 token；自定义中转允许 http（内网自建中转是合法场景）但
+    // 警告明文风险；无 scheme/异常 scheme（file:// 等）直接拒绝
+    if let Some(b) = base_override.as_deref() {
+        if let Err(e) = validate_base_scheme(b, kind_id == "custom-openai") {
+            return Err(e);
+        }
+    }
     let id = match cred_mode.as_str() {
         "env" => {
             let var = env_var.unwrap_or_default();
@@ -889,6 +937,12 @@ pub(crate) async fn provider_account_update(
     // 自定义中转站 base 必填（M3-10）：编辑清空也拦截（后端兜底，前端同规则）
     if old.kind_id == "custom-openai" && base_override.is_none() {
         return Err("自定义中转必须填写接口地址（base）".into());
+    }
+    // scheme 校验（2026-10-16 安全收口，与 create 同规则）
+    if let Some(b) = base_override.as_deref() {
+        if let Err(e) = validate_base_scheme(b, old.kind_id == "custom-openai") {
+            return Err(e);
+        }
     }
     let (cred_kind, cred_value) = match cred_mode.as_str() {
         "env" => {
@@ -1035,6 +1089,43 @@ pub(crate) async fn provider_account_copy_key(
     copy_key_with_autoclear(&key, AUTO_CLEAR_SECS)?;
     log::info!("[凭据] 实例 Key 已复制到剪贴板（{AUTO_CLEAR_SECS}s 后自动清空）");
     Ok(())
+}
+
+/// 编辑态按需回显明文 Key（2026-10-16 所有者需求：供应商编辑时直接看到
+/// 已录入的完整 Key，取代脱敏回显）。与 copy_key 同源读取（钥匙串），仅
+/// 去向不同——返回值只在本机设置窗口的编辑会话内短暂驻留，不落库、不进
+/// 日志。仅服务明文实例；env 模式回显的是变量名（前端 cred_value 已有）
+#[tauri::command(async)]
+pub(crate) async fn provider_account_reveal_key(
+    id: String,
+    store: tauri::State<'_, Arc<Store>>,
+) -> Result<String, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let account = store
+            .list_provider_accounts()
+            .into_iter()
+            .find(|a| a.id == id)
+            .ok_or_else(|| "实例不存在".to_string())?;
+        if account.cred_kind != "plain" {
+            return Err("仅明文 Key 实例支持回显（环境变量模式回显的是变量名）".to_string());
+        }
+        if crate::provider::kind_of(&account.kind_id)
+            .map(|k| k.local_only)
+            .unwrap_or(false)
+        {
+            return Err("本地推算供应商无凭据".to_string());
+        }
+        let key = keyring::Entry::new(crate::provider::KEYRING_SERVICE, &account.id)
+            .and_then(|e| e.get_password())
+            .map_err(|e| format!("钥匙串读取失败：{e}"))?;
+        if key.trim().is_empty() {
+            return Err("该实例没有已保存的明文 Key".to_string());
+        }
+        Ok(key)
+    })
+    .await
+    .map_err(|e| format!("回显任务失败：{e}"))?
 }
 
 /// 写剪贴板＋延迟清空（纯函数化的副作用封装）：120s 后读回剪贴板，仅当内容
@@ -1432,76 +1523,55 @@ pub(crate) fn open_file_location(path: String) -> Result<(), String> {
     }
 }
 
-/// 显示并聚焦报表窗口（2026-09-18 展示改造：岛面板汇总条的"报表"入口，
-/// 与托盘菜单"报表"同一条路径；窗口为常驻隐藏窗口，只 show 不重建）。
-/// 开窗前同样做屏幕高度钳制（与 show_aux_window 的报表分支同款，勿只改一处）
-#[tauri::command]
+/// 显示并聚焦报表窗口（2026-10-16 D3 改版：懒创建——不存在则按参数表新建，
+/// 关闭即销毁；几何记忆由窗口状态插件恢复）。岛面板汇总条「报表」入口与
+/// 托盘菜单「报表」同一条路径
+#[tauri::command(async)]
 pub(crate) fn show_report_window(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Manager;
-    match app.get_webview_window("report") {
-        Some(w) => {
-            clamp_report_height(&w);
-            let _ = (w.show(), w.set_focus());
-            Ok(())
-        }
-        None => {
-            log::warn!("[报表] 窗口不存在（未初始化？），入口点击无效果");
-            Err("报表窗口不可用".into())
-        }
-    }
+    let w = ensure_aux_window(&app, "report")?;
+    let _ = (w.show(), w.set_focus());
+    Ok(())
 }
 
 /// 显示并聚焦会话窗口（M1-10：岛面板标题行/「查看更多会话」溢出链接与
-/// 托盘菜单「会话」共用入口；常驻隐藏窗口，只 show 不重建）
-#[tauri::command]
+/// 托盘菜单「会话」共用入口；懒创建，关闭即销毁）
+#[tauri::command(async)]
 pub(crate) fn show_sessions_window(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Manager;
-    match app.get_webview_window("sessions") {
-        Some(w) => {
-            let _ = (w.show(), w.set_focus());
-            Ok(())
-        }
-        None => {
-            log::warn!("[会话] 窗口不存在（未初始化？），入口点击无效果");
-            Err("会话窗口不可用".into())
-        }
-    }
+    let w = ensure_aux_window(&app, "sessions")?;
+    let _ = (w.show(), w.set_focus());
+    Ok(())
 }
 
 /// 显示并聚焦额度窗口（M3-5：岛面板额度区/托盘额度行/空态引导共用入口；
-/// 常驻隐藏窗口，只 show 不重建）。默认尺寸与报表同为 900×675，
-/// 沿用同一份高度钳制（常量同源同值，勿只改一处）
-#[tauri::command]
+/// 懒创建，关闭即销毁。默认尺寸与报表同为 900×675，同一份高度钳制在
+/// ensure_aux_window 内统一处理）
+#[tauri::command(async)]
 pub(crate) fn show_quotas_window(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Manager;
-    match app.get_webview_window("quotas") {
-        Some(w) => {
-            clamp_report_height(&w);
-            let _ = (w.show(), w.set_focus());
-            Ok(())
-        }
-        None => {
-            log::warn!("[额度] 窗口不存在（未初始化？），入口点击无效果");
-            Err("额度窗口不可用".into())
-        }
-    }
+    let w = ensure_aux_window(&app, "quotas")?;
+    let _ = (w.show(), w.set_focus());
+    Ok(())
 }
 
 /// 显示并聚焦设置窗口（M3-5：额度页空态"去设置添加"直达入口；此前设置窗口
-/// 仅托盘菜单可开，跨窗口动线补齐对称命令）
-#[tauri::command]
+/// 仅托盘菜单可开，跨窗口动线补齐对称命令；懒创建，关闭即销毁）
+#[tauri::command(async)]
 pub(crate) fn show_settings_window(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Manager;
-    match app.get_webview_window("settings") {
-        Some(w) => {
-            let _ = (w.show(), w.set_focus());
-            Ok(())
-        }
-        None => {
-            log::warn!("[设置] 窗口不存在（未初始化？），入口点击无效果");
-            Err("设置窗口不可用".into())
-        }
+    let w = ensure_aux_window(&app, "settings")?;
+    let _ = (w.show(), w.set_focus());
+    Ok(())
+}
+
+/// 本地 API 访问 token 查询（2026-10-16 鉴权配套）：设置页展示＋复制用。
+/// 仅启用态返回（并惰性确保已生成——开开关后无需重启即可取到）；
+/// 按需下发到本机窗口，不随 get_settings 全量下发
+#[tauri::command]
+pub(crate) fn local_api_token(
+    store: tauri::State<'_, Arc<Store>>,
+) -> Option<String> {
+    if store.get_setting("local_api_enabled").as_deref() != Some("1") {
+        return None;
     }
+    Some(crate::localapi::ensure_token(&store))
 }
 
 /// 打开程序日志/数据目录（07-UX 2.5 排障动线）：开发者模式日志与本地数据库
@@ -1538,16 +1608,132 @@ pub(crate) fn open_app_dir(app: tauri::AppHandle, kind: String) -> Result<(), St
 /// 报表最小高度（逻辑像素，与配置 minHeight 同源；钳制下限）
 pub(crate) const REPORT_MIN_H: f64 = 520.0;
 
-/// 显示并聚焦辅助窗口（设置/报表/额度/关于：常驻隐藏窗口，只 show 不重建）。
-/// 报表/额度/会话窗口先做屏幕高度钳制（2026-09-24 所有者反馈：笔记本上默认高
-/// 占满整屏；五轮审查批次三补入 sessions：其默认高 700 超过 720p 工作区 ≈672，
-/// 首开底部压入任务栏）。07-UX 1.2 起钳制只在超出工作区容量时生效——
-/// 窗口状态插件恢复的记忆尺寸放得下就保留，show 不再把用户尺寸打回默认
-pub(crate) fn show_aux_window(app: &tauri::AppHandle, label: &str) {
+/// 懒创建辅助窗口参数表（2026-10-16 D3 改版）：五个低频窗口改为打开才创建、
+/// 关闭即销毁——七个 WebView 终身常驻是内存占用的绝对大头（对照需求文档
+/// ≤100MB 验收线），未打开的窗口彻底不占资源、用完即释放。
+/// 尺寸定义自 tauri.conf.json 迁移至此（单一真源，勿双处维护）
+fn aux_window_spec(label: &str) -> Option<(&'static str, &'static str, f64, f64, f64, f64)> {
+    match label {
+        // (标题, URL, 宽, 高, 最小宽, 最小高)
+        "settings" => Some(("设置 · 去你的岛", "index.html#settings", 800.0, 600.0, 520.0, 480.0)),
+        "report" => Some(("报表 · 去你的岛", "index.html#report", 900.0, 675.0, 760.0, 520.0)),
+        "quotas" => Some(("额度 · 去你的岛", "index.html#quotas", 900.0, 675.0, 760.0, 520.0)),
+        "sessions" => Some(("会话 · 去你的岛", "index.html#sessions", 960.0, 700.0, 760.0, 520.0)),
+        "about" => Some(("关于 · 去你的岛", "index.html#about", 460.0, 540.0, 400.0, 460.0)),
+        _ => None,
+    }
+}
+
+/// 首帧底色（2026-10-16 白闪治理二稿）：与 index.html 的 body 过渡底色对齐——
+/// 应用设置自选用对应色；「跟随系统」经 island 窗口探测系统主题（island 随
+/// 应用启动创建，其 theme 即系统主题）；读不到一律暗色（应用默认主题）。
+/// 消除窗口显示→HTML 首帧之间 WebView 白底闪，及底色与后续内容的色跳
+fn boot_bg_color(app: &tauri::AppHandle, store: &crate::store::Store) -> tauri::utils::config::Color {
+    use tauri::Manager;
+    let light = match store.get_setting("theme").as_deref() {
+        Some("light") => true,
+        Some("dark") => false,
+        _ => matches!(
+            app.get_webview_window("island").and_then(|w| w.theme().ok()),
+            Some(tauri::utils::Theme::Light)
+        ),
+    };
+    if light {
+        tauri::utils::config::Color(233, 235, 239, 255)
+    } else {
+        tauri::utils::config::Color(20, 20, 24, 255)
+    }
+}
+
+/// 打开（不存在则创建）辅助窗口：托盘菜单/岛面板/额度页空态等全部入口共用。
+/// 已存在 → show＋聚焦（保留用户尺寸，钳制防出屏）；不存在 → 按参数表创建
+///（窗口立即可见，页面加载骨架→数据由前端加载态呈现）→ 手动恢复几何记忆
+///（窗口状态插件对运行时创建的窗口不自动恢复）→ 出屏钳制 → 注册关闭即
+/// 销毁＋首次关闭到托盘的一次性提示
+pub(crate) fn ensure_aux_window(
+    app: &tauri::AppHandle,
+    label: &str,
+) -> Result<tauri::WebviewWindow, String> {
+    use tauri::Manager;
     if let Some(w) = app.get_webview_window(label) {
         if label == "report" || label == "quotas" || label == "sessions" {
             clamp_report_height(&w);
         }
+        return Ok(w);
+    }
+    let Some((title, url, w, h, min_w, min_h)) = aux_window_spec(label) else {
+        return Err(format!("未知窗口：{label}"));
+    };
+    // 先隐藏创建（恢复几何后再显示，防 center 默认位→记忆位跳变）。
+    // background_color＝WebView 底色（2026-10-16 白屏闪治理）：窗口显示到 HTML
+    // 首帧之间 WebView2 默认白底会闪一下——设为与应用暗色默认同色（#141418），
+    // 与 index.html 首帧骨架背景无缝衔接；浅色系统用户最多经历一次极短的
+    // 暗→浅过渡，远好于白闪（暗色为应用默认主题故取暗色）
+    let store_for_bg = app
+        .state::<std::sync::Arc<crate::store::Store>>()
+        .inner()
+        .clone();
+    let win = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App(url.into()))
+        .title(title)
+        .inner_size(w, h)
+        .min_inner_size(min_w, min_h)
+        .resizable(true)
+        .center()
+        .visible(false)
+        .background_color(boot_bg_color(app, &store_for_bg))
+        .build()
+        .map_err(|e| format!("窗口创建失败：{e}"))?;
+    // 几何恢复＋显示投递到主线程执行（2026-10-16 两轮卡死事故的修复终态）：
+    // ①本函数绝不可在主线程被同步调用——Tauri 2 同步 command 默认跑主线程，
+    //   主线程内 build＋restore 会进嵌套消息泵，实测整个应用冻结（岛/托盘
+    //   菜单/全部窗口失效）；入口侧已全部转后台线程或 (async) command。
+    // ②restore 投递主线程＝插件对静态配置窗口启动恢复的同款路径（已验证
+    //   安全）；restore 期间的 Resized/Moved 事件由插件 try_lock 跳过，无锁竞争
+    let state_flags = tauri_plugin_window_state::StateFlags::SIZE
+        | tauri_plugin_window_state::StateFlags::POSITION
+        | tauri_plugin_window_state::StateFlags::MAXIMIZED;
+    let win_main = win.clone();
+    let label_owned = label.to_string();
+    let _ = app.run_on_main_thread(move || {
+        use tauri_plugin_window_state::WindowExt as _;
+        let _ = win_main.restore_state(state_flags);
+        if label_owned == "report" || label_owned == "quotas" || label_owned == "sessions" {
+            clamp_report_height(&win_main);
+        }
+        let _ = (win_main.show(), win_main.set_focus());
+    });
+    // 关闭即销毁（D3 决策）：不 prevent_close，资源彻底释放；首次关闭的
+    // 「应用仍在托盘」一次性教育保留（07-UX 2.6），提示后照常销毁；
+    // 几何在关闭前显式保存（插件自动保存对动态窗口的时机不保证，双保险）
+    let store = app.state::<std::sync::Arc<crate::store::Store>>().inner().clone();
+    let app2 = app.clone();
+    win.on_window_event(move |ev| {
+        if let tauri::WindowEvent::CloseRequested { .. } = ev {
+            use tauri_plugin_window_state::AppHandleExt as _;
+            let _ = app2.save_window_state(state_flags);
+            if store.get_setting("tray_hint_done").as_deref() != Some("1") {
+                use tauri_plugin_notification::NotificationExt as _;
+                let _ = app2
+                    .notification()
+                    .builder()
+                    .title("去你的岛")
+                    .body("窗口已关闭，应用仍在托盘运行——可从托盘图标随时打开")
+                    .show();
+                store.set_setting("tray_hint_done", "1");
+                log::debug!("[托盘] 首次关闭提示已发出，落键 tray_hint_done");
+            }
+        }
+    });
+    log::debug!("[窗口] 懒创建 {label}（当前辅助窗口数 {}）", app.webview_windows().len());
+    Ok(win)
+}
+
+/// 显示并聚焦辅助窗口（设置/报表/额度/会话/关于：打开才创建，关闭即销毁）。
+/// 高度钳制（报表/额度/会话）在 ensure_aux_window 内统一处理。
+/// ⚠ 调用方必须在非主线程（ensure 的建窗＋几何恢复不能在主线程内同步执行，
+/// 见 ensure_aux_window 注释）；托盘入口 tray_menu_action 已统一转后台线程
+pub(crate) fn show_aux_window(app: &tauri::AppHandle, label: &str) {
+    if let Ok(w) = ensure_aux_window(app, label) {
         let _ = (w.show(), w.set_focus());
     }
 }

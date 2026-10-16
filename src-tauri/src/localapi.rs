@@ -7,6 +7,10 @@
 //!   GET /v1/spend   → 今日与本月估算成本（与报表预算条同源）
 //! 其余路径一律 404；仅 GET；设置键 local_api_enabled（默认关）＋
 //! local_api_port（默认 6737）；开关变更重启生效（设置页文案注明）。
+//! Token 鉴权（2026-10-16 安全收口）：首次启用自动生成随机 token
+//!（local_api_token 键，uuid v4 CSPRNG），请求须携带 Authorization:
+//! Bearer <token> 或 ?token=<token>，否则 401——防本机其他进程静默读取
+//! 余额/用量（Host 白名单挡的是浏览器跨源，挡不了本机进程）。
 
 use std::sync::Arc;
 
@@ -22,6 +26,20 @@ fn respond(
     )
 }
 
+/// 确保 token 存在（空/缺失则生成并落库）：随 API 启动调用一次；设置页查询
+/// 命令（local_api_token）在启用态惰性调用同函数——用户开开关后无需重启
+/// 即可拿到 token。token 走 Rust 内部写入（不经前端 set_setting 白名单）；
+/// 查询经专用命令按需下发到本机设置窗口
+pub(crate) fn ensure_token(store: &Store) -> String {
+    if let Some(t) = store.get_setting("local_api_token").filter(|t| !t.is_empty()) {
+        return t;
+    }
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    let _ = store.set_setting("local_api_token", &token);
+    log::info!("[本地 API] 已生成访问 token（设置页可查看）");
+    token
+}
+
 /// 启动本地 API 线程（设置开启时由 lib.rs setup 调用；绑定失败留痕不阻塞应用）
 pub fn spawn(store: Arc<Store>, port: u16) {
     std::thread::Builder::new()
@@ -32,12 +50,14 @@ pub fn spawn(store: Arc<Store>, port: u16) {
                 log::warn!("[本地 API] 端口 {port} 绑定失败（被占用？），本地 API 未启动");
                 return;
             };
-            log::info!("[本地 API] 已启动：http://{addr}/v1/status｜/v1/limits｜/v1/spend（仅回环，只读）");
+            // 首启确保 token 存在（幂等：已有则沿用——用户脚本里配的 token 不因重启变）
+            let token = ensure_token(&store);
+            log::info!("[本地 API] 已启动：http://{addr}/v1/status｜/v1/limits｜/v1/spend（仅回环，只读，需 token）");
             for request in server.incoming_requests() {
                 // panic 隔离（2026-10-03 审查补充，对照聚合 tick／quota worker 纪律）：
                 // 单请求处理 panic 不杀服务线程——否则本地 API 静默失联且无留痕
                 if let Err(_) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    handle(&store, request, port)
+                    handle(&store, request, port, &token)
                 })) {
                     log::error!("[本地 API] 请求处理 panic，已隔离继续服务");
                 }
@@ -46,8 +66,8 @@ pub fn spawn(store: Arc<Store>, port: u16) {
         .expect("本地 API 线程启动失败");
 }
 
-/// 单请求处理（Host 校验＋只读路由）
-fn handle(store: &Store, request: tiny_http::Request, port: u16) {
+/// 单请求处理（Host 校验＋token 鉴权＋只读路由）
+fn handle(store: &Store, request: tiny_http::Request, port: u16, token: &str) {
     // Host 白名单（2026-10-03 审查修复，防 DNS rebinding 跨源读取）：浏览器同源
     // 判定只看主机名——攻击者域名 rebinding 到 127.0.0.1 后，其页面与本服务
     // 同源（同主机同端口），无 CORS 头也能完整读取响应。只接受字面回环主机名
@@ -62,12 +82,34 @@ fn handle(store: &Store, request: tiny_http::Request, port: u16) {
         respond_error(request, 403, r#"{"error":"Host 不在白名单"}"#);
         return;
     }
+    // Token 鉴权（2026-10-16）：Bearer 头或 query 参数二选一（curl/脚本两形态
+    // 都顺手）；恒时比较免理论时序侧信道（固定长度 uuid simple，逐字节异或）
+    let url = request.url().to_string();
+    let bearer = request
+        .headers()
+        .iter()
+        .find(|h| h.field.as_str().as_bytes().eq_ignore_ascii_case(b"authorization"))
+        .and_then(|h| h.value.as_str().strip_prefix("Bearer "))
+        .unwrap_or("");
+    let query_token = url
+        .split_once('?')
+        .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("token=")))
+        .unwrap_or("");
+    let token_ok = (bearer.len() == token.len() || query_token.len() == token.len())
+        && (const_eq(bearer, token) || const_eq(query_token, token));
+    if !token_ok {
+        log::warn!("[本地 API] 请求被拒（token 缺失或不符）");
+        respond_error(request, 401, r#"{"error":"需要 token（Authorization: Bearer 或 ?token=，设置页可查看）"}"#);
+        return;
+    }
     // 只读纪律：仅接受 GET，其余 405
     if request.method() != &tiny_http::Method::Get {
         respond_error(request, 405, r#"{"error":"仅支持 GET"}"#);
         return;
     }
-    let body = match request.url() {
+    // 路径匹配剥离 query 段（token 经 query 传入时 url 含 ?token=...）
+    let path = url.split('?').next().unwrap_or("");
+    let body = match path {
         "/v1/status" => status_body(store),
         "/v1/limits" => limits_body(store),
         "/v1/spend" => spend_body(store),
@@ -77,6 +119,14 @@ fn handle(store: &Store, request: tiny_http::Request, port: u16) {
         }
     };
     let _ = request.respond(respond(tiny_http::Response::from_data(body)));
+}
+
+/// 恒时字符串比较（长度不等直接 false，避免短路时序差）
+fn const_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// 错误响应便捷封装（消耗 request——respond 按值收）

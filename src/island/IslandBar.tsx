@@ -366,8 +366,12 @@ export default function IslandBar({
     }
   };
 
-  /** 松手：未进入系统拖拽 = 单击 → 切换信息卡片（仅悬停展开关闭时 onToggle 有值） */
-  const onMouseUp = () => {
+  /** 松手：未进入系统拖拽 = 单击 → 切换信息卡片（仅悬停展开关闭时 onToggle 有值）。
+   *  仅认左键且必须本组件亲历过按下（2026-10-16 审查：原实现无键位判定——
+   *  右键/中键松开、岛外按下拖入后释放都会误触发展开收起，违背「不打扰」红线） */
+  const onMouseUp = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    if (pressOrigin.current == null) return;
     const wasDragging = dragging.current;
     pressOrigin.current = null;
     dragging.current = false;
@@ -386,7 +390,7 @@ export default function IslandBar({
           ? `${meta.label} · 共 ${snap.sessions.length}（已结束 ${endedCount}）`
           : meta.label,
         snap.degraded ? "采集源连续失败，数据可能滞后" : "",
-        showTokens ? `今日 ${fmtTokens(snap.today_tokens)} · ${snap.today_calls} 次调用` : "",
+        showTokens ? `今日 ${fmtTokens(snap.today_tokens)} · ${snap.today_calls.toLocaleString()} 次调用` : "",
       ]
         .filter(Boolean)
         .join("\n")
@@ -453,6 +457,19 @@ export default function IslandBar({
       className={`island${ambient ? ` ${ambient}` : ""}${mode === "mini" ? " isle-mini" : ""}${onToggle ? " island-clickable" : ""}${enterEdge ? " island-peek-in" : ""}`}
       style={{ ...({ "--isle-w": `${safeMiniW}px` } as React.CSSProperties), ...enterStyle }}
       title={rootTitle}
+      // 键盘可达（2026-10-16 D12）：悬停展开关闭时点击是面板唯一直达通道，
+      // 键盘用户此前无法开面板——补 role/tabIndex/Enter/Space（面板内会话卡
+      // 已有同款先例）；aria-expanded 同步面板开合供读屏播报
+      tabIndex={onToggle ? 0 : undefined}
+      role={onToggle ? "button" : undefined}
+      aria-label="灵动岛，回车展开或收起信息卡片"
+      onKeyDown={(e) => {
+        if (!onToggle) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault(); // Space 防滚动
+          onToggle();
+        }
+      }}
       onMouseDown={onMouseDown}
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}

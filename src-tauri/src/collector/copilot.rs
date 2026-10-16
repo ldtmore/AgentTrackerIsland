@@ -177,11 +177,13 @@ fn open_db(db: &Path) -> Option<rusqlite::Connection> {
 }
 
 /// 库内时间列 TEXT `datetime('now')`（UTC，'YYYY-MM-DD HH:MM:SS' 秒精度）→ 毫秒。
-/// 容忍 ISO 'T' 分隔变体；解析失败返回 None（该行按无时间跳过，防止错账）。
+/// 容忍 ISO 'T' 分隔与小数秒变体（%.f 可选吞 `.SSS`，无小数也成功——2026-10-16
+/// 审查：上游若改带毫秒落库，原格式串会整体解析失败）；解析失败返回 None
+///（该行按无时间跳过，防止错账）。
 fn parse_sql_datetime(s: &str) -> Option<i64> {
     let t = s.trim();
-    let naive = chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S")
-        .or_else(|_| chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S"))
+    let naive = chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S%.f")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S%.f"))
         .ok()?;
     Some(naive.and_utc().timestamp_millis())
 }
@@ -311,6 +313,9 @@ impl AgentAdapter for CopilotAdapter {
             watermark_ts.saturating_sub(WATERMARK_LOOKBACK_MS).max(now_ms() - RANGE_CUTOFF_MS),
         );
         let mut rows: Vec<UsageRow> = vec![];
+        // 时间解析失败计数（2026-10-16 审查）：跳过行为是既有口径（错账比漏账
+        // 危害大），但 rowid 水位照常推进——格式漂移会让通道静默失明，必须留痕
+        let mut bad_ts = 0usize;
         for (tag, db) in &dbs {
             let Some(conn) = open_db(db) else { continue };
             let row_watermark = *self.lock_row_watermarks().get(tag).unwrap_or(&0);
@@ -370,6 +375,7 @@ impl AgentAdapter for CopilotAdapter {
                 // created_at 缺失/异常的行按无时间跳过：ts 是聚合与报表的分组键，
                 // 错账比漏账危害大（01-RESEARCH §16.2 采集口径）
                 let Some(ts) = created_at.as_deref().and_then(parse_sql_datetime) else {
+                    bad_ts += 1;
                     continue;
                 };
                 // 幂等键：逐调用流水以 rowid 全局唯一（per-tag 防跨库同号）
@@ -400,6 +406,11 @@ impl AgentAdapter for CopilotAdapter {
             }
             if max_row_id > row_watermark {
                 self.lock_row_watermarks().insert(tag.clone(), max_row_id);
+            }
+            // 汇总留痕（正常轮零输出零噪音，与各适配器 bad_lines 纪律一致）：
+            // 持续出现即「上游时间格式漂移」的排障线索
+            if bad_ts > 0 {
+                log::debug!("[copilot] {tag} 本轮 {bad_ts} 行 created_at 解析失败被跳过（格式漂移？）");
             }
         }
         let result = CollectOutput::default().with_rows(rows);

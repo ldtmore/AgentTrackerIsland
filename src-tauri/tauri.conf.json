@@ -37,66 +37,6 @@
         "shadow": false,
         "visible": false,
         "focus": false
-      },
-      {
-        "label": "settings",
-        "title": "设置 · 去你的岛",
-        "url": "index.html#settings",
-        "width": 800,
-        "height": 600,
-        "minWidth": 520,
-        "minHeight": 480,
-        "visible": false,
-        "resizable": true,
-        "center": true
-      },
-      {
-        "label": "report",
-        "title": "报表 · 去你的岛",
-        "url": "index.html#report",
-        "width": 900,
-        "height": 675,
-        "minWidth": 760,
-        "minHeight": 520,
-        "visible": false,
-        "resizable": true,
-        "center": true
-      },
-      {
-        "label": "quotas",
-        "title": "额度 · 去你的岛",
-        "url": "index.html#quotas",
-        "width": 900,
-        "height": 675,
-        "minWidth": 760,
-        "minHeight": 520,
-        "visible": false,
-        "resizable": true,
-        "center": true
-      },
-      {
-        "label": "sessions",
-        "title": "会话 · 去你的岛",
-        "url": "index.html#sessions",
-        "width": 960,
-        "height": 700,
-        "minWidth": 760,
-        "minHeight": 520,
-        "visible": false,
-        "resizable": true,
-        "center": true
-      },
-      {
-        "label": "about",
-        "title": "关于 · 去你的岛",
-        "url": "index.html#about",
-        "width": 460,
-        "height": 540,
-        "minWidth": 400,
-        "minHeight": 460,
-        "visible": false,
-        "resizable": true,
-        "center": true
       }
     ],
     "security": {

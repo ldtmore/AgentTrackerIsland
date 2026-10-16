@@ -29,6 +29,7 @@ import {
   type Thresholds,
 } from "../shared/types";
 import { fmtDT, fmtMoney } from "../shared/format";
+import { sendDeepLink } from "../shared/deeplink";
 import { CoinIcon, GearIcon, InfoIcon, IslandIcon, PowerIcon, ReportIcon, SessionsIcon, WarnIcon } from "../shared/icons";
 import "./traymenu.css";
 
@@ -277,7 +278,7 @@ export default function TrayMenu() {
               : snap && snap.today_calls > 0
                 ? /* 不带单位后缀（2026-10-10 审查统一）：fmtTokens 已带 K/M 缩写，
                      岛面板/胶囊同口径均无后缀；需点明单位时全项目统一小写 token */
-                  `今日 ${fmtTokens(snap.today_tokens)} · ${snap.today_calls} 次调用`
+                  `今日 ${fmtTokens(snap.today_tokens)} · ${snap.today_calls.toLocaleString()} 次调用`
                 : "今日暂无用量"}
           </div>
           {showQuotaRow && (
@@ -339,6 +340,8 @@ export default function TrayMenu() {
                   title="点击打开额度窗口并定位到该实例"
                   onClick={() => {
                     emit("goto-quota-account", { accountId: a.id }).catch(() => {});
+                    // 懒创建兜底（2026-10-16）：额度窗口未挂载时 emit 无人接收
+                    sendDeepLink("goto-quota-account", { accountId: a.id });
                     act("quotas");
                   }}
                 >

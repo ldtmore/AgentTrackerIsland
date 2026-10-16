@@ -38,13 +38,16 @@ export function currencySymbol(currency: string): string {
   return currency === "USD" ? "$" : "¥";
 }
 
-/** 金额 → "¥112.40"（余额 chip/托盘告急行/悬浮提示共用；两位小数与额度页一致）。
+/** 金额 → "¥1,234.56"（余额 chip/托盘告急行/悬浮提示共用；两位小数千分位，与
+ *  fmtUsd 同口径——2026-10-16 审查统一：原无千分位，余额过万后扫读困难）。
  *  负数负号前置（五轮审查）：欠费场景恰恰高频，"¥-5.20" 的负号藏在货币符后
  *  易被漏读成 5.20，"-¥5.20" 与财务惯例一致 */
 export function fmtMoney(currency: string, v: number): string {
-  return v < 0
-    ? `-${currencySymbol(currency)}${Math.abs(v).toFixed(2)}`
-    : `${currencySymbol(currency)}${v.toFixed(2)}`;
+  const n = Math.abs(v).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return v < 0 ? `-${currencySymbol(currency)}${n}` : `${currencySymbol(currency)}${n}`;
 }
 
 /** 毫秒 → "HH:mm:ss"（抽屉流水行内时间，秒级区分同分钟内的先后；日期由分组分隔行承载） */

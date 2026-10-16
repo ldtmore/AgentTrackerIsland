@@ -159,6 +159,11 @@ export const refreshAccount = (id: string) =>
 export const copyAccountKey = (id: string) =>
   invoke<void>("provider_account_copy_key", { id });
 
+/** 编辑态回显明文 Key（2026-10-16 所有者需求：编辑时直接看到完整 Key）：
+ *  仅 plain 实例；失败时表单回退脱敏回显＋重贴引导，不阻塞编辑 */
+export const revealAccountKey = (id: string) =>
+  invoke<string>("provider_account_reveal_key", { id });
+
 /** env 变量就地解析检测（表单失焦反馈；两层检测，未继承提示重启生效） */
 export const probeEnvVar = (varName: string) =>
   invoke<string>("env_creds_probe", { var: varName });

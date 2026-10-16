@@ -308,10 +308,14 @@ impl AgentAdapter for GooseAdapter {
                     l.input_tokens, l.output_tokens,
                     l.cache_read_tokens, l.cache_write_tokens, l.is_compaction
              FROM usage_ledger l
-             WHERE l.created_timestamp > ?1
+             WHERE l.created_timestamp > ?1 OR l.created_timestamp < 10000000000
              ORDER BY l.created_timestamp ASC
              LIMIT 5000",
         )?;
+        // SQL 下界说明（2026-10-16 审查修复）：?1 是毫秒水位（~1e12），秒编码行
+        //（~1e9）恒小于它——原先会被下界直接滤掉、首轮之后再进不了增量窗口。
+        // OR 分支把秒编码行恒拉出来，交由下方 normalize_ms 归一后的行级水位
+        // 二次过滤＋幂等键去重兜底（重复拉取无副作用）
         let rows = stmt.query_map([watermark_ts], |r| {
             Ok((
                 r.get::<_, i64>(0)?,

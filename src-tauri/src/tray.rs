@@ -337,7 +337,10 @@ pub(crate) fn toggle_island(app: &tauri::AppHandle) {
 
 /// 托盘菜单动作分发（webview 菜单项 → Rust）：白名单枚举，全部复用托盘旧有
 /// 动作逻辑——岛显隐 toggle_island、开窗 show_aux_window、退出 app.exit。
-/// toggle 转后台线程：与旧菜单回调同款主线程减负（内部可能触发滑动动画与 SQLite 读）
+/// **全部转后台线程**（2026-10-16 懒创建卡死事故）：Tauri 2 同步 command 默认
+/// 在主线程执行，而 ensure_aux_window 的窗口 build＋几何恢复必须离开主线程
+/// （主线程内同步建窗会进入嵌套消息泵，实测整个应用冻结——岛/托盘菜单全部
+/// 失效）；toggle 的转后台是既有先例，本轮把开窗动作对齐同一纪律
 #[tauri::command]
 pub(crate) fn tray_menu_action(app: tauri::AppHandle, action: String) -> Result<(), String> {
     match action.as_str() {
@@ -345,28 +348,13 @@ pub(crate) fn tray_menu_action(app: tauri::AppHandle, action: String) -> Result<
             std::thread::spawn(move || toggle_island(&app));
             Ok(())
         }
-        "report" => {
-            show_aux_window(&app, "report");
-            Ok(())
-        }
-        "sessions" => {
-            show_aux_window(&app, "sessions");
-            Ok(())
-        }
-        "quotas" => {
-            show_aux_window(&app, "quotas");
-            Ok(())
-        }
-        "settings" => {
-            show_aux_window(&app, "settings");
-            Ok(())
-        }
-        "about" => {
-            show_aux_window(&app, "about");
-            Ok(())
-        }
         "quit" => {
             app.exit(0);
+            Ok(())
+        }
+        "report" | "sessions" | "quotas" | "settings" | "about" => {
+            let label = action.clone();
+            std::thread::spawn(move || show_aux_window(&app, &label));
             Ok(())
         }
         _ => Err(format!("未知托盘菜单动作：{action}")),

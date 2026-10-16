@@ -237,6 +237,13 @@
   border-collapse: collapse;
 }
 
+/* 拉取中降透明保留旧内容（2026-10-16，对齐报表页 .rp-root.fetching 模式）：
+   切筛选/排序/翻页时表格不再整表塌「加载中」，数据到达原位替换 */
+.ss-table.fetching {
+  opacity: 0.55;
+  transition: opacity var(--dur-fast, 0.12s) ease;
+}
+
 .ss-table th {
   text-align: left;
   font-size: 11px;
@@ -253,14 +260,27 @@
   background: var(--root-bg);
 }
 
-/* 可排序表头：可点击暗示 + 选中键高亮 */
-.ss-table th.sortable {
+/* 可排序表头：交互由内嵌真 button 承载（2026-10-16 批次五语义修复——
+   th 上原 role="button" 会覆盖读屏的 columnheader 语义），原生键盘支持 */
+.ss-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
   cursor: pointer;
   user-select: none;
 }
 
-.ss-table th.sortable:hover {
+.ss-sort-btn:hover {
   color: var(--text-2);
+}
+
+/* 当前排序列：表头文字提亮，配合下方激活箭头 accent 色，整列归属一眼可辨 */
+.ss-table th.sorted {
+  color: var(--text-1);
 }
 
 /* 带列级说明的表头（状态/Agent/出错/时长）：虚线下划线＋help 光标暗示可悬停 */
@@ -274,8 +294,51 @@
   color: var(--text-2);
 }
 
-.ss-sort-mark {
-  color: var(--accent);
+/* 排序 caret 组（2026-10-16 排序指示改版）：上下两个 CSS 三角常驻叠放——
+   可排序列一眼可辨；默认整体低调（35%），当前列激活方向全亮（accent），
+   悬停提亮暗示可交互。三角用 border 画（无图标依赖，4px 小尺寸精确可控） */
+.ss-sort-carets {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.ss-sort-carets i {
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  opacity: 0.35;
+  transition: opacity var(--dur-fast, 0.12s) ease;
+}
+
+/* 上箭头＝底边朝上的三角；下箭头＝顶边朝下的三角（currentColor 随表头色） */
+.ss-sort-carets i.up {
+  border-bottom: 4px solid currentColor;
+}
+
+.ss-sort-carets i.down {
+  border-top: 4px solid currentColor;
+}
+
+/* 当前列激活方向：全亮＋accent 色（覆盖 currentColor 的三角边色） */
+.ss-sort-carets i.active {
+  opacity: 1;
+}
+
+.ss-sort-carets i.up.active {
+  border-bottom-color: var(--accent);
+}
+
+.ss-sort-carets i.down.active {
+  border-top-color: var(--accent);
+}
+
+/* 悬停整组提亮（未激活方向从 35% → 70%，激活方向恒 100%） */
+.ss-sort-btn:hover .ss-sort-carets i:not(.active) {
+  opacity: 0.7;
 }
 
 .ss-table td {
@@ -659,9 +722,9 @@
   text-overflow: ellipsis;
 }
 
-/* 出错子标：红色小字跟在调用数后 */
+/* 出错子标：红色小字跟在调用数后（11px＝全项目中文下限，10px 笔画粘连） */
 .ss-drawer-stat-err {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   color: var(--danger);
 }

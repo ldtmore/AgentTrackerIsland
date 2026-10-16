@@ -172,7 +172,7 @@ impl Store {
         if session_ids.is_empty() {
             return out;
         }
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         // 占位符仅由内部拼接（元素为自产会话 id），无外部输入
         let placeholders = session_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
@@ -238,7 +238,7 @@ impl Store {
         if session_ids.is_empty() {
             return out;
         }
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let placeholders = session_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         // 与 latest_session_models 同构：窗口函数取每会话最近一条有 error_type 的记录
         let sql = format!(
@@ -272,7 +272,7 @@ impl Store {
         if session_ids.is_empty() {
             return out;
         }
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let placeholders = session_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
             "SELECT session_id, model FROM (
@@ -305,7 +305,7 @@ impl Store {
         if session_ids.is_empty() {
             return out;
         }
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let placeholders = session_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
             "SELECT session_id, MAX(ts) FROM usage_records
@@ -362,7 +362,7 @@ impl Store {
         if session_ids.is_empty() {
             return out;
         }
-        let conn = self.lock_conn();
+        let conn = self.lock_read();
         let placeholders = session_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
             "SELECT id, title FROM sessions

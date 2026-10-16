@@ -104,6 +104,8 @@ pub fn run() {
             provider_account_reorder,
             provider_account_test,
             provider_account_copy_key,
+            provider_account_reveal_key,
+            local_api_token,
             provider_account_refresh,
             env_creds_probe,
             hooks_status,
@@ -354,40 +356,21 @@ pub fn run() {
                 log::debug!("[岛] 启动贴边恢复延后：启动期原位展示，数据就绪后滑出 edge={edge}");
             }
 
-            // 设置/会话/报表/额度/关于/托盘菜单窗口：关闭即隐藏（而非销毁），保证托盘可反复唤起。
-            // 首次关闭到托盘的一次性提示（07-UX 2.6 并入项，落键 tray_hint_done）：
-            // 用户首次关窗（往往以为是退出）时告知「应用仍在托盘运行」。一次性教育
-            // 不属常驻打扰，不受 notify_waiting 开关约束（红线的 opt-in 管的是
-            // 重复性通知）；托盘菜单是纯弹出面板，Alt+F4 不属「关窗到托盘」认知
-            // 场景，不参与提示；tray_hint_done 是 Rust 内部键，不经前端写入故不入
-            // 设置键白名单
-            for label in ["settings", "sessions", "report", "quotas", "about", "tray-menu"] {
-                if let Some(w) = app.get_webview_window(label) {
-                    let w2 = w.clone();
-                    let hint = if label != "tray-menu" {
-                        Some((store.clone(), app.handle().clone()))
-                    } else {
-                        None
-                    };
-                    w.on_window_event(move |ev| {
-                        if let tauri::WindowEvent::CloseRequested { api, .. } = ev {
-                            api.prevent_close();
-                            let _ = w2.hide();
-                            if let Some((store2, app2)) = &hint {
-                                if store2.get_setting("tray_hint_done").as_deref() != Some("1") {
-                                    let _ = app2
-                                        .notification()
-                                        .builder()
-                                        .title("去你的岛")
-                                        .body("窗口已隐藏到托盘，应用仍在运行——可从托盘图标随时打开")
-                                        .show();
-                                    store2.set_setting("tray_hint_done", "1");
-                                    log::debug!("[托盘] 首次关闭提示已发出，落键 tray_hint_done");
-                                }
-                            }
-                        }
-                    });
-                }
+            // 托盘菜单窗口：关闭即隐藏（纯弹出面板语义，保常驻秒开、失焦即收）。
+            // 设置/会话/报表/额度/关于五窗 2026-10-16 D3 改版后不再常驻——打开才
+            // 创建、关闭即销毁（资源彻底释放），其关闭事件（几何保存＋首次关闭
+            // 提示）由 ensure_aux_window 创建时注册（见 commands.rs），此处不再涉及。
+            // 首次关闭到托盘的一次性提示（07-UX 2.6）语义保留：提示文案改为
+            // 「窗口已关闭」，与销毁行为一致；tray_hint_done 是 Rust 内部键，
+            // 不经前端写入故不入设置键白名单
+            if let Some(w) = app.get_webview_window("tray-menu") {
+                let w2 = w.clone();
+                w.on_window_event(move |ev| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = ev {
+                        api.prevent_close();
+                        let _ = w2.hide();
+                    }
+                });
             }
 
             // 辅助窗口几何兜底（07-UX 1.2）：窗口状态插件已在此前窗口创建时恢复

@@ -136,6 +136,11 @@ impl TokenBreakdown {
 /// 存储句柄：克隆 Arc 后全局共享
 pub struct Store {
     conn: Mutex<Connection>,
+    /// 只读连接（2026-10-16 读写分离）：WAL 模式下与写连接真并发——报表/会话
+    /// 分页等重查询（全范围聚合可达数百毫秒）不再与 1s 采集写入互斥阻塞，
+    /// 反向也消除写事务拖慢报表。专供 run_report 触达的只读查询方法
+    ///（report.rs 全部＋usage.rs 明细批查＋quota_history），写路径恒走 conn
+    read_conn: Mutex<Connection>,
     /// 各分组（厂商，窗口，实例）最新额度快照缓存（2026-10-10 审查新增）：
     /// insert_quota 写库成功即同步维护，latest_quotas 快路径直读，消除聚合 tick
     /// （活跃档 1s）上对 quota_snapshots 的全表窗口扫描；None＝待回源（重启首轮，
@@ -207,7 +212,19 @@ impl Store {
         Self::migrate(&conn)?;
         // SQLite 官方建议周期性执行：优化查询规划器统计（开销极小）
         let _ = conn.execute_batch("PRAGMA optimize;");
-        Ok(Self { conn: Mutex::new(conn), quota_latest_cache: Mutex::new(None) })
+        // 只读连接在写连接建库/迁移完成后打开（首次运行时库文件此时才存在）。
+        // 同款 busy_timeout：WAL 下读写常态互不阻塞，仅 checkpoint 窗口可能
+        // 短暂互抢，5s 等待兜底
+        let read_conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        read_conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+            read_conn: Mutex::new(read_conn),
+            quota_latest_cache: Mutex::new(None),
+        })
     }
 
     /// 迁移：按 user_version 顺序执行。每号迁移在独立事务内完成"SQL 执行＋
@@ -313,6 +330,14 @@ impl Store {
     /// 单次 panic 不应放大为全应用连锁失败——审查 1.1）
     fn lock_conn(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// 取只读连接（2026-10-16 读写分离）：专供报表/会话分页等重查询——与
+    /// lock_conn 的写路径真并发（WAL），中毒恢复纪律与 lock_conn 一致
+    fn lock_read(&self) -> MutexGuard<'_, Connection> {
+        self.read_conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// 设置项读写（「upsert 会话元数据」「编辑实例」的 doc 与 allow 属性系
@@ -616,11 +641,22 @@ fn escape_like(kw: &str) -> String {
 }
 
 /// CSV 字段转义：含逗号/引号/换行时双引号包裹并双写内部引号（RFC 4180）
+/// CSV 字段转义（2026-10-16 加公式注入防护）：含逗号/引号/换行时双引号包裹
+/// 并双写内部引号（RFC 4180）；以 = + - @ 开头的字段前加单引号——OWASP 标准
+/// 做法，防会话标题/项目路径等外部可控字段在 Excel 打开时被当公式执行
+///（副作用：纯文本查看时该单元格多一个 ' 前缀，Excel 打开显示正常）
 fn csv_cell(s: &str) -> String {
+    let guard = |v: String| {
+        if v.starts_with('=') || v.starts_with('+') || v.starts_with('-') || v.starts_with('@') {
+            format!("'{v}")
+        } else {
+            v
+        }
+    };
     if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
-        format!("\"{}\"", s.replace('"', "\"\""))
+        guard(format!("\"{}\"", s.replace('"', "\"\"")))
     } else {
-        s.to_string()
+        guard(s.to_string())
     }
 }
 
@@ -1763,13 +1799,21 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// CSV 字段转义（RFC 4180）：逗号/引号/换行触发包裹，引号双写
+    /// CSV 字段转义（RFC 4180）：逗号/引号/换行触发包裹，引号双写；
+    /// 公式注入防护（2026-10-16）：= + - @ 开头加 ' 前缀（含包裹形态）
     #[test]
     fn test_csv_cell() {
         assert_eq!(csv_cell("普通"), "普通");
         assert_eq!(csv_cell("a,b"), "\"a,b\"");
         assert_eq!(csv_cell("说\"引号"), "\"说\"\"引号\"");
         assert_eq!(csv_cell("换\n行"), "\"换\n行\"");
+        // 公式注入防护：外部可控字段以危险字符开头时中和为文本
+        assert_eq!(csv_cell("=SUM(A1:A2)"), "'=SUM(A1:A2)");
+        assert_eq!(csv_cell("+cmd|/c calc"), "'+cmd|/c calc");
+        assert_eq!(csv_cell("-1+1"), "'-1+1");
+        assert_eq!(csv_cell("@import"), "'@import");
+        // 正常以连字符开头的负数文案也防御性加前缀（宁误伤不放过，纯文本查看多一撇）
+        assert_eq!(csv_cell("普通=等号在中间"), "普通=等号在中间", "仅开头字符触发");
     }
 
     /// M3-1：单价覆盖表读取生效 + 成本与手算一致（验收硬要求）。

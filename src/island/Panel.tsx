@@ -31,6 +31,7 @@ import {
   windowLabel,
 } from "../shared/types";
 import { fmtDT, fmtMoney } from "../shared/format";
+import { sendDeepLink } from "../shared/deeplink";
 import { orderAgentIds } from "../shared/agentOrder";
 import { agentFullName, agentShortName, cardTitle, displayState, isJumpable, sortHistory, sortSessions } from "../shared/sessionDisplay";
 import AgentBadge from "../shared/AgentBadge";
@@ -72,6 +73,9 @@ function MoreLink({ hidden, agent }: { hidden: number; agent?: string | null }) 
   const open = () => {
     if (agent) {
       emit("sessions-prefilter", agent).catch(() => {});
+      // 懒创建兜底（2026-10-16）：会话窗口未挂载时 emit 无人接收，新窗挂载
+      // 时从深链中转读取预筛选
+      sendDeepLink("sessions-prefilter", agent);
     }
     openSessions();
   };
@@ -684,7 +688,7 @@ function SummaryBar({ snap }: { snap: IslandSnapshot }) {
         <span className="sum-text">
           {snap.today_calls > 0 ? (
             <>
-              今日 <b>{fmtTokens(snap.today_tokens)}</b> · {snap.today_calls} 次调用
+              今日 <b>{fmtTokens(snap.today_tokens)}</b> · {snap.today_calls.toLocaleString()} 次调用
             </>
           ) : (
             "今日暂无用量"

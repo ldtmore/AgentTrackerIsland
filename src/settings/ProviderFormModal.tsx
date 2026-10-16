@@ -14,6 +14,7 @@ import {
   createAccount,
   kindEntryKey,
   probeEnvVar,
+  revealAccountKey,
   updateAccount,
   type AccountOverview,
   type KindEntryView,
@@ -78,7 +79,8 @@ export default function ProviderFormModal({
     editing && editing.cred_kind === "env" ? "env" : "plain",
   );
   const [fSecret, setFSecret] = useState(
-    // 明文 Key / env 变量名共用输入；明文不回显（留空 = 不修改），env 回显变量名
+    // 明文 Key / env 变量名共用输入；env 回显变量名，明文回显由下方
+    // 挂载 effect 异步拉取（2026-10-16 所有者需求：编辑时直接看到完整 Key）
     editing && editing.cred_kind === "env" ? editing.cred_value ?? "" : "",
   );
   const [fShowSecret, setFShowSecret] = useState(false);
@@ -97,11 +99,31 @@ export default function ProviderFormModal({
         e.base.trim().replace(/\/+$/, "").toLowerCase() ===
           editing.base_override!.trim().replace(/\/+$/, "").toLowerCase(),
     );
-  // 明文 Key 的脱敏回显（编辑态专用）：框内显示物——fSecret 状态恒为用户
-  // 真实输入（空＝不修改），渲染用 fSecret || maskedDisplay 合成，杜绝
-  // 「掩码被当新 Key 保存」；凭据不可读时为空（placeholder 引导重贴）
+  // 明文 Key 的回显（编辑态专用，2026-10-16 所有者需求改为明文直出）：
+  // 挂载时从钥匙串按需拉取完整明文填入 fSecret（默认打码，点眼睛可见）；
+  // 拉取失败/进行中回退后端脱敏值（渲染合成——fSecret 恒为真实值，杜绝
+  // 「掩码被当新 Key 保存」）。plainKey 缓存首次拉取结果，凭据类型来回
+  // 切换时恢复，避免二次请求
   const maskedDisplay =
     editing && fCredMode === "plain" ? editing.cred_masked ?? "" : "";
+  const [plainKey, setPlainKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (!editing || editing.cred_kind !== "plain") return;
+    let alive = true;
+    revealAccountKey(editing.id)
+      .then((key) => {
+        if (!alive) return;
+        setPlainKey(key);
+        setFSecret(key);
+      })
+      .catch(() => {
+        /* 钥匙串不可读：保持脱敏回退＋重贴引导（placeholder），不阻塞编辑 */
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // env 变量名失焦就地解析检测（✓ 脱敏 / ✗ 分类提示——D13 两层检测）
   const [probe, setProbe] = useState<TestResult | null>(null);
   // 保存进行中（防连点）
@@ -163,8 +185,8 @@ export default function ProviderFormModal({
       return;
     }
     // 凭据校验：env 变量名恒必填（存库的就是它）；明文在「新增」或「原 env 切回
-    // 明文」时必填（env 实例无钥匙串条目，切回明文不填 = 凭据丢失），原明文留空 = 不修改；
-    // 本地推算厂商（M3-12）无凭据概念整段跳过
+    // 明文」时必填（env 实例无钥匙串条目，切回明文不填 = 凭据丢失），编辑态明文
+    // 回显失败且未输入（留空）= 不修改；本地推算厂商（M3-12）无凭据概念整段跳过
     if (!localOnly) {
       if (fCredMode === "env" && !secret) {
         setFormError("请填写环境变量名");
@@ -322,17 +344,20 @@ export default function ProviderFormModal({
                 <div className="st-form-field">
                   {/* 类型选择与值输入一体框（前缀组合模式）：左下拉切类型，
                       右侧输入框随类型联动形态。
-                      脱敏回显（2026-10-10）：编辑态未输入时框内显示后端脱敏值
-                      （渲染层合成——fSecret 状态恒为用户真实输入、空＝不修改，
-                      提交零改动，杜绝「掩码当新 Key 保存」）；一旦输入即整体
-                      替换为新 Key。掩码已脱敏，以明文形态显示（转圆点反失辨识） */}
+                      明文回显（2026-10-16 所有者需求）：编辑态挂载即从钥匙串
+                      拉取完整明文填入（默认打码，点右侧眼睛可见明文）；拉取
+                      失败回退后端脱敏值渲染合成——fSecret 恒为真实值，杜绝
+                      「掩码被当新 Key 保存」 */}
                   <div className="st-combo">
                     <select
                       className="st-combo-select"
                       value={fCredMode}
                       onChange={(e) => {
-                        setFCredMode(e.target.value as "plain" | "env");
-                        setFSecret("");
+                        const next = e.target.value as "plain" | "env";
+                        setFCredMode(next);
+                        // env↔plain 来回切换：plain 恢复已回显的明文（plainKey
+                        // 缓存），env 清空重填——不把上一类型的值带进另一类型
+                        setFSecret(next === "plain" ? plainKey ?? "" : "");
                         setProbe(null);
                       }}
                       aria-label="凭据类型"
@@ -383,8 +408,9 @@ export default function ProviderFormModal({
                         <CopyIcon />
                       </button>
                     )}
-                    {/* 眼睛仅在有真实输入时出现：未输入态框内是脱敏值（无明文
-                        可切），此时显示眼睛会让用户把掩码误当 Key 明文 */}
+                    {/* 眼睛在框内有真实值时出现（含明文回显态）：打码/明文切换。
+                        仅拉取失败回退的脱敏显示态（fSecret 空）不显示——此时
+                        无明文可切，显示眼睛会让用户把掩码误当 Key 明文 */}
                     {fCredMode === "plain" && fSecret && (
                       <button
                         type="button"
@@ -406,7 +432,9 @@ export default function ProviderFormModal({
                     {fCredMode === "plain"
                       ? `${
                           editing
-                            ? "保持原样＝不修改（框内为脱敏回显，非真实 Key）；"
+                            ? plainKey != null
+                              ? "框内为已保存的完整 Key（默认打码，点右侧眼睛可见）；"
+                              : "钥匙串读取失败，框内为脱敏回显，保持原样＝不修改；"
                             : ""
                         }仅保存到系统凭据管理器，不上传`
                       : "终端会话临时设置的变量对常驻应用无效；新设变量后需重启应用"}
