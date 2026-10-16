@@ -234,7 +234,7 @@ impl Store {
              ORDER BY fetched_at ASC",
             cap = QUOTA_MAX_POINTS,
         );
-        let Ok(mut stmt) = conn.prepare(&sql) else {
+        let Ok(mut stmt) = conn.prepare_cached(&sql) else {
             return vec![];
         };
         let rows = stmt.query_map([cutoff_ms], |r| {

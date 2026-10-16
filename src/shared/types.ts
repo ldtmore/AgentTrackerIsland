@@ -179,18 +179,6 @@ export const AGENT_COLORS: Record<string, string> = Object.fromEntries(
   AGENT_DEFS.map((a) => [a.id, a.color]),
 );
 
-// ===== 适配器补注册（#3.9 颜色一致性排查修复）=====
-// 不进 AGENT_DEFS 的合法采集器（kimi-code／qwen-code／aider——设置页勾选卡
-// 零 UI 变化）：此前走散列兜底，实算 aider 散列色恰与 Codex 身份色全等
-//（#38bdf8），贴边分段条纯色块相邻融段、被误读为单个 Agent。改为确定性
-// 注册——与现有 8 家默认色 RGB 距 ≥85、三家互距 ≥189，双主题对底色
-// WCAG 对比度 3.05~5.57 全部高于图形 3:1（消费面含浅色主题徽章/堆叠段）
-Object.assign(AGENT_COLORS, {
-  "kimi-code": "#16a34a",
-  "qwen-code": "#8b5cf6",
-  aider: "#b45309",
-});
-
 /** 用户自定义色注册表（运行时由 App 从设置注入；颜色 = 身份，状态用亮度/动效表达） */
 let currentColors: Record<string, string> = {};
 
@@ -235,8 +223,7 @@ const FALLBACK_COLORS_LIGHT = [
   "#1d4ed8",
 ];
 
-/** 取 Agent 身份色：用户自定义 → 默认表（含适配器补注册，见 AGENT_COLORS
- *  追加段注释）→ 未注册 id 按名字散列稳定分配 */
+/** 取 Agent 身份色：用户自定义 → 默认表 → 未注册 id 按名字散列稳定分配 */
 export function agentColor(agent: string): string {
   const custom = currentColors[agent];
   if (custom) return custom;
