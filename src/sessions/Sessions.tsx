@@ -14,6 +14,7 @@ import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import SearchSelect from "../shared/SearchSelect";
 import { takeDeepLink } from "../shared/deeplink";
+import { openWindow } from "../shared/openWindow";
 import { useFocusTrap } from "../shared/useFocusTrap";
 import EmptyState from "../shared/EmptyState";
 import Toast, { type ToastData } from "../shared/Toast";
@@ -236,6 +237,8 @@ export default function Sessions() {
   const [detailOrder, setDetailOrder] = useState<"desc" | "asc">("desc");
   // 刚复制成功的流水条目标识（显示「已复制」1.2 秒后还原）
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  // 刚复制失败的流水条目标识（显示「复制失败」1.2 秒后还原，与成功路径对称）
+  const [copyFailKey, setCopyFailKey] = useState<string | null>(null);
 
   // 关键字 300ms 防抖：本地查询虽快，连续击键也不必每键一查
   useEffect(() => {
@@ -451,22 +454,33 @@ export default function Sessions() {
     fetchDetail(detail.row.session_id);
   };
 
-  /** 复制流水条目到剪贴板：成功后该条按钮瞬时显示「已复制」；
-   *  写入失败静默忽略（观测工具，复制是辅助动作） */
+  /** 复制流水条目到剪贴板：成功后该条按钮瞬时显示「已复制」；写入失败同样
+   *  瞬时显示「复制失败」（2026-10-16 审查 #8：原失败静默，与成功路径不对称，
+   *  剪贴板被占用时反复点击无果无法归因） */
   const copyEntry = (key: string, text: string) => {
     navigator.clipboard
       .writeText(text)
       .then(() => {
+        setCopyFailKey(null);
         setCopiedKey(key);
         setTimeout(() => setCopiedKey((cur) => (cur === key ? null : cur)), 1200);
       })
-      .catch(() => {});
+      .catch(() => {
+        setCopiedKey(null);
+        setCopyFailKey(key);
+        setTimeout(() => setCopyFailKey((cur) => (cur === key ? null : cur)), 1200);
+      });
   };
 
-  /** 抽屉内跳转：仅新鲜会话可跳（复用 T10 窗口匹配），未命中静默失败 */
+  /** 抽屉内跳转：仅新鲜会话可跳（复用 T10 窗口匹配）。消费后端返回值给反馈
+   *  （2026-10-16 审查 #7：false＝会话元数据缺失或窗口未命中，不再静默） */
   const jump = (r: SessionRow) => {
     if (!isJumpable(r.last_ts)) return;
-    invoke("focus_session", { sessionId: r.session_id }).catch(() => {});
+    invoke<boolean>("focus_session", { sessionId: r.session_id })
+      .then((ok) => {
+        if (!ok) setToast({ text: "未找到对应终端窗口（可能已关闭）", kind: "error" });
+      })
+      .catch(() => setToast({ text: "未找到对应终端窗口（可能已关闭）", kind: "error" }));
   };
 
   // Esc 关闭详情抽屉；焦点陷阱（useFocusTrap：开聚焦/循环/关归焦）
@@ -582,7 +596,11 @@ export default function Sessions() {
           <button
             className="ss-btn"
             title="打开设置窗口"
-            onClick={() => invoke("show_settings_window").catch(() => {})}
+            onClick={() =>
+              openWindow("show_settings_window").catch((e) =>
+                setToast({ text: `打开失败：${e}`, kind: "error" }),
+              )
+            }
           >
             设置
           </button>
@@ -1147,7 +1165,11 @@ export default function Sessions() {
                                     title="复制本条调用明细（精确数值）"
                                     onClick={() => copyEntry(`c-${c.ts}-${i}`, buildCallCopyText(c))}
                                   >
-                                    {copiedKey === `c-${c.ts}-${i}` ? "已复制" : "复制"}
+                                    {copiedKey === `c-${c.ts}-${i}`
+                                      ? "已复制"
+                                      : copyFailKey === `c-${c.ts}-${i}`
+                                        ? "复制失败"
+                                        : "复制"}
                                   </button>
                                 </div>
                               </div>
@@ -1190,7 +1212,11 @@ export default function Sessions() {
                                   title="复制本条事件原文"
                                   onClick={() => copyEntry(`e-${ev.ts}-${i}`, buildEventCopyText(ev))}
                                 >
-                                  {copiedKey === `e-${ev.ts}-${i}` ? "已复制" : "复制"}
+                                  {copiedKey === `e-${ev.ts}-${i}`
+                                    ? "已复制"
+                                    : copyFailKey === `e-${ev.ts}-${i}`
+                                      ? "复制失败"
+                                      : "复制"}
                                 </button>
                               </div>
                             );

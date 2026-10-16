@@ -21,6 +21,7 @@ import { sendDeepLink, takeDeepLink } from "../shared/deeplink";
 import Tip from "../shared/Tip";
 import EmptyState from "../shared/EmptyState";
 import Toast, { type ToastData } from "../shared/Toast";
+import { openWindow } from "../shared/openWindow";
 import { ChevronIcon, CoinIcon, InfoIcon, WarnIcon } from "../shared/icons";
 import { invokeReady } from "../shared/invokeReady";
 import ProviderCard, { fetchedAtOf } from "../shared/ProviderCard";
@@ -115,18 +116,28 @@ function QuotaWindowRow({
       { accountId, windowKind },
     )
       .then((p) => {
-        if (!alive || !p?.projected_at_reset) return;
-        const proj = p.projected_at_reset;
+        if (!alive) return;
+        const proj = p?.projected_at_reset;
+        // 各非命中分支一律清除旧值（2026-10-16 审查 #12b）：预警是「当前速度下
+        // 的推算」，窗口重置/速度放缓/查询失败后残留旧预警＝持续误报「要爆了」
+        if (proj == null) {
+          setPaceText(null);
+          return;
+        }
         if (proj >= 100) {
           setPaceText({
-            text: `按近 2h 速度重置前将用完（${p.minutes_to_exhaust != null ? `约 ${Math.max(1, Math.round(p.minutes_to_exhaust))} 分钟后到限` : "已接近用尽"}）`,
+            text: `按近 2h 速度重置前将用完（${p?.minutes_to_exhaust != null ? `约 ${Math.max(1, Math.round(p.minutes_to_exhaust))} 分钟后到限` : "已接近用尽"}）`,
             bad: true,
           });
         } else if (proj >= 85) {
           setPaceText({ text: `按近 2h 速度，重置前预计到 ${Math.round(proj)}%`, bad: false });
+        } else {
+          setPaceText(null);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (alive) setPaceText(null);
+      });
     return () => {
       alive = false;
     };
@@ -338,6 +349,7 @@ function QuotaCard({
   kinds,
   thresholds,
   onChanged,
+  onGoSettings,
 }: {
   a: AccountOverview;
   kind?: ProviderKindView;
@@ -345,6 +357,8 @@ function QuotaCard({
   thresholds: Thresholds;
   /** 刷新成功后回调（页面重拉 overview） */
   onChanged: () => Promise<void>;
+  /** 「去设置页处理」出口（带开窗失败反馈的包装，页面层注入） */
+  onGoSettings: () => void;
 }) {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshErr, setRefreshErr] = useState<string | null>(null);
@@ -381,7 +395,7 @@ function QuotaCard({
       kind={kind}
       thresholds={thresholds}
       hideSwitches
-      onCredAction={goSettings} // A3：红字行尾「去设置页处理」，补齐额度页动作出口
+      onCredAction={onGoSettings} // A3：红字行尾「去设置页处理」，补齐额度页动作出口
       detail={
         <QuotaDetail a={a} kinds={kinds} thresholds={thresholds} />
       }
@@ -426,9 +440,11 @@ function QuotaCard({
 
 /** 打开设置窗口并滚动定位到「额度与凭据」分区（空态引导与凭据红字的
  *  「去设置页处理」出口共用）。sendDeepLink 兜底懒创建场景（2026-10-16）：
- *  设置窗口可能未挂载、emit 无人接收，新窗挂载时从中转读取 */
-function goSettings() {
-  invoke("show_settings_window").catch(() => {});
+ *  设置窗口可能未挂载、emit 无人接收，新窗挂载时从中转读取。
+ *  开窗失败经 onFail 回调反馈（2026-10-16 审查 #9；helper 不依赖具体
+ *  窗口的 toast 实例，由调用方传入反馈载体） */
+function goSettings(onFail?: (e: unknown) => void) {
+  openWindow("show_settings_window").catch((e) => onFail?.(e));
   emit("goto-quota-section").catch(() => {});
   sendDeepLink("goto-quota-section");
 }
@@ -663,6 +679,10 @@ export default function Quotas() {
   const sumTip =
     "余额为启用实例最新快照的合计，按币种分列（· 为分隔符，非跨币种求和）\n实例计数按口径分类（仅启用实例），停用实例不计入\n单实例口径见各卡片";
 
+  // 去设置出口的统一包装（2026-10-16 审查 #9）：开窗失败 toast 反馈不静默
+  const goSettingsToast = () =>
+    goSettings((e) => setToast({ text: `打开失败：${e}`, kind: "error" }));
+
   const renderCard = (list: AccountOverview[]) =>
     list.map((a) => (
       <div
@@ -676,6 +696,7 @@ export default function Quotas() {
           kinds={kindsMap}
           thresholds={thresholds}
           onChanged={reloadAccounts}
+          onGoSettings={goSettingsToast}
         />
       </div>
     ));
@@ -704,7 +725,7 @@ export default function Quotas() {
           <button
             className="qt-btn"
             title="打开设置页的「额度与凭据」分区，管理供应商实例"
-            onClick={goSettings}
+            onClick={goSettingsToast}
           >
             设置
           </button>
@@ -734,7 +755,7 @@ export default function Quotas() {
           icon={<CoinIcon />}
           title="还没有供应商"
           desc="添加 AI 供应商实例后，这里会展示各家的余额与窗口用量"
-          action={{ label: "去设置添加", onClick: goSettings }}
+          action={{ label: "去设置添加", onClick: goSettingsToast }}
         />
       ) : (
         <>

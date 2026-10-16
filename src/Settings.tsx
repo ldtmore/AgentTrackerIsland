@@ -222,8 +222,8 @@ export default function Settings() {
 
   /** 背景不透明度滑块：拖动中实时广播（岛即实时预览，无需预览控件），
    *  停手 300ms 后才落库，避免拖动过程高频写库。
-   *  落库失败把岛端拉回已保存值（五轮审查批次一）：拖动预览是过程态，
-   *  失败后停留 = 假生效残留 */
+   *  落库失败两端同步回滚（2026-10-16 审查 #12a 补齐设置页侧）：此前只把
+   *  岛端拉回已保存值，设置页滑块停留在未保存值＝看着调成了，重启悄悄变回 */
   const changeIslandOpacity = (v: number) => {
     setIslandOpacity(v);
     void emit(ISLAND_OPACITY_EVENT, v).catch(() => {});
@@ -231,7 +231,10 @@ export default function Settings() {
     opacitySaveTimer.current = window.setTimeout(() => {
       void saveKey(ISLAND_OPACITY_KEY, String(v)).then((ok) => {
         if (ok) savedOpacityRef.current = v;
-        else void emit(ISLAND_OPACITY_EVENT, savedOpacityRef.current).catch(() => {});
+        else {
+          setIslandOpacity(savedOpacityRef.current);
+          void emit(ISLAND_OPACITY_EVENT, savedOpacityRef.current).catch(() => {});
+        }
       });
     }, 300);
   };
@@ -259,16 +262,30 @@ export default function Settings() {
     if (!(await saveKey("local_api_enabled", v ? "1" : "0"))) setLocalApi(!v);
   };
   // 本地 API token 按需拉取（2026-10-16 鉴权）：开关开启即拉（后端惰性生成，
-  // 无需重启应用）；关闭时清空（Row 条件渲染本就不展示）
+  // 无需重启应用）；关闭时清空（Row 条件渲染本就不展示）。
+  // 拉取失败显式报告＋重试入口（2026-10-16 审查 #12c：原 catch 置 null——
+  // 行内永远「生成中…」，无错误提示无重试，用户只能开关开关碰运气）
+  const [apiTokenError, setApiTokenError] = useState(false);
+  const fetchToken = useCallback(() => {
+    setApiTokenError(false);
+    invoke<string | null>("local_api_token")
+      .then((t) => {
+        setApiToken(t ?? null);
+        if (t == null) setApiTokenError(true); // 未启用态理论上不可达（开关门控）
+      })
+      .catch(() => {
+        setApiToken(null);
+        setApiTokenError(true);
+      });
+  }, []);
   useEffect(() => {
     if (!localApi) {
       setApiToken(null);
+      setApiTokenError(false);
       return;
     }
-    invoke<string | null>("local_api_token")
-      .then((t) => setApiToken(t ?? null))
-      .catch(() => setApiToken(null));
-  }, [localApi]);
+    fetchToken();
+  }, [localApi, fetchToken]);
   // 上次成功落库的端口（失败回滚显示用，防「假保存」）
   const savedApiPortRef = useRef("6737");
   const commitApiPort = async () => {
@@ -354,7 +371,7 @@ export default function Settings() {
 
         {/* 首次引导三步上手卡（07-UX 1.1）：一次性，自包含（自查 onboarding_done
             决定渲染，数据自拉事件自刷新），完成后不再出现 */}
-        <OnboardingCard />
+        <OnboardingCard showToast={showToast} />
 
         <Section title="灵动岛" id="st-section-island" desc="拖到屏幕上 / 左 / 右边缘可自动贴靠">
           <Row
@@ -522,22 +539,37 @@ export default function Settings() {
               tip="Token 用于挡住本机其他进程的未授权读取；泄露后可删除数据库 local_api_token 键重新生成（重启生效）"
             >
               <div className="st-th">
-                <code className="st-api-token">
-                  {apiToken ?? "生成中…"}
-                </code>
-                {apiToken && (
-                  <button
-                    type="button"
-                    className="st-btn st-btn-sm"
-                    onClick={() => {
-                      navigator.clipboard
-                        .writeText(apiToken)
-                        .then(() => showToast("Token 已复制", "ok"))
-                        .catch(() => showToast("复制失败", "error"));
-                    }}
-                  >
-                    复制
-                  </button>
+                {apiTokenError ? (
+                  <>
+                    <code className="st-api-token">获取失败</code>
+                    <button
+                      type="button"
+                      className="st-btn st-btn-sm"
+                      onClick={fetchToken}
+                    >
+                      重试
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <code className="st-api-token">
+                      {apiToken ?? "生成中…"}
+                    </code>
+                    {apiToken && (
+                      <button
+                        type="button"
+                        className="st-btn st-btn-sm"
+                        onClick={() => {
+                          navigator.clipboard
+                            .writeText(apiToken)
+                            .then(() => showToast("Token 已复制", "ok"))
+                            .catch(() => showToast("复制失败", "error"));
+                        }}
+                      >
+                        复制
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             </Row>

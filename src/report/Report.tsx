@@ -25,6 +25,7 @@ import Chart from "./Chart";
 import SearchSelect from "../shared/SearchSelect";
 import Tip from "../shared/Tip";
 import Toast, { type ToastData } from "../shared/Toast";
+import { openWindow } from "../shared/openWindow";
 import EmptyState from "../shared/EmptyState";
 import { ArrowIcon, ChevronIcon, InfoIcon, ReportIcon, WarnIcon } from "../shared/icons";
 import { fmtDTFull, fmtMs, fmtUsd, tail } from "../shared/format";
@@ -1182,9 +1183,12 @@ export default function Report() {
             : [...cur, label],
       );
 
-  /** 会话数卡跳转会话窗口（跨窗口动线：报表看总量，明细去会话） */
+  /** 会话数卡跳转会话窗口（跨窗口动线：报表看总量，明细去会话）。
+   *  失败 toast 反馈（2026-10-16 审查 #9「操作必有回应」） */
   const openSessions = () => {
-    invoke("show_sessions_window").catch(() => {});
+    openWindow("show_sessions_window").catch((e) =>
+      setToast({ text: `打开失败：${e}`, kind: "error" }),
+    );
   };
 
   return (
@@ -1232,7 +1236,11 @@ export default function Report() {
           <button
             className="rp-btn"
             title="打开设置窗口"
-            onClick={() => invoke("show_settings_window").catch(() => {})}
+            onClick={() =>
+              openWindow("show_settings_window").catch((e) =>
+                setToast({ text: `打开失败：${e}`, kind: "error" }),
+              )
+            }
           >
             设置
           </button>
@@ -1268,7 +1276,10 @@ export default function Report() {
             desc="请先在设置页勾选要监控的 Agent，数据会随使用自动积累"
             action={{
               label: "去设置勾选",
-              onClick: () => invoke("show_settings_window").catch(() => {}),
+              onClick: () =>
+                openWindow("show_settings_window").catch((e) =>
+                  setToast({ text: `打开失败：${e}`, kind: "error" }),
+                ),
             }}
           />
         ) : (

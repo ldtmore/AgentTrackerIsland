@@ -63,7 +63,13 @@ function StepMark({ done }: { done: boolean }) {
   );
 }
 
-export default function OnboardingCard() {
+export default function OnboardingCard({
+  showToast,
+}: {
+  /** 页级 toast 反馈通道（Settings 注入）：落一次性键失败时提示「保存失败」，
+   *  不再静默（2026-10-16 审查 #11——本地消失但下次启动又出现，用户无法归因） */
+  showToast: (text: string, kind: "ok" | "error") => void;
+}) {
   /** null＝引导状态查询中（不渲染防闪烁）；false＝已落键或已完成；
    *  true＝展示中（至少一步未完成） */
   const [visible, setVisible] = useState<boolean | null>(null);
@@ -71,6 +77,10 @@ export default function OnboardingCard() {
   const [steps, setSteps] = useState<boolean[]>([false, false, false]);
   // 令牌防乱序：事件触发重查与在途查询并发时，后发先至的旧响应不覆盖新状态
   const seq = useRef(0);
+  // showToast 走 ref：refresh/dismiss 均为稳定引用（useCallback 空依赖/普通函数），
+  // 经 ref 现读 prop 避免闭包过期与依赖数组噪声
+  const showToastRef = useRef(showToast);
+  showToastRef.current = showToast;
 
   /** 重查三步完成态与一次性键（挂载＋三类事件到达时各调一次）。
    *  get_settings 整体失败（invokeReady 重试后仍失败）保守隐藏——
@@ -114,10 +124,13 @@ export default function OnboardingCard() {
       /* 保持未完成 */
     }
     if (cur !== seq.current) return;
-    // 三步全勾＝完成态：落一次性键并消失（落键失败无害——下次打开重查再落）
+    // 三步全勾＝完成态：落一次性键并消失（落键失败 toast 留痕——下次启动
+    // 重查再落；refresh 无 this 绑定，showToast 经 ref 读取保持引用稳定）
     if (step1 && step2 && step3) {
       setVisible(false);
-      void invoke("set_setting", { key: "onboarding_done", value: "1" }).catch(() => {});
+      void invoke("set_setting", { key: "onboarding_done", value: "1" }).catch(() =>
+        showToastRef.current("保存失败，下次启动仍会显示引导", "error"),
+      );
       return;
     }
     setSteps([step1, step2, step3]);
@@ -138,10 +151,13 @@ export default function OnboardingCard() {
     };
   }, [refresh]);
 
-  /** 不再显示：立即隐藏＋落一次性键（落键失败静默——最坏结果是重启后再见一次） */
+  /** 不再显示：立即隐藏＋落一次性键。落键失败 toast 明示（2026-10-16 审查 #11：
+   *  原静默——卡片消失了但下次启动又出现，「我说了不再显示怎么又出来」） */
   const dismiss = () => {
     setVisible(false);
-    void invoke("set_setting", { key: "onboarding_done", value: "1" }).catch(() => {});
+    void invoke("set_setting", { key: "onboarding_done", value: "1" }).catch(() =>
+      showToastRef.current("保存失败，下次启动仍会显示引导", "error"),
+    );
   };
 
   if (!visible) return null;

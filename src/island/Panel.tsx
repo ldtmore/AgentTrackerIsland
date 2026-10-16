@@ -36,6 +36,8 @@ import { orderAgentIds } from "../shared/agentOrder";
 import { agentFullName, agentShortName, cardTitle, displayState, isJumpable, sortHistory, sortSessions } from "../shared/sessionDisplay";
 import AgentBadge from "../shared/AgentBadge";
 import Tip from "../shared/Tip";
+import Toast, { type ToastData } from "../shared/Toast";
+import { openWindow } from "../shared/openWindow";
 import { ChevronIcon, ChipIcon, CoinIcon, FolderIcon, ReportIcon, WarnIcon } from "../shared/icons";
 
 /** 活跃区卡片上限（宽松：会话少时保持一眼全览；超出部分走会话窗口） */
@@ -56,20 +58,29 @@ const FILTER_OPEN_DELAY_MS = 0;
  *  菜单宽度在 CSS（.history-menu width:190px）定义，定位按实测尺寸计算 */
 const FILTER_CLOSE_DELAY_MS = 200;
 
-/** 打开会话窗口（溢出链接与标题行入口共用） */
+/** 打开会话窗口（溢出链接与标题行入口共用）。返回 Promise 交调用方兜底
+ *  （2026-10-16 审查 #9：失败必反馈，反馈载体 toast 在组件层） */
 function openSessions() {
-  invoke("show_sessions_window").catch(() => {});
+  return openWindow("show_sessions_window");
 }
 
 /** 打开额度窗口（M3-5：面板额度区标题行入口；详情管理在额度页/设置页闭环） */
 function openQuotas() {
-  invoke("show_quotas_window").catch(() => {});
+  return openWindow("show_quotas_window");
 }
 
 /** 「查看更多会话」溢出链接（所有者拍板文案；hover 提示完整语义）。
  *  M2-UX-1：历史区筛选中跳转时带 Agent 预筛选（emit 全局事件，
  *  会话窗口监听后自动选中该 Agent——面板筛选体验在窗口内闭环） */
-function MoreLink({ hidden, agent }: { hidden: number; agent?: string | null }) {
+function MoreLink({
+  hidden,
+  agent,
+  onToast,
+}: {
+  hidden: number;
+  agent?: string | null;
+  onToast: (text: string, kind: ToastData["kind"]) => void;
+}) {
   const open = () => {
     if (agent) {
       emit("sessions-prefilter", agent).catch(() => {});
@@ -77,7 +88,7 @@ function MoreLink({ hidden, agent }: { hidden: number; agent?: string | null }) 
       // 时从深链中转读取预筛选
       sendDeepLink("sessions-prefilter", agent);
     }
-    openSessions();
+    openSessions().catch((e) => onToast(`打开失败：${e}`, "error"));
   };
   return (
     <Tip content="点击查看更多会话数据">
@@ -89,7 +100,13 @@ function MoreLink({ hidden, agent }: { hidden: number; agent?: string | null }) 
   );
 }
 
-function SessionCard({ s }: { s: SessionView }) {
+function SessionCard({
+  s,
+  onToast,
+}: {
+  s: SessionView;
+  onToast: (text: string, kind: ToastData["kind"]) => void;
+}) {
   const disp = displayState(s.state, s.last_activity_at);
   const project = s.project_dir?.split(/[\\/]/).filter(Boolean).pop() ?? "";
   const model = s.model;
@@ -104,9 +121,14 @@ function SessionCard({ s }: { s: SessionView }) {
   // 「点了没反应」正是会话页要防的负体验，且面板是更高频入口。
   // 已知取舍（两处统一）：进程还开着但超 30 分钟的会话在面板同样不可点
   const jumpable = isJumpable(s.last_activity_at);
-  // 点击跳转：激活该会话对应的终端/IDE 窗口（T10；未命中静默失败）
+  // 点击跳转：激活该会话对应的终端/IDE 窗口（T10）。后端返回 false＝会话
+  // 元数据缺失或窗口未命中（2026-10-16 审查 #7：消费返回值给反馈，不再静默）
   const focus = () => {
-    invoke("focus_session", { sessionId: s.id }).catch(() => {});
+    invoke<boolean>("focus_session", { sessionId: s.id })
+      .then((ok) => {
+        if (!ok) onToast("未找到对应终端窗口（可能已关闭）", "error");
+      })
+      .catch(() => onToast("未找到对应终端窗口（可能已关闭）", "error"));
   };
   return (
     <div
@@ -186,7 +208,13 @@ function SessionCard({ s }: { s: SessionView }) {
  *  范式：不受会话区滚动容器 overflow 裁剪、不推挤下方卡片布局；会话区滚动
  *  即自动关闭）。与岛「悬停展开面板」的 hover 基因一致；列表纯最近活动
  *  降序（分流后活跃优先无语义）；筛选是临时意图：面板收起随组件卸载自动复位 */
-function HistorySection({ all }: { all: SessionView[] }) {
+function HistorySection({
+  all,
+  onToast,
+}: {
+  all: SessionView[];
+  onToast: (text: string, kind: ToastData["kind"]) => void;
+}) {
   const [open, setOpen] = useState(false); // 默认折叠（用户拍板）：点击折叠头切换
   const [filterOpen, setFilterOpen] = useState(false); // 筛选菜单展开（hover 驱动）
   const [agent, setAgent] = useState<string | null>(null); // 当前筛选（null=全部）
@@ -388,10 +416,10 @@ function HistorySection({ all }: { all: SessionView[] }) {
       {open && (
         <>
           {list.slice(0, HISTORY_LIMIT).map((s) => (
-            <SessionCard key={s.id} s={s} />
+            <SessionCard key={s.id} s={s} onToast={onToast} />
           ))}
           {list.length > HISTORY_LIMIT && (
-            <MoreLink hidden={list.length - HISTORY_LIMIT} agent={agent} />
+            <MoreLink hidden={list.length - HISTORY_LIMIT} agent={agent} onToast={onToast} />
           )}
         </>
       )}
@@ -678,9 +706,15 @@ function QuotaCarousel({
 /** 今日汇总条（P1）：面板首行回答"今天整体怎么样"，报表按钮直达报表窗口。
  *  批次二（F8）：删「活跃 N」——与标题行「会话 · N/M」的活跃数同源重复；
  *  degraded 琥珀小标（状态语言矩阵）：采集异常在面板不再沉默 */
-function SummaryBar({ snap }: { snap: IslandSnapshot }) {
+function SummaryBar({
+  snap,
+  onToast,
+}: {
+  snap: IslandSnapshot;
+  onToast: (text: string, kind: ToastData["kind"]) => void;
+}) {
   const openReport = () => {
-    invoke("show_report_window").catch(() => {});
+    openWindow("show_report_window").catch((e) => onToast(`打开失败：${e}`, "error"));
   };
   return (
     <div className="sum-bar">
@@ -732,6 +766,13 @@ export default function Panel({
     return () => clearInterval(t);
   }, []);
 
+  // 面板操作反馈 toast（2026-10-16 审查 #7/#9）：会话跳转未命中、开窗失败等
+  // 此前静默的动作统一经此提示（共享 Toast 组件，岛窗口 bundle 全量可用）
+  const [toast, setToast] = useState<ToastData | null>(null);
+  const pushToast = useCallback((text: string, kind: ToastData["kind"]) => {
+    setToast({ text, kind });
+  }, []);
+
   // 面板自然高度测量（窗口高度自适应的数据源，2026-09-18 展示改造）：
   // 面板被 max-height 钳制时，溢出被会话区内部滚动吸收，面板自身高度不再反映
   // 真实内容量，须用"会话区 scrollHeight − clientHeight"的溢出量补偿上报，
@@ -779,7 +820,10 @@ export default function Panel({
   const islandAccounts = snap.accounts.filter((a) => a.in_island);
   const quotaLink = (
     <Tip content="打开额度窗口：全部供应商余额与窗口用量">
-      <button className="sum-link" onClick={openQuotas}>
+      <button
+        className="sum-link"
+        onClick={() => openQuotas().catch((e) => pushToast(`打开失败：${e}`, "error"))}
+      >
         {/* 硬币图标与托盘菜单「额度」项／额度页空态同源（原误用报表柱状图，
             系复制汇总条「报表」按钮 JSX 后忘换图标） */}
         <CoinIcon />
@@ -791,22 +835,29 @@ export default function Panel({
   const showQuota = snap.accounts.length === 0 || islandAccounts.length > 0;
   return (
     <div className="panel" ref={panelRef}>
-      <SummaryBar snap={snap} />
+      {/* 面板操作反馈（跳转未命中/开窗失败等），贴窗顶居中 */}
+      <Toast data={toast} onDismiss={() => setToast(null)} />
+      <SummaryBar snap={snap} onToast={pushToast} />
       {/* 会话区头（批次二 eyebrow 结构）：小标＋计数即入口；常驻提示「点击卡片
           跳转对应窗口」收敛进气泡（空面板 0 卡片时不再显示无对象的指引） */}
       <div className="panel-title">
         <Tip content={`进行中 ${active.length} 个 · 共 ${snap.sessions.length} 个（含已结束 ${history.length} 个）\n点击打开会话窗口；点击会话卡片可跳转对应终端/IDE`}>
-          <button className="panel-title-link" onClick={openSessions}>
+          <button
+            className="panel-title-link"
+            onClick={() => openSessions().catch((e) => pushToast(`打开失败：${e}`, "error"))}
+          >
             会话 · {active.length} / {snap.sessions.length}
           </button>
         </Tip>
       </div>
       <div className="panel-sessions" ref={sessionsRef}>
         {active.slice(0, ACTIVE_LIMIT).map((s) => (
-          <SessionCard key={s.id} s={s} />
+          <SessionCard key={s.id} s={s} onToast={pushToast} />
         ))}
-        {active.length > ACTIVE_LIMIT && <MoreLink hidden={active.length - ACTIVE_LIMIT} />}
-        {history.length > 0 && <HistorySection all={history} />}
+        {active.length > ACTIVE_LIMIT && (
+          <MoreLink hidden={active.length - ACTIVE_LIMIT} onToast={pushToast} />
+        )}
+        {history.length > 0 && <HistorySection all={history} onToast={pushToast} />}
         {snap.sessions.length === 0 && (
           <div className="panel-empty">
             未检测到会话
@@ -815,7 +866,11 @@ export default function Panel({
             <button
               type="button"
               className="panel-empty-link"
-              onClick={() => invoke("show_settings_window").catch(() => {})}
+              onClick={() =>
+                openWindow("show_settings_window").catch((e) =>
+                  pushToast(`打开失败：${e}`, "error"),
+                )
+              }
             >
               打开设置
             </button>

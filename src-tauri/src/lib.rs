@@ -559,12 +559,24 @@ fn spawn_aggregator(app: tauri::AppHandle, store: Arc<Store>) {
                             ) {
                                 wait_notified.insert(s.id.clone(), now);
                                 // 通知失败不重试不落库（系统侧拒绝属用户环境状态，
-                                // 30 分钟去重窗口自然兜住重试节奏）
+                                // 30 分钟去重窗口自然兜住重试节奏）。
+                                // body 带项目名尾段（2026-10-16 审查 #10）：多项目
+                                // 并行时定位是哪家的会话在等。通知点击无回调能力
+                                // （winrt 后端限制），上下文增强为当前最优解
+                                let project = s
+                                    .project_dir
+                                    .as_deref()
+                                    .and_then(|p| p.rsplit(['\\', '/']).find(|seg| !seg.is_empty()))
+                                    .unwrap_or("未知项目");
                                 let _ = app
                                     .notification()
                                     .builder()
                                     .title("去你的岛")
-                                    .body(format!("{} 有会话等待输入", agent_display_name(&s.agent)))
+                                    .body(format!(
+                                        "{}「{}」有会话等待输入",
+                                        agent_display_name(&s.agent),
+                                        project
+                                    ))
                                     .show();
                                 log::debug!("[通知] 等待输入已提醒：{}（{}）", s.id, s.agent);
                             }

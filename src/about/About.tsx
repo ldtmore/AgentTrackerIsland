@@ -49,9 +49,13 @@ export default function About() {
       .catch(() => setVersion("未知"));
   }, []);
 
-  /** 在系统默认浏览器打开仓库页（URL 由 Rust 侧常量持有，前端不传参） */
+  /** 在系统默认浏览器打开仓库页（URL 由 Rust 侧常量持有，前端不传参）。
+   *  失败行内提示（2026-10-16 审查 #9「操作必有回应」：浏览器异常时点击
+   *  毫无反应无法归因，复用复制失败的 hint 位，下次点击清除） */
+  const [openErr, setOpenErr] = useState(false);
   const openRepo = () => {
-    invoke("open_repository").catch(() => {});
+    setOpenErr(false);
+    invoke("open_repository").catch(() => setOpenErr(true));
   };
 
   // 复制失败的行内提示（2026-10-03 审查修复：原用系统 alert——全项目唯一系统
@@ -108,7 +112,9 @@ export default function About() {
                 {REPO_URL}
               </button>
               <div className="ab-hint">
-                {copyErr ? (
+                {openErr ? (
+                  <span className="ab-hint-err">打开浏览器失败，请手动复制上方链接到浏览器</span>
+                ) : copyErr ? (
                   <span className="ab-hint-err">复制失败，请手动选择上方链接文本复制</span>
                 ) : (
                   "点击上方链接（或复制到浏览器）打开项目仓库下载安装"
