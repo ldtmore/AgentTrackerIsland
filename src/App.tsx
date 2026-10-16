@@ -5,7 +5,7 @@
  * 其余渲染灵动岛（透明窗口）；岛消费 island-snapshot 快照，hover 展开面板
  */
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { listen, emitTo } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { syncDisplayConstants } from "./shared/sessionDisplay";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -31,6 +31,7 @@ import {
 } from "./shared/islandOpacity";
 import { DEFAULT_THRESHOLDS, sanitizeThresholds } from "./shared/types";
 import type { IslandSnapshot, Thresholds } from "./shared/types";
+import { buildTooltipPayload } from "./shared/islandTooltip";
 import { ErrorBoundary } from "./shared/ErrorBoundary";
 import "./App.css";
 
@@ -45,6 +46,9 @@ const Sessions = lazy(() => import("./sessions/Sessions"));
 const About = lazy(() => import("./about/About"));
 // 托盘菜单页 lazy 分割：托盘右键弹出的自绘菜单（M1-9），独立窗口独立加载
 const TrayMenu = lazy(() => import("./traymenu/TrayMenu"));
+// 岛悬停气泡窗口 lazy 分割（第七轮 4.1）：替代原生 title 的结构化品牌气泡，
+// 独立窗口独立加载（岛窗口 bundle 只多一份 emit 组装逻辑，不含气泡渲染）
+const TooltipWindow = lazy(() => import("./island/TooltipWindow"));
 
 /** 岛自适应尺寸（Rust island_metrics：显示器逻辑宽 × 30%，夹取 380～800） */
 interface IslandMetrics {
@@ -571,6 +575,26 @@ function IslandApp() {
   // 收缩冷却（B18）：收缩后 ≤90ms 内穿透翻转可能再合成一次 on 事件，250ms
   // 冷却吸收之
   const lastCollapseRef = useRef(0);
+  // 相位现读 ref：气泡到期回调在 500ms 后运行，闭包捕获的渲染值已过期——
+  // 面板是否已展开必须按到期时刻的真值判定
+  const phaseRef = useRef<IslePhase>("mini");
+  phaseRef.current = phase;
+
+  // ===== 悬停气泡（第七轮 4.1 品牌化重做，替代原生 title）=====
+  // 悬停到期 500ms 出泡（Tip 同款防误触闸门）；独立 tooltip 窗口渲染，
+  // 全程只 emit 事件，不触碰岛窗口自身几何/穿透（B20 定稿区零侵入）
+  const tooltipTimer = useRef<number | undefined>(undefined);
+  // 气泡显示中标记：收泡事件只在发出过 show 后才发（hide 幂等但省无谓 IPC）
+  const tooltipShownRef = useRef(false);
+
+  /** 收泡：清到期定时器＋通知 tooltip 窗口隐藏（未显示过则只清定时器） */
+  const hideIslandTooltip = () => {
+    window.clearTimeout(tooltipTimer.current);
+    if (tooltipShownRef.current) {
+      tooltipShownRef.current = false;
+      emitTo("tooltip", "island-tooltip", { action: "hide" }).catch(() => {});
+    }
+  };
 
   const hoverEnter = () => {
     if (performance.now() - lastCollapseRef.current < 250) return;
@@ -580,6 +604,21 @@ function IslandApp() {
     window.clearTimeout(panelTimer.current);
     // 用户正在看/用岛：托盘召唤的自动收起作废，收起交给移出逻辑
     window.clearTimeout(summonTimer.current);
+    // 悬停重入＝重新计时（气泡若在显示中保持不动，锚定快照不闪变）
+    window.clearTimeout(tooltipTimer.current);
+    tooltipTimer.current = window.setTimeout(() => {
+      // 到期条件运行时判定：面板已展开／贴边隐藏态（悬停即滑入，无稳定展示
+      // 时机，EdgeTab 头注约定不变）不出泡；滑入完成后 hidden 已翻 false 可出泡
+      if (phaseRef.current === "panel" || dockRef.current.hidden) return;
+      // 已显示不重发（重入重新计时后到期的重复回调）：内容锚定不闪变
+      if (tooltipShownRef.current) return;
+      const payload = buildTooltipPayload(visibleSnap, thresholds);
+      if (!payload) return;
+      tooltipShownRef.current = true;
+      emitTo("tooltip", "island-tooltip", { action: "show", data: payload }).catch(
+        () => {},
+      );
+    }, 500);
     // 面板退场未完即返回：直接续看，不闪收闪开（收起是 150ms 宽限的推测，
     // 人回来了就推翻它）。⚠ 仅非隐藏态（B21）：隐藏态必须优先滑入分支——
     // 续看分支的 return 会吞掉 island_peek
@@ -618,6 +657,8 @@ function IslandApp() {
     window.clearTimeout(enterTimer.current);
     window.clearTimeout(panelTimer.current);
     window.clearTimeout(collapseTimer.current);
+    // 悬停已走：气泡立即收（原生 title 同款即时性，不等 150ms 宽限）
+    hideIslandTooltip();
     collapseTimer.current = window.setTimeout(() => {
       lastCollapseRef.current = performance.now();
       setPhase(restPhase(dockRef.current));
@@ -642,6 +683,18 @@ function IslandApp() {
       unOff.then((f) => f());
     };
   }, []);
+
+  // 气泡收泡联动（第七轮 4.1）：进入面板即收（面板已承载全部深化信息）；
+  // 贴边滑出隐藏时收（窗口将不可见，气泡失去锚点）。两处只发事件不动岛自身
+  // 几何/穿透（B20 定稿区零侵入）
+  useEffect(() => {
+    if (phase === "panel") hideIslandTooltip();
+  }, [phase]);
+  useEffect(() => {
+    if (dock.hidden) hideIslandTooltip();
+  }, [dock.hidden]);
+  // 卸载清理（对齐既有 timer 纪律）：在播的出泡定时器不泄漏
+  useEffect(() => () => window.clearTimeout(tooltipTimer.current), []);
 
   // 右键菜单堵漏（2026-10-13 三轮审查 N1）：岛窗口全只读、无文本输入场景，
   // 禁用 WebView2 默认右键菜单——误触「刷新」会重载整个岛 webview、重走启动
@@ -746,6 +799,15 @@ function App() {
       <ErrorBoundary name="tray-menu">
         <Suspense fallback={null}>
           <TrayMenu />
+        </Suspense>
+      </ErrorBoundary>
+    );
+  }
+  if (route === "#tooltip") {
+    return (
+      <ErrorBoundary name="tooltip">
+        <Suspense fallback={null}>
+          <TooltipWindow />
         </Suspense>
       </ErrorBoundary>
     );

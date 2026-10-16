@@ -639,7 +639,7 @@ body,
    600 字重与大岛主文案同一层级；flex 基础值 auto 不 grow（居中布局——
    grow 会吃掉中段空隙使视觉退回两端分布，B12 留痕）；line-height:1 使
    盒心＝视觉心（中文/mono 混排在 center 对齐下同一水平线的关键）；
-   超长省略号兜底（全文在根 title） */
+   超长省略号兜底（全文在悬停气泡，第七轮 4.1 起） */
 .isle-mini-text {
   flex: 0 1 auto;
   min-width: 0;
@@ -682,9 +682,19 @@ body,
   color: var(--danger);
 }
 
+/* 小岛告急额度厂商短名（第七轮 4.2）：告急档数字前弱色小字短名——多实例
+   用户瞥一眼红字即知是哪家，正常档不渲染（JS 门控，信息出现在最需要它的时候）；
+   短名走正文族小字号弱色，不与 mono 数字争层级（数字仍 600 加重） */
+.isle-mini-quota-kind {
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  margin-right: 2px;
+}
+
 /* 今日段（四段阶梯的第二数据位）：「今」单字弱标签＋mono 数值——与大岛
    「今日」段同一仪表语言；仅宽屏渲染内容（JS 侧 miniW≥280 门控，07 §3.2
-   D5 阶梯制），窄档信息进根 title */
+   D5 阶梯制），窄档信息进悬停气泡（第七轮 4.1 起） */
 .isle-mini-today {
   flex: none;
   line-height: 1;
@@ -705,13 +715,19 @@ body,
 /* ===== 宽度降级阶梯（F7）：App.tsx 按 island_metrics 宽度注根类 =====
    ≥560（w-lg）全量四段；460~559（w-md）隐「今日」；<460（w-sm）再隐窗口类
    厂商短名（余额金额单元必须保留厂商，否则金额失主语）。
-   被隐信息由 island-text 的原生 title 承接（IslandBar 恒定拼接） */
+   被隐信息由悬停品牌气泡承接（第七轮 4.1 起替代原生 title，恒可查） */
 .w-md .island-tokens,
 .w-sm .island-tokens {
   display: none;
 }
 
 .w-sm .q-unit-win .q-kind {
+  display: none;
+}
+
+/* 小岛告急短名同款阶梯（第七轮 4.2）：<460 档宽度不够——数字本身已紧张，
+   短名交给悬停气泡承接（原纯文本 title 时代该档信息也在气泡恒可查） */
+.w-sm .isle-mini-quota-kind {
   display: none;
 }
 
@@ -1026,14 +1042,17 @@ body,
   opacity: 0.55;
 }
 
-/* 陈旧/已结束卡（07-UX 1.5，与 .card-nojump 类配套）：跳转新鲜度不足的卡片
-   不绑点击，指针与 hover 变色一并收敛——只去指针不去 hover 会残留「可点」暗示 */
+/* 陈旧/已结束卡（07-UX 1.5；2026-10-17 所有者拍板）：跳转新鲜度不足的
+   卡片不绑点击，指针保持箭头（点击无动作，小手才是错误暗示）；hover 变色
+   与可跳转卡同档（--surface-hover，双主题一套规则——弱半档方案经两轮
+   实机校准双主题无可感统一档位，所有者拍板放弃分层）。已结束卡再叠
+   .card-ended 整体弱化，实感自然低于活跃卡 */
 .card-nojump {
   cursor: default;
 }
 
 .card-nojump:hover {
-  background: var(--surface);
+  background: var(--surface-hover);
 }
 
 /* 今日汇总条（P1）：面板首行回答"今天整体怎么样" */
@@ -1358,6 +1377,76 @@ body,
   border-color: rgba(0, 0, 0, 0.12);
   color: #374151;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+}
+
+/* ===== 岛悬停气泡窗口（第七轮 4.1 品牌化重做，替代原生 title）=====
+   独立 tooltip 窗口（恒穿透、恒置顶、无装饰）内渲染，复用 .tip 玻璃配方；
+   窗口尺寸由 Rust 按气泡实测尺寸设置（place 命令），气泡本体铺在窗口原点。
+   结构化排版：状态行主角、数据行弱缩进、数字段 mono＋档位色、附注弱色 */
+.ttw {
+  left: 0;
+  top: 0;
+  max-width: 320px;
+  /* place 返回前不显示（窗口也未 show）——防默认位闪帧；place 后由动画类接管 */
+  opacity: 0;
+}
+.ttw-in {
+  /* 入场淡入＋微移（history-menu-in 同款 0.14s 节拍）；reduced-motion 全局收敛覆盖 */
+  animation: ttw-in 0.14s ease forwards;
+}
+@keyframes ttw-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+/* 聚合状态行：气泡的视觉主角（与胶囊主文案同「结论先行」口径） */
+.ttw-status {
+  color: var(--text-1);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+/* 实例分组：段间距立界（原纯文本版空行分段的等价物） */
+.ttw-group {
+  margin-top: 8px;
+}
+.ttw-group-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-1);
+}
+/* 品牌色点（与托盘明细色点同源同尺寸档） */
+.ttw-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+/* 数据行弱缩进（原纯文本版全角空格缩进的等价物：隶属关系靠缩进表达） */
+.ttw-row {
+  padding-left: 12px;
+}
+/* ⚠ 告急前缀（warn/danger 档出现，行内唯一强调手段，克制使用） */
+.ttw-flag {
+  color: var(--warn-amber);
+}
+/* 数字段：mono 主角＋档位色（normal=主文本、warn=琥珀、danger=红，与胶囊仪表同语义） */
+.ttw-num {
+  font-family: var(--mono);
+}
+.ttw-normal {
+  color: var(--text-1);
+}
+.ttw-warn {
+  color: var(--warn-amber);
+}
+.ttw-danger {
+  color: var(--danger);
 }
 
 /* 额度区（2026-10-03 密度对齐「四行并两行」）：标题行＋帧体两行结构，

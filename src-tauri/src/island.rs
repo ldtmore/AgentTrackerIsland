@@ -495,11 +495,15 @@ pub(crate) fn island_transition(app: &tauri::AppHandle, target: IslandTarget) {
             }
             // ① DOM 预切回胶囊态（edge=none 时前端本就渲染胶囊，事件幂等）
             // ② 整窗隐藏；穿透状态交由看护线程在下次显示前自然收敛
+            // ③ 悬停气泡联动收泡（第七轮 4.1 追加）：整窗隐藏后 hover-off 永不
+            //    再来（看护线程对隐藏窗口的光标判定维持原值），气泡显示中按
+            //    快捷键/托盘隐藏岛会滞留屏幕——在此唯一收口联动，不改岛几何
             let _ = app.emit_to(
                 ISLAND,
                 "island-dock",
                 serde_json::json!({ "edge": edge, "hidden": false }),
             );
+            let _ = app.emit_to(TOOLTIP, "island-tooltip", serde_json::json!({ "action": "hide" }));
             if let Err(e) = win.hide() {
                 log::debug!("[岛] 转换 Gone 隐藏失败：{e}");
             }
@@ -834,6 +838,113 @@ pub(crate) fn position_island(
     let _ = win.show();
 }
 
+// ===== 悬停气泡窗口（第七轮 4.1 品牌化重做，替代原生 title） =====
+
+/// tooltip 窗口 label（与 tauri.conf.json 静态注册同源）
+pub(crate) const TOOLTIP: &str = "tooltip";
+/// 气泡锚点与光标的间隙（逻辑像素）：光标右下偏移该值起泡，翻转侧同值回收
+const TOOLTIP_CURSOR_GAP: f64 = 16.0;
+
+/// 气泡落点纯函数（便于单测）：光标物理坐标＋气泡物理尺寸＋当前屏 scale＋
+/// 工作区物理矩形 (x， y， w， h) → 窗口左上角物理坐标。
+/// 锚点＝光标右下偏移 16 逻辑 px；右缘／下缘越界独立翻转（翻到光标左上）；
+/// 翻转后仍越界（光标贴角＋气泡过大）夹取进工作区，宁贴边不出屏。
+/// 物理坐标直比零换算（B20 同哲学）：仅 scale 乘法集中在 gap 与尺寸换算两处
+fn tooltip_place_pos(
+    cursor: (i32, i32),
+    bubble: (i32, i32),
+    scale: f64,
+    work: (i32, i32, i32, i32),
+) -> (i32, i32) {
+    let gap = (TOOLTIP_CURSOR_GAP * scale).round() as i32;
+    let ax = cursor.0 + gap;
+    let ay = cursor.1 + gap;
+    let (wx, wy, ww, wh) = work;
+    let x = if ax + bubble.0 > wx + ww {
+        cursor.0 - gap - bubble.0
+    } else {
+        ax
+    };
+    let y = if ay + bubble.1 > wy + wh {
+        cursor.1 - gap - bubble.1
+    } else {
+        ay
+    };
+    (
+        x.clamp(wx, (wx + ww - bubble.0).max(wx)),
+        y.clamp(wy, (wy + wh - bubble.1).max(wy)),
+    )
+}
+
+/// 悬停气泡定位＋显示（第七轮 4.1）：tooltip 前端渲染后量得气泡逻辑尺寸
+/// invoke 上来；GetCursorPos 取光标 → 右下偏移 16 逻辑 px 为锚点 → 按光标所在
+/// 显示器 scale 换算物理 → 右缘／下缘越界翻转到光标左上 → 夹取进工作区 →
+/// set_size（窗口恰包住气泡，透明窗口边缘＝气泡边缘）＋ set_position ＋ show。
+/// 锚定制：仅 show 时定位一次不跟随光标（macOS tooltip 同款防抖）。
+/// 轻量窗口操作（一次 GetCursorPos＋三次 set_*，微秒级）经同步命令在主线程
+/// 执行——不涉及 build/restore 的嵌套消息泵路径，与 island_peek 同待遇
+/// （HANDOFF 事故教训仅约束 ensure_aux_window 的建窗＋几何恢复链路）
+#[tauri::command]
+pub(crate) fn island_tooltip_place(app: tauri::AppHandle, w: f64, h: f64) {
+    let Some(win) = app.get_webview_window(TOOLTIP) else {
+        return;
+    };
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut pt = POINT::default();
+    // SAFETY:GetCursorPos 仅查询系统全局光标坐标，无指针/生命周期风险
+    if unsafe { GetCursorPos(&mut pt) }.is_err() {
+        return;
+    }
+    // 光标所在显示器：气泡跟随光标，跨屏场景以光标屏为准——tooltip 窗口的
+    // current_monitor 在首次定位前停在默认出生位，未必在光标屏；
+    // 遍历判定光标物理点落入哪个显示器矩形，拿不到退窗口所在屏
+    let mon = app.available_monitors().ok().and_then(|mons| {
+        mons.into_iter().find(|m| {
+            let p = m.position();
+            let sz = m.size();
+            pt.x >= p.x
+                && pt.x < p.x + sz.width as i32
+                && pt.y >= p.y
+                && pt.y < p.y + sz.height as i32
+        })
+    });
+    let mon = mon.or_else(|| win.current_monitor().ok().flatten());
+    let Some(mon) = mon else {
+        return;
+    };
+    let s = mon.scale_factor();
+    let wa = mon.work_area();
+    let work = (
+        wa.position.x,
+        wa.position.y,
+        wa.size.width as i32,
+        wa.size.height as i32,
+    );
+    // 气泡逻辑尺寸 → 物理尺寸（防御：非法值按 0 处理，set_size 时抬到 1）
+    let bubble = (
+        (w.max(0.0) * s).round() as i32,
+        (h.max(0.0) * s).round() as i32,
+    );
+    let (x, y) = tooltip_place_pos((pt.x, pt.y), bubble, s, work);
+    let _ = win.set_size(tauri::PhysicalSize::new(
+        bubble.0.max(1) as u32,
+        bubble.1.max(1) as u32,
+    ));
+    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    let _ = win.show();
+    log::debug!("[岛] 悬停气泡定位：光标 ({},{}) 气泡 {bubble:?} → ({x},{y})", pt.x, pt.y);
+}
+
+/// 悬停气泡隐藏（第七轮 4.1）：岛端悬停离开／进入面板／贴边滑出时通知；
+/// 幂等 hide。与 place 分开成命令：hide 高频触发（每次 hover-off）走零参数轻路径
+#[tauri::command]
+pub(crate) fn island_tooltip_hide(app: tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window(TOOLTIP) {
+        let _ = win.hide();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -859,5 +970,27 @@ mod tests {
         let ml = (0, 0, 1280, 720);
         let (x, y) = clamp_docked((1500, 650), ml, island_width(1280)); // 384
         assert_eq!((x, y), (1280 - 384, 650));
+    }
+
+    /// 悬停气泡落点（第七轮 4.1 回归锁）：右下锚定／右缘下缘独立翻转／
+    /// 翻转后仍越界夹取进工作区。物理坐标（200% 缩放屏场景，gap 16 逻辑＝32 物理）
+    #[test]
+    fn test_tooltip_place_pos() {
+        let s = 2.0;
+        let work = (0, 0, 2560, 1600);
+        // 光标屏中：光标右下偏移 32 物理 px（16 逻辑）锚定
+        assert_eq!(tooltip_place_pos((1000, 800), (640, 400), s, work), (1032, 832));
+        // 右缘越界 → 水平翻转到光标左上（y 不受影响）
+        assert_eq!(
+            tooltip_place_pos((2400, 800), (640, 400), s, work),
+            (2400 - 32 - 640, 832),
+        );
+        // 下缘越界 → 垂直翻转到光标上侧（x 不受影响）
+        assert_eq!(
+            tooltip_place_pos((1000, 1500), (640, 400), s, work),
+            (1032, 1500 - 32 - 400),
+        );
+        // 超宽气泡翻转后左越界 → 夹取进工作区左缘（宁贴边不出屏）
+        assert_eq!(tooltip_place_pos((10, 10), (6000, 400), s, work), (0, 42));
     }
 }

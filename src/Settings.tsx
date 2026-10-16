@@ -286,6 +286,32 @@ export default function Settings() {
     }
     fetchToken();
   }, [localApi, fetchToken]);
+  // token 重置（第七轮 4.3）：行内二次确认（ProviderCard 删除实例同款——
+  // 首点进入待确认态，3 秒内再点才真重置，超时自动复原，无弹窗红线⑤）
+  const [resetArmed, setResetArmed] = useState(false);
+  const resetTimer = useRef<number | null>(null);
+  const armTokenReset = () => {
+    setResetArmed(true);
+    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    resetTimer.current = window.setTimeout(() => setResetArmed(false), 3000);
+  };
+  useEffect(
+    () => () => {
+      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    },
+    [],
+  );
+  const resetToken = () => {
+    setResetArmed(false);
+    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    invoke<string>("local_api_token_reset")
+      .then((t) => {
+        setApiToken(t);
+        setApiTokenError(false);
+        showToast("已重置，旧 Token 已失效", "ok");
+      })
+      .catch((e) => showToast(`重置失败：${e}`, "error"));
+  };
   // 上次成功落库的端口（失败回滚显示用，防「假保存」）
   const savedApiPortRef = useRef("6737");
   const commitApiPort = async () => {
@@ -531,12 +557,13 @@ export default function Settings() {
           </Row>
 
           {/* 访问 Token（2026-10-16 鉴权）：开启时展示＋复制——请求须携带，
-              本机其他进程无 token 读不到数据 */}
+              本机其他进程无 token 读不到数据；重置入口（第七轮 4.3）补全
+              泄漏作废的安全闭环 */}
           {localApi && (
             <Row
               title="访问 Token"
               desc="请求须携带 Authorization: Bearer ＜token＞ 或 ?token=＜token＞"
-              tip="Token 用于挡住本机其他进程的未授权读取；泄露后可删除数据库 local_api_token 键重新生成（重启生效）"
+              tip="Token 用于挡住本机其他进程的未授权读取；怀疑泄漏时点「重新生成」作废旧值"
             >
               <div className="st-th">
                 {apiTokenError ? (
@@ -556,18 +583,34 @@ export default function Settings() {
                       {apiToken ?? "生成中…"}
                     </code>
                     {apiToken && (
-                      <button
-                        type="button"
-                        className="st-btn st-btn-sm"
-                        onClick={() => {
-                          navigator.clipboard
-                            .writeText(apiToken)
-                            .then(() => showToast("Token 已复制", "ok"))
-                            .catch(() => showToast("复制失败", "error"));
-                        }}
-                      >
-                        复制
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          className="st-btn st-btn-sm"
+                          onClick={() => {
+                            navigator.clipboard
+                              .writeText(apiToken)
+                              .then(() => showToast("Token 已复制", "ok"))
+                              .catch(() => showToast("复制失败", "error"));
+                          }}
+                        >
+                          复制
+                        </button>
+                        {/* 行内二次确认：首点进入待确认态（3 秒复原），
+                            再点才真重置——误触不付代价，真重置须明确意图 */}
+                        <button
+                          type="button"
+                          className="st-btn st-btn-sm"
+                          title={
+                            resetArmed
+                              ? "旧 Token 将立即失效，已配置的脚本需要更新"
+                              : "生成新 Token 并作废当前值"
+                          }
+                          onClick={resetArmed ? resetToken : armTokenReset}
+                        >
+                          {resetArmed ? "确认重置？" : "重新生成"}
+                        </button>
+                      </>
                     )}
                   </>
                 )}

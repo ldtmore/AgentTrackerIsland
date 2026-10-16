@@ -1590,6 +1590,30 @@ pub(crate) fn local_api_token(
     Some(crate::localapi::ensure_token(&store))
 }
 
+/// 本地 API 访问 token 重置（第七轮 4.3）：旧值置空 → ensure_token 生成新值
+/// → 返回新 token。API 服务线程每请求现读库（见 localapi::handle），重置后
+/// 旧 token 立即失效、无需重启——安全闭环的最后一环（token 泄漏可作废重发）。
+/// async＋spawn_blocking（对齐 focus_session 等库命令纪律）：SQLite 写与
+/// uuid 生成不占主线程。Store 无 delete_setting，置空串与删键对 ensure_token
+/// 语义等价（空/缺失一律重新生成）
+#[tauri::command]
+pub(crate) async fn local_api_token_reset(
+    store: tauri::State<'_, Arc<Store>>,
+) -> Result<String, String> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        store.set_setting("local_api_token", "");
+        let token = crate::localapi::ensure_token(&store);
+        log::info!("[本地 API] 访问 token 已重置（旧 token 立即失效）");
+        Ok(token)
+    })
+    .await
+    .map_err(|e| {
+        log::warn!("[本地 API] token 重置后台任务失败：{e}");
+        format!("重置失败：{e}")
+    })?
+}
+
 /// 打开程序日志/数据目录（07-UX 2.5 排障动线）：开发者模式日志与本地数据库
 /// 均落在 %APPDATA%\com.agenttrackerisland.app 下（logs 子目录由 logging::init
 /// 启动即建），从 app_data_dir 单一事实源定位。目录不存在（防御分支，理论不可

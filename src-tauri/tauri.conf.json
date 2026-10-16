@@ -37,6 +37,21 @@
         "shadow": false,
         "visible": false,
         "focus": false
+      },
+      {
+        "label": "tooltip",
+        "title": "悬停气泡 · 去你的岛",
+        "url": "index.html#tooltip",
+        "width": 320,
+        "height": 200,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "transparent": true,
+        "resizable": false,
+        "shadow": false,
+        "visible": false,
+        "focus": false
       }
     ],
     "security": {

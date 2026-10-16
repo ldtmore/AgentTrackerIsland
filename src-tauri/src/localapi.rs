@@ -51,13 +51,13 @@ pub fn spawn(store: Arc<Store>, port: u16) {
                 return;
             };
             // 首启确保 token 存在（幂等：已有则沿用——用户脚本里配的 token 不因重启变）
-            let token = ensure_token(&store);
+            ensure_token(&store);
             log::info!("[本地 API] 已启动：http://{addr}/v1/status｜/v1/limits｜/v1/spend（仅回环，只读，需 token）");
             for request in server.incoming_requests() {
                 // panic 隔离（2026-10-03 审查补充，对照聚合 tick／quota worker 纪律）：
                 // 单请求处理 panic 不杀服务线程——否则本地 API 静默失联且无留痕
                 if let Err(_) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    handle(&store, request, port, &token)
+                    handle(&store, request, port)
                 })) {
                     log::error!("[本地 API] 请求处理 panic，已隔离继续服务");
                 }
@@ -66,8 +66,11 @@ pub fn spawn(store: Arc<Store>, port: u16) {
         .expect("本地 API 线程启动失败");
 }
 
-/// 单请求处理（Host 校验＋token 鉴权＋只读路由）
-fn handle(store: &Store, request: tiny_http::Request, port: u16, token: &str) {
+/// 单请求处理（Host 校验＋token 鉴权＋只读路由）。
+/// token 每请求现读（第七轮 4.3）：原先闭包固化启动时的值，设置页重置后
+/// 旧 token 仍可用到重启——回环 API 低频，SQLite 点查微秒级，现读换「重置
+/// 立即生效」的安全闭环；键缺失/为空（未生成）时按 401 语义拒绝
+fn handle(store: &Store, request: tiny_http::Request, port: u16) {
     // Host 白名单（2026-10-03 审查修复，防 DNS rebinding 跨源读取）：浏览器同源
     // 判定只看主机名——攻击者域名 rebinding 到 127.0.0.1 后，其页面与本服务
     // 同源（同主机同端口），无 CORS 头也能完整读取响应。只接受字面回环主机名
@@ -83,8 +86,10 @@ fn handle(store: &Store, request: tiny_http::Request, port: u16, token: &str) {
         return;
     }
     // Token 鉴权（2026-10-16）：Bearer 头或 query 参数二选一（curl/脚本两形态
-    // 都顺手）；恒时比较免理论时序侧信道（固定长度 uuid simple，逐字节异或）
+    // 都顺手）；恒时比较免理论时序侧信道（固定长度 uuid simple，逐字节异或）。
+    // 现读库值（第七轮 4.3）：空/缺失（未生成）恒 401
     let url = request.url().to_string();
+    let token = store.get_setting("local_api_token").unwrap_or_default();
     let bearer = request
         .headers()
         .iter()
@@ -95,8 +100,9 @@ fn handle(store: &Store, request: tiny_http::Request, port: u16, token: &str) {
         .split_once('?')
         .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("token=")))
         .unwrap_or("");
-    let token_ok = (bearer.len() == token.len() || query_token.len() == token.len())
-        && (const_eq(bearer, token) || const_eq(query_token, token));
+    let token_ok = !token.is_empty()
+        && (bearer.len() == token.len() || query_token.len() == token.len())
+        && (const_eq(bearer, &token) || const_eq(query_token, &token));
     if !token_ok {
         log::warn!("[本地 API] 请求被拒（token 缺失或不符）");
         respond_error(request, 401, r#"{"error":"需要 token（Authorization: Bearer 或 ?token=，设置页可查看）"}"#);
@@ -234,4 +240,68 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// 临时库路径（对齐 store::tests::tmp_db 形态）
+    fn tmp_db(tag: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("at-test-{tag}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    /// 原始 TCP 发一次带 token 的 status 请求，返回响应状态码（handle 全链路：
+    /// Host 校验 → 现读鉴权 → 路由）
+    fn status_code(port: u16, token: &str) -> u16 {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(
+            s,
+            "GET /v1/status?token={token} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut buf = String::new();
+        s.read_to_string(&mut buf).unwrap();
+        buf.split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// token 重置立即生效（第七轮 4.3 回归锁）：API 服务线程每请求现读库——
+    /// 重置（置空＋重新生成）后旧 token 立即 401、新 token 200。修复前 handle
+    /// 固化启动时的 token，重置后旧值仍可用到重启（断言 401 失败）
+    #[test]
+    fn test_token_reset_invalidates_old() {
+        let path = tmp_db("localapi-reset");
+        let store = Arc::new(Store::open(&path).unwrap());
+        // 起随机端口服务（与 spawn 同款循环形态；服务线程随测试进程退出回收）
+        let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
+        let port = server.server_addr().to_ip().unwrap().port();
+        let store2 = store.clone();
+        std::thread::spawn(move || {
+            for request in server.incoming_requests() {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    handle(&store2, request, port)
+                }));
+            }
+        });
+        // 初始 token：请求携带 → 200
+        let old = ensure_token(&store);
+        assert_eq!(status_code(port, &old), 200, "初始 token 应放行");
+        assert_eq!(status_code(port, "wrong-token"), 401, "错误 token 应拒绝");
+        // 模拟重置命令（local_api_token_reset 的库语义：置空 → ensure_token 生成新值）
+        store.set_setting("local_api_token", "");
+        let new = ensure_token(&store);
+        assert_ne!(old, new, "重置后应生成新 token");
+        // 核心：旧 token 立即失效（现读；修复前固化值会放行）
+        assert_eq!(status_code(port, &old), 401, "重置后旧 token 应立即 401");
+        assert_eq!(status_code(port, &new), 200, "重置后新 token 应放行");
+        let _ = std::fs::remove_file(&path);
+    }
 }

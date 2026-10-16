@@ -50,8 +50,9 @@ pub fn run() {
         // 保存对话框（报表 CSV 导出让用户自选目录；权限仅 dialog:allow-save）
         .plugin(tauri_plugin_dialog::init())
         // 辅助窗口几何记忆（07-UX 1.2）：设置/报表/额度/会话/关于五窗口的尺寸、
-        // 位置与最大化状态跨重启记忆。岛与托盘菜单在 denylist——岛有自有几何
-        // 体系（贴边/滑出/记忆位），托盘菜单高度由内容实测回写，都不可被接管；
+        // 位置与最大化状态跨重启记忆。岛/托盘菜单/悬停气泡在 denylist——岛有
+        // 自有几何体系（贴边/滑出/记忆位），托盘菜单高度由内容实测回写，气泡
+        // 位置由光标实时锚定（第七轮 4.1），都不可被接管；
         // state_flags 显式剔除 VISIBLE 位——插件恢复可见态会直接破坏「常驻隐藏、
         // show 唤起」的窗口模型。恢复发生在窗口创建时（on_window_ready），
         // 保存发生在应用退出（RunEvent::Exit）——窗口是 hide 非 destroy，
@@ -63,7 +64,7 @@ pub fn run() {
                         | tauri_plugin_window_state::StateFlags::POSITION
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED,
                 )
-                .with_denylist(&["island", "tray-menu"])
+                .with_denylist(&["island", "tray-menu", "tooltip"])
                 .build(),
         )
         // 全局快捷键（07-UX 2.3）：Ctrl+Alt+I 显隐灵动岛。注册/注销与设置键
@@ -106,6 +107,7 @@ pub fn run() {
             provider_account_copy_key,
             provider_account_reveal_key,
             local_api_token,
+            local_api_token_reset,
             provider_account_refresh,
             env_creds_probe,
             hooks_status,
@@ -133,6 +135,8 @@ pub fn run() {
             island_boot_settled,
             island_drag_start,
             island_metrics,
+            island_tooltip_place,
+            island_tooltip_hide,
             tray_menu_action,
             log_frontend
         ])
@@ -387,6 +391,15 @@ pub fn run() {
                         let _ = tm2.hide();
                     }
                 });
+            }
+
+            // 悬停气泡窗口恒穿透（第七轮 4.1）：气泡纯展示无交互，恒吞不掉
+            // 光标事件——悬停中的岛/下层应用都不受气泡窗口干扰（方案守则：
+            // 穿透设置在创建后立即执行，窗口配置无此字段）。轻量窗口属性设置
+            // （WS_EX_TRANSPARENT 样式位）在 setup 同步执行，与 island 启动定位
+            // 的 set_position 同级，不涉及 build/restore 的消息泵路径
+            if let Some(tw) = app.get_webview_window(TOOLTIP) {
+                let _ = tw.set_ignore_cursor_events(true);
             }
 
             build_tray(app)?;
