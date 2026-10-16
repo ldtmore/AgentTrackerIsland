@@ -151,6 +151,22 @@ pub fn run() {
                 }
             };
             app.manage(store.clone());
+            // State 注册收口线（2026-10-16 排查「报表窗口 state not managed」）：
+            // 常驻窗口页面加载可早于 setup 跑完，挂载期 invoke 会撞上 State 未注册；
+            // 前端就绪门（main.tsx）以 get_settings 探测，其通过必须蕴含「全部
+            // State 已注册」——故各 State 的 manage 集中于本线紧邻处，新增 State
+            // 的注册不得下移到 setup 尾部
+            let motion = Arc::new(Mutex::new(IslandMotion {
+                edge: store
+                    .get_setting("island_edge")
+                    .unwrap_or_else(|| "none".into()),
+                ..Default::default()
+            }));
+            app.manage(motion.clone());
+            // 额度退避复位通知通道（#16）：创建零依赖，注册随之收口；接收端由
+            // 下方额度调度工作线程消费
+            let (quota_ntx, quota_nrx) = std::sync::mpsc::sync_channel::<String>(16);
+            app.manage(QuotaRefreshNotify(quota_ntx));
             // 恢复开发者模式（设置页开关：Debug 级细节日志，即时生效）
             if store.get_setting("dev_mode").as_deref() == Some("1") {
                 logging::set_verbose(true);
@@ -184,19 +200,9 @@ pub fn run() {
             // 矩形窗口染成磨砂灰，破坏胶囊形态；岛的正确做法=窗口全透明+CSS 自绘
             // 背景（见 App.css）。依赖已移除（M1-5 全宽形态划出，保留理由失效）
 
-            // 贴边/拖拽运动状态（setup 内创建，commands 与看护线程经 manage 共享）；
-            // 必须先于 position_island 创建，启动定位要经它防误判
-            let motion = Arc::new(Mutex::new(IslandMotion {
-                edge: store
-                    .get_setting("island_edge")
-                    .unwrap_or_else(|| "none".into()),
-                ..Default::default()
-            }));
-            app.manage(motion.clone());
-
             // 定位：启动态在记忆坐标原位展示「启动中…」（数据就绪后经
             // island_boot_settled 按上次状态收敛）；无记忆坐标时兜底位即默认位，
-            // 原地不动
+            // 原地不动（motion 的创建与 State 注册已上提至 manage(store) 紧邻处）
             position_island(&win, store.as_ref(), &motion);
 
             // 窗口移动事件：程序化滑动的落点被消费忽略；用户拖拽则记录待评估位置
@@ -424,9 +430,8 @@ pub fn run() {
             }
 
             // 额度调度工作线程（2026-09-29 审查修复）：外呼/错峰/退避全部脱离
-            // 聚合 tick；通知通道承接额度页「查询」成功后的退避复位（#16）
-            let (quota_ntx, quota_nrx) = std::sync::mpsc::sync_channel::<String>(16);
-            app.manage(QuotaRefreshNotify(quota_ntx));
+            // 聚合 tick；通知通道承接额度页「查询」成功后的退避复位（#16，
+            // 通道创建与 State 注册已上提至 manage(store) 紧邻处）
             provider::worker::spawn_quota_worker(store.clone(), quota_nrx);
 
             // 本地只读 API（#25，默认关）：开启时绑定 127.0.0.1，供脚本/小组件
