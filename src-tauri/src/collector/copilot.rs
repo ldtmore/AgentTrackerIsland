@@ -431,16 +431,17 @@ impl AgentAdapter for CopilotAdapter {
             if max_row_id > row_watermark {
                 self.lock_row_watermarks().insert(tag.clone(), max_row_id);
             }
-            // 汇总留痕（正常轮零输出零噪音，与各适配器 bad_lines 纪律一致）：
-            // 持续出现即「上游时间格式漂移」的排障线索
-            if bad_ts > 0 {
-                log::debug!("[copilot] {tag} 本轮 {bad_ts} 行 created_at 解析失败被跳过（格式漂移？）");
-            }
         }
         // 行级映射失败汇总（6.7b）：持续出现即「上游 Schema 漂移」的排障线索；
         // 放库循环外按全轮累计输出，正常轮零输出零噪音
         if err_rows > 0 {
             log::debug!("[copilot] 本轮 {err_rows} 行映射失败被跳过（schema 漂移？）");
+        }
+        // created_at 解析失败汇总（2026-10-17 6.7b 遗留瑕疵收口）：原日志在库
+        // 循环内打印函数级累计值——多库时后续库重复报告前序库的计数（tagB 背
+        // tagA 的数，归因错乱），挪循环外报全轮总数与 err_rows 同形态
+        if bad_ts > 0 {
+            log::debug!("[copilot] 本轮 {bad_ts} 行 created_at 解析失败被跳过（格式漂移？）");
         }
         let result = CollectOutput::default().with_rows(rows);
         *self.lock_collect_cache() = Some(result.clone());
