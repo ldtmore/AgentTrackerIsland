@@ -85,8 +85,8 @@ function MoreLink({
     if (agent) {
       emit("sessions-prefilter", agent).catch(() => {});
       // 懒创建兜底（2026-10-16）：会话窗口未挂载时 emit 无人接收，新窗挂载
-      // 时从深链中转读取预筛选
-      sendDeepLink("sessions-prefilter", agent);
+      // 时从深链中转读取预筛选；目标已存在时不落条目（6.4 防陈旧消费）
+      void sendDeepLink("sessions-prefilter", "sessions", agent);
     }
     openSessions().catch((e) => onToast(`打开失败：${e}`, "error"));
   };

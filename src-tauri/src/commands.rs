@@ -1477,7 +1477,9 @@ pub(crate) async fn export_sessions_csv(
                 &keyword,
                 &sort,
             )
-            .ok_or_else(|| format!("未知范围档/状态档/排序键：{range}/{status}/{sort}"))?;
+            // None＝参数非法或查询准备失败（2026-10-17 审查 6.6：文案改通用，
+            // 原文案只覆盖参数类失败，查询失败时误导排障方向）
+            .ok_or_else(|| "导出失败：查询不可用或参数非法".to_string())?;
         std::fs::write(&path, csv.as_bytes()).map_err(|e| format!("CSV 写入失败：{e}"))?;
         log::info!("[会话] 已导出 CSV：{}（{} 字节）", path, csv.len());
         Ok(path.clone())

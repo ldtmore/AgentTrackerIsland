@@ -101,17 +101,20 @@ impl GlobWalker {
 
     /// 目录条目（带 mtime 剪枝缓存）。M2-UX-1 加固：读取失败（目录被占用/权限
     /// 抖动等瞬态故障）**不缓存空结果**——缓存空列表会在目录 mtime 不变期间
-    /// 造成永久失明（自愈能力弱于改造前的每轮直读），失败只允许影响当轮
+    /// 造成永久失明（自愈能力弱于改造前的每轮直读），失败只允许影响当轮。
+    /// mtime=0（metadata 失败/1970 前时间戳，2026-10-17 审查 6.7c）不再直接判空：
+    /// 退化为当轮绕过剪枝直读且**不写缓存**（下轮再试 mtime）——瞬态失败自愈
+    /// 语义不变，持续 mtime=0 的文件系统（FAT32/压缩包解出物）子树不再永久失踪
     fn entries(&mut self, dir: &Path) -> Vec<(String, bool)> {
         let mtime = mtime_ms(&dir.to_path_buf());
-        if mtime == 0 {
-            self.dir_cache.remove(dir);
-            return vec![];
-        }
-        if let Some((m0, cached)) = self.dir_cache.get(dir) {
-            if *m0 == mtime {
-                return cached.clone();
+        if mtime > 0 {
+            if let Some((m0, cached)) = self.dir_cache.get(dir) {
+                if *m0 == mtime {
+                    return cached.clone();
+                }
             }
+        } else {
+            self.dir_cache.remove(dir);
         }
         let mut list = vec![];
         if let Ok(rd) = fs::read_dir(dir) {
@@ -121,7 +124,10 @@ impl GlobWalker {
                 let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
                 list.push((name, is_dir));
             }
-            self.dir_cache.insert(dir.to_path_buf(), (mtime, list.clone()));
+            // mtime=0 的直读结果不写缓存：下轮 mtime 可能恢复，剪枝可信时才缓存
+            if mtime > 0 {
+                self.dir_cache.insert(dir.to_path_buf(), (mtime, list.clone()));
+            }
         } else {
             self.dir_cache.remove(dir);
         }

@@ -1290,8 +1290,12 @@ impl Store {
                     COALESCE(error_types,'') AS error_types
              FROM ({inner}) WHERE 1=1{kw_sql}{status_sql} ORDER BY {order_sql}"
         );
+        // prepare 失败返回 None 让命令层走 Err→toast（2026-10-17 审查 6.6）：
+        // 此前返回 Some(空串) 绕过错误链路——用户拿到零字节 .csv 且无提示，
+        // 工具故障伪装成「数据为空」，违背「降级必须可见」纪律
         let Ok(mut stmt) = conn.prepare(&sql) else {
-            return Some(String::new());
+            log::warn!("[导出] 会话 CSV 查询 prepare 失败（range={range} status={status} sort={sort}）");
+            return None;
         };
         let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
             // 文本列当场转义，数字列直接转字符串（无逗号/引号无需转义）

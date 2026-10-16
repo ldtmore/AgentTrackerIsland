@@ -140,11 +140,13 @@ export default function ProviderFormModal({
   useFocusTrap(formRef, true);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      // 保存进行中屏蔽 Esc（2026-10-17 审查 6.3）：invoke 无法中止，弹窗关了
+      // 后台照常落库——「我取消了怎么还有」的语义失真
+      if (e.key === "Escape" && !saving) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, saving]);
 
   /** 别名即时冲突校验：全局唯一（2026-09-30 D14 升级，跨厂商也拦，后端 0009
    *  索引兜底），编辑态排除自身 */
@@ -245,7 +247,13 @@ export default function ProviderFormModal({
   };
 
   return (
-    <div className="st-modal-overlay" onClick={onClose}>
+    // 遮罩点击同款 saving 门控（6.3）：保存中关弹窗＝后台照常创建
+    <div
+      className="st-modal-overlay"
+      onClick={() => {
+        if (!saving) onClose();
+      }}
+    >
       <div
         className="st-modal"
         role="dialog"
@@ -370,6 +378,11 @@ export default function ProviderFormModal({
                     <input
                       className="st-combo-input"
                       type={fCredMode === "plain" && fSecret && !fShowSecret ? "password" : "text"}
+                      /* autoComplete="new-password"（2026-10-17 实机反馈）：告知
+                         WebView2 这不是网站登录密码，禁用其密码自动填充建议浮层
+                         ——浮层悬浮在页面之上，打开期间第一次点击页面只关浮层、
+                         焦点不下传，表现为「点别的输入框要点两次才聚焦」 */
+                      autoComplete="new-password"
                       value={fSecret}
                       maxLength={fCredMode === "env" ? 128 : 500}
                       placeholder={
@@ -480,7 +493,9 @@ export default function ProviderFormModal({
           {formError && <div className="st-form-err">{formError}</div>}
         </div>
         <div className="st-modal-actions">
-          <button type="button" className="st-btn st-btn-sm" onClick={onClose}>
+          {/* 取消按钮同款 saving 禁用（6.3 观察项，2026-10-17 所有者拍板补齐）：
+              保存中点取消＝弹窗关闭后台照常落库，与 Esc／遮罩屏蔽同款语义 */}
+          <button type="button" className="st-btn st-btn-sm" disabled={saving} onClick={onClose}>
             取消
           </button>
           <button

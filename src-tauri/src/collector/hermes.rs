@@ -244,6 +244,9 @@ impl AgentAdapter for HermesAdapter {
         // 90 天窗口（毫秒水位换算为库内 REAL 秒口径）
         let cutoff_sec = (now_ms() - RANGE_CUTOFF_MS) as f64 / 1000.0;
         let mut out: Vec<SessionInfo> = vec![];
+        // 行级映射失败计数（第七轮 6.7b 举一反三）：会话行与用量行同款防御，
+        // 列型漂移此前被 filter_map 静默吞掉零留痕（openclaw 会话行同范式）
+        let mut err_rows = 0usize;
         for (tag, db) in &dbs {
             let Some(conn) = open_db(db) else { continue };
             let mut stmt = match conn.prepare(
@@ -280,9 +283,17 @@ impl AgentAdapter for HermesAdapter {
                 })
             });
             let Ok(rows) = rows else { continue };
-            for row in rows.filter_map(|x| x.ok()) {
-                out.push(row);
+            for row in rows {
+                match row {
+                    Ok(r) => out.push(r),
+                    Err(_) => err_rows += 1,
+                }
             }
+        }
+        // 行级映射失败汇总（6.7b 举一反三）：持续出现即「上游 Schema 漂移」的
+        // 排障线索，正常轮零输出零噪音
+        if err_rows > 0 {
+            log::debug!("[hermes] 会话列表 {err_rows} 行映射失败已跳过（schema 漂移？）");
         }
         // 跨库混排：按最近活动降序，全局截断 100（与单库口径一致）
         out.sort_by(|a, b| b.last_seen_at.cmp(&a.last_seen_at));
@@ -310,6 +321,9 @@ impl AgentAdapter for HermesAdapter {
         let since_sec = since_ms as f64 / 1000.0;
         let cutoff_sec = (now_ms() - RANGE_CUTOFF_MS) as f64 / 1000.0;
         let mut rows: Vec<UsageRow> = vec![];
+        // 行级映射失败计数（2026-10-17 审查 6.7b）：列型漂移等 Schema 变更此前被
+        // filter_map 静默吞掉零留痕，该家用量整通道静默归零（goose err_rows 同款范式）
+        let mut err_rows = 0usize;
         for (tag, db) in &dbs {
             let Some(conn) = open_db(db) else { continue };
             let mut stmt = match conn.prepare(
@@ -350,7 +364,7 @@ impl AgentAdapter for HermesAdapter {
                 continue;
             };
             let mut max_seen_ms = 0i64;
-            for data in rows_iter.filter_map(|x| x.ok()) {
+            for data in rows_iter {
                 let (
                     session_id,
                     model,
@@ -364,7 +378,13 @@ impl AgentAdapter for HermesAdapter {
                     cache_write,
                     reasoning,
                     last_seen,
-                ) = data;
+                ) = match data {
+                    Ok(v) => v,
+                    Err(_) => {
+                        err_rows += 1;
+                        continue;
+                    }
+                };
                 let ts = last_seen.map(sec_to_ms).unwrap_or(0);
                 if ts > max_seen_ms {
                     max_seen_ms = ts;
@@ -414,6 +434,11 @@ impl AgentAdapter for HermesAdapter {
                 // 的 min(now) 钳制同款防线，此处钳制不超过当前时刻
                 *self.lock_last_seen_watermark() = max_seen_ms.min(now_ms());
             }
+        }
+        // 行级映射失败汇总（6.7b）：持续出现即「上游 Schema 漂移」的排障线索，
+        // 正常轮零输出零噪音
+        if err_rows > 0 {
+            log::debug!("[hermes] 本轮 {err_rows} 行映射失败被跳过（schema 漂移？）");
         }
         let result = CollectOutput::default().with_rows(rows);
         *self.lock_collect_cache() = Some(result.clone());

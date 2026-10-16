@@ -298,3 +298,20 @@
 .tm-item-danger:hover .tm-item-ico {
   color: var(--danger);
 }
+
+/* 弹出残留冻结（实机反馈）：纯 CSS :hover 是 Chromium 内部命中状态，跨窗口
+   显隐残留（重开托盘时上次点击项仍带选中态）且无前端手段可重置——
+   pointer-events 变更不触发 hover 重算（实测无效）。改为弹出瞬间根挂 .tm-fresh
+   以更高优先级覆盖悬停视觉（transparent/inherit 恰为三处常态值），首个真实
+   mousemove 摘除 fresh——该次 mousemove 同时驱动 Chromium 重算 hover 到鼠标
+   真实位置，视觉无缝衔接 */
+.tm-fresh .tm-item:hover,
+.tm-fresh .tm-quota-item:hover,
+.tm-fresh .tm-head-quota-link:hover {
+  background: transparent;
+}
+
+.tm-fresh .tm-item-danger:hover,
+.tm-fresh .tm-item-danger:hover .tm-item-ico {
+  color: inherit;
+}

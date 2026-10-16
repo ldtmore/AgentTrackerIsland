@@ -341,6 +341,9 @@ impl AgentAdapter for OpenClawAdapter {
         }
         let cutoff = now_ms() - RANGE_CUTOFF_MS;
         let mut out: Vec<SessionInfo> = vec![];
+        // 行级映射失败计数（2026-10-17 审查 6.7b）：filter_map 静默吞错的防御，
+        // 与 collect_usage 的 err_rows 同款留痕范式
+        let mut err_rows = 0usize;
         for (agent_id, db) in &dbs {
             let Some(conn) = open_db(db) else { continue };
             let mut stmt = match conn.prepare(
@@ -375,9 +378,16 @@ impl AgentAdapter for OpenClawAdapter {
                 })
             });
             let Ok(rows) = rows else { continue };
-            for row in rows.filter_map(|x| x.ok()) {
-                out.push(row);
+            for row in rows {
+                match row {
+                    Ok(r) => out.push(r),
+                    Err(_) => err_rows += 1,
+                }
             }
+        }
+        // 行级映射失败汇总（6.7b）：持续出现即「上游 Schema 漂移」的排障线索
+        if err_rows > 0 {
+            log::debug!("[openclaw] 会话列表 {err_rows} 行映射失败已跳过（schema 漂移？）");
         }
         // 跨库混排：按最近活动降序，全局截断 100（与单库口径一致）
         out.sort_by(|a, b| b.last_seen_at.cmp(&a.last_seen_at));
@@ -417,13 +427,17 @@ impl AgentAdapter for OpenClawAdapter {
                     continue;
                 }
             };
-            let windows: Vec<(String, String)> = stmt
-                .query_map(
-                    rusqlite::params![window_watermark, cutoff, ACTIVE_WINDOW_LIMIT],
-                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-                )?
-                .filter_map(|x| x.ok())
-                .collect();
+            // 窗口行映射失败并入 err_rows 计数（6.7b，汇总走既有采集尾日志）
+            let mut windows: Vec<(String, String)> = vec![];
+            for x in stmt.query_map(
+                rusqlite::params![window_watermark, cutoff, ACTIVE_WINDOW_LIMIT],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )? {
+                match x {
+                    Ok(w) => windows.push(w),
+                    Err(_) => err_rows += 1,
+                }
+            }
             // 事件语句每库 prepare 一次循环复用（2026-10-03 审查优化）：SQL 文本
             // 恒定，原先窗口循环内逐窗 prepare（上限 200 次/轮，含执行计划编译）
             let mut ev = match conn.prepare(
@@ -441,21 +455,26 @@ impl AgentAdapter for OpenClawAdapter {
             };
             for (window_id, session_key) in windows {
                 let seq_wm = self.lock_seq_watermarks().get(&window_id).copied().unwrap_or(0);
-                let events: Vec<(i64, i64, Option<String>, Option<Vec<u8>>, Option<i64>)> = ev
-                    .query_map(
-                        rusqlite::params![window_id, seq_wm, WINDOW_EVENT_LIMIT],
-                        |r| {
-                            Ok((
-                                r.get::<_, i64>(0)?,
-                                r.get::<_, i64>(1)?,
-                                r.get::<_, Option<String>>(2)?,
-                                r.get::<_, Option<Vec<u8>>>(3)?,
-                                r.get::<_, Option<i64>>(4)?,
-                            ))
-                        },
-                    )?
-                    .filter_map(|x| x.ok())
-                    .collect();
+                // 事件行映射失败并入 err_rows 计数（6.7b，汇总走既有采集尾日志）
+                let mut events: Vec<(i64, i64, Option<String>, Option<Vec<u8>>, Option<i64>)> =
+                    vec![];
+                for x in ev.query_map(
+                    rusqlite::params![window_id, seq_wm, WINDOW_EVENT_LIMIT],
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, Option<String>>(2)?,
+                            r.get::<_, Option<Vec<u8>>>(3)?,
+                            r.get::<_, Option<i64>>(4)?,
+                        ))
+                    },
+                )? {
+                    match x {
+                        Ok(e) => events.push(e),
+                        Err(_) => err_rows += 1,
+                    }
+                }
                 let mut max_seq = seq_wm;
                 for (seq, created_at, event_json, event_zstd, raw_bytes) in events {
                     max_seq = max_seq.max(seq);

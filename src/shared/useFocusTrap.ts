@@ -31,7 +31,11 @@ export function useFocusTrap(
       root.querySelector<HTMLElement>(FOCUSABLE);
     first?.focus();
 
-    // Tab 循环：容器首尾环绕（Shift+Tab 反向）
+    // Tab 循环：容器首尾环绕（Shift+Tab 反向）。监听挂 document 捕获阶段
+    // （2026-10-17 审查 6.1）：挂 root 上的 keydown 只在焦点路径经过 root 时
+    // 触发——点击弹窗内非可聚焦区域（标题/hint）后焦点被收拢到 body，事件
+    // 从 body 派发不再经过 root，Tab 直达遮罩背后的页面（aria-modal 失效）。
+    // 捕获阶段兜住全部按键；焦点在容器外时一律拉回（下方 !root.contains 分支）
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Tab") return;
       const items = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
@@ -53,9 +57,10 @@ export function useFocusTrap(
         }
       }
     };
-    root.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, true);
     return () => {
-      root.removeEventListener("keydown", onKeyDown);
+      // 移除必须带同款捕获标记，否则监听摘不掉
+      document.removeEventListener("keydown", onKeyDown, true);
       // 关闭归焦（元素仍在文档中才有效；卸载场景静默失败可接受）
       if (prevActive && document.contains(prevActive)) prevActive.focus();
     };

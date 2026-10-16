@@ -68,12 +68,18 @@ fn now_ms() -> i64 {
 }
 
 /// 按设置周期清理过期数据（0=永不；未设置默认保留 1 年）。启动时主线程与
-/// 本线程每日节拍共用同一实现，返回删除条数（调用方自行留痕）
+/// 本线程每日节拍共用同一实现，返回删除条数（调用方自行留痕）。
+/// 超档归一（2026-10-17 审查 6.2，所有者拍板）：09-17 档位收编（9→7 档）后
+/// 库里旧值（2 年=730／3 年=1095）此前原样执行，与前端显示回落（「12 个月」）
+/// 不符——超最大档的正数一律按当前最大档 365 执行；项目无存量用户，不做迁移
 pub(crate) fn run_scheduled_cleanup(store: &Store) -> u64 {
     let cleanup_days = store
         .get_setting("cleanup_days")
         .and_then(|v| v.parse::<i64>().ok())
+        .map(|d| d.min(365)) // 超过最大档（12 个月）归一到 365
         .unwrap_or(365);
+    // 0/负数（旧「永不清理」档）保持原语义：归一只针对超出最大档的正数，
+    // 避免把「永不」误转成「1 年后清」造成数据损失
     if cleanup_days <= 0 {
         return 0;
     }
@@ -267,5 +273,76 @@ mod tests {
         assert_eq!(provider_sig(&a), provider_sig(&b), "顺序无关");
         let c = vec![mk("a", 1), mk("b", 3)];
         assert_ne!(provider_sig(&a), provider_sig(&c), "updated_at 变化可感知");
+    }
+
+    /// 临时库路径（对齐 store::tests::tmp_db 形态）
+    fn tmp_db(tag: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("at-test-{tag}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    /// 最小用量行（只为灌库测清理；形态对齐 store::tests::sample_usage）
+    fn sample_usage(ts: i64) -> crate::store::UsageRow {
+        crate::store::UsageRow {
+            session_id: "zcode:abc".into(),
+            agent: "zcode".into(),
+            model: "glm-5.3".into(),
+            provider: Some("glm".into()),
+            ts,
+            input_tokens: Some(1000),
+            output_tokens: Some(200),
+            reasoning_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            duration_ms: None,
+            ttft_ms: None,
+            error_type: None,
+            source_id: Some(format!("test:{ts}")),
+            is_background: false,
+        }
+    }
+
+    /// 保留档位归一（2026-10-17 审查 6.2，所有者拍板）：库旧值 730/1095 超当前
+    /// 最大档，按 365 执行（修复前按 730 原样执行，400 天前的行不删）；0（旧
+    /// 「永不清理」档）保持不清除；未设置默认 365。同一库两段顺序执行覆盖
+    /// 「归一」与「未超档不受 min 影响」两个面
+    #[test]
+    fn test_cleanup_days_normalization() {
+        let day = 86_400_000i64;
+        let now = now_ms();
+        let path = tmp_db("cleanup-norm");
+        let store = Store::open(&path).unwrap();
+        // ① 730 归一为 365：400 天前的行被删、100 天前的保留——修复前按 730
+        //    执行时 400 天前 < 730 天，两行全留（断言失败）
+        store.set_setting("cleanup_days", "730");
+        store
+            .insert_usage(&[sample_usage(now - 400 * day), sample_usage(now - 100 * day)])
+            .unwrap();
+        assert_eq!(
+            run_scheduled_cleanup(&store),
+            1,
+            "730 旧值应归一为 365 执行：只删 400 天前的行"
+        );
+        // ② 未超档不受归一影响：改 30 天档，剩余的 100 天前行也该删
+        store.set_setting("cleanup_days", "30");
+        assert_eq!(run_scheduled_cleanup(&store), 1, "30 天档正常执行，不归一");
+        let _ = std::fs::remove_file(&path);
+
+        // ③ 0（旧「永不清理」档）保持原语义：不清除
+        let path = tmp_db("cleanup-keep0");
+        let store = Store::open(&path).unwrap();
+        store.set_setting("cleanup_days", "0");
+        store.insert_usage(&[sample_usage(now - 400 * day)]).unwrap();
+        assert_eq!(run_scheduled_cleanup(&store), 0, "0=永不清理不得被归一改写");
+        let _ = std::fs::remove_file(&path);
+
+        // ④ 未设置默认 365
+        let path = tmp_db("cleanup-default");
+        let store = Store::open(&path).unwrap();
+        store.insert_usage(&[sample_usage(now - 400 * day)]).unwrap();
+        assert_eq!(run_scheduled_cleanup(&store), 1, "未设置默认 365 天保留期");
+        let _ = std::fs::remove_file(&path);
     }
 }

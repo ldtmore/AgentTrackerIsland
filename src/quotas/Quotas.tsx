@@ -446,7 +446,8 @@ function QuotaCard({
 function goSettings(onFail?: (e: unknown) => void) {
   openWindow("show_settings_window").catch((e) => onFail?.(e));
   emit("goto-quota-section").catch(() => {});
-  sendDeepLink("goto-quota-section");
+  // 目标已存在时不落条目（6.4 防陈旧消费）：设置窗开着时 emit 已必达
+  void sendDeepLink("goto-quota-section", "settings");
 }
 
 export default function Quotas() {

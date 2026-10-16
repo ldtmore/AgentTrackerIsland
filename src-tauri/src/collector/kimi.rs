@@ -216,8 +216,10 @@ impl AgentAdapter for KimiCodeAdapter {
 
     /// 水位增量采集：解析 usage.record 行（字段 camelCase，见模块注释②③）。
     /// source_id 内容指纹 = "kr:{agentId}:{time}:{四项}"——wire 行无官方 id，
-    /// 同指纹（同毫秒同模型同用量）合并为一次调用，碰撞概率与误差均可忽略；
-    /// usageScope 按每请求一行假设全量入库（装机对账验证点，见 01-RESEARCH §11）
+    /// 同指纹合并为一次调用；单轮去重键带会话维度（第七轮 6.7a 举一反三），
+    /// 合并域收窄到会话内（跨会话同指纹不再互吞，旧「碰撞可忽略」判断未覆盖
+    /// 0 用量行不过滤的场景）；usageScope 按每请求一行假设全量入库
+    /// （装机对账验证点，见 01-RESEARCH §11）
     fn collect_usage(&self, watermark_ts: i64) -> anyhow::Result<CollectOutput> {
         let mut dedup: HashMap<String, UsageRow> = HashMap::new();
         let (mut err_open, mut bad_lines) = (0usize, 0usize);
@@ -288,8 +290,14 @@ impl AgentAdapter for KimiCodeAdapter {
                     source_id: Some(source_id.clone()),
                     is_background: false,
                 };
-                // 同指纹重复行（增量回退重读）：保留即可（值相同）
-                dedup.entry(source_id).or_insert(row);
+                // 同指纹重复行（增量回退重读）：保留即可（值相同）。
+                // 去重键带会话维度（第七轮 6.7a 举一反三）：指纹不含会话，跨会话
+                // 同毫秒同用量（0 用量行不过滤）会被 or_insert 静默吞行——单轮
+                // 去重键与自库幂等键 (agent, session_id, source_id) 对称。模块头
+                // 「碰撞可忽略」的旧判断未覆盖 0 用量行，随该纪律一并收口；
+                // 同会话内重读去重语义不变
+                let key = format!("{}:{}", row.session_id, source_id);
+                dedup.entry(key).or_insert(row);
             }
         }
         if err_open + bad_lines > 0 {
@@ -588,6 +596,27 @@ mod tests {
 
         // 水位：远未来 → 空
         assert!(ad.collect_usage(1_800_000_000_000_000).unwrap().rows.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 去重键带会话维度（第七轮 6.7a 举一反三）：内容指纹不含会话，跨会话同毫秒
+    /// 同用量（0 用量行不过滤）此前被 or_insert 静默吞行——键拼 session_id 后
+    /// 两行都保留，同会话内重复行去重语义不变。还原旧键（dedup.entry(source_id)）
+    /// 本用例失败（合并为 1 行）
+    #[test]
+    fn test_dedup_key_has_session_dimension() {
+        let dir = tmp_dir("dedupkey");
+        // 两个会话各一条 usage.record：同毫秒、同 agentId、四项用量完全相同
+        let wire = r#"{"type":"usage.record","time":1789965601000,"agentId":"main","model":"kimi-k2-0905-preview","usage":{"inputOther":120,"output":45,"inputCacheRead":300,"inputCacheCreation":8}}"#.to_string();
+        make_session(&dir, "sess-dk-a", "会话甲", "F:/Demo/a", &[wire.clone()]);
+        make_session(&dir, "sess-dk-b", "会话乙", "F:/Demo/b", &[wire]);
+
+        let ad = KimiCodeAdapter::with_root(dir.clone());
+        let out = ad.collect_usage(0).unwrap();
+        assert_eq!(out.rows.len(), 2, "跨会话同指纹行必须都保留（修复前被合并为 1 行）");
+        let mut sids: Vec<&str> = out.rows.iter().map(|r| r.session_id.as_str()).collect();
+        sids.sort();
+        assert_eq!(sids, ["kimi-code:sess-dk-a", "kimi-code:sess-dk-b"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

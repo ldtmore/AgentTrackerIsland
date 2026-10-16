@@ -110,6 +110,9 @@ export default function TrayMenu() {
   const [islandVisible, setIslandVisible] = useState(true);
   // 每次托盘弹出自增：作为 key 重挂整棵树，重放 CSS 入场动画
   const [openSeq, setOpenSeq] = useState(0);
+  // 弹出残留冻结（true＝悬停样式被 traymenu.css 尾部 .tm-fresh 规则覆盖）：
+  // 首个真实 mousemove 摘除，机制见 unShow 处理器与 css 注释
+  const [fresh, setFresh] = useState(false);
   // 额度警示阈值（与岛同源，缺省/清洗收敛 shared/types——四轮审查前此处
   // 手写 80/95/10/5 且无 warn<danger 交叉校验；归一告急判定用）
   const [thresholds, setThresholds] = useState<Thresholds>(DEFAULT_THRESHOLDS);
@@ -129,10 +132,19 @@ export default function TrayMenu() {
     const unShow = listen<{ island_visible: boolean }>("tray-menu-show", (e) => {
       setIslandVisible(e.payload.island_visible);
       setOpenSeq((n) => n + 1);
+      // 弹出残留冻结（实机反馈）：Chromium 的 :hover 命中状态跨窗口显隐残留
+      // （重开时上次点击项仍带选中态）且无前端手段可重置——挂 .tm-fresh 覆盖
+      // 悬停视觉（css 尾部规则），首个真实 mousemove 摘除并同步重算悬停位置
+      setFresh(true);
     });
+    // 首个 mousemove 摘除冻结：该事件本身即驱动 Chromium 把内部 hover 重算到
+    // 鼠标真实位置，视觉无缝衔接；持续监听下同值 setState 被 React 跳过，无开销
+    const unMove = () => setFresh(false);
+    document.addEventListener("mousemove", unMove);
     return () => {
       unSnap.then((f) => f());
       unShow.then((f) => f());
+      document.removeEventListener("mousemove", unMove);
     };
   }, []);
 
@@ -241,7 +253,7 @@ export default function TrayMenu() {
     quotaPct != null ? quotaLevel(quotaPct, thresholds.warn, thresholds.danger) : "normal";
 
   return (
-    <div className="tm-root" key={openSeq} ref={rootRef} onClick={onRootClick}>
+    <div className={`tm-root${fresh ? " tm-fresh" : ""}`} key={openSeq} ref={rootRef} onClick={onRootClick}>
       <div className="tm-panel">
         {/* 信息头：三行各说一件事——状态分布 / 今日消耗 / 最紧张额度，零重复；
             degraded 时诚实降级提示 */}
@@ -340,8 +352,9 @@ export default function TrayMenu() {
                   title="点击打开额度窗口并定位到该实例"
                   onClick={() => {
                     emit("goto-quota-account", { accountId: a.id }).catch(() => {});
-                    // 懒创建兜底（2026-10-16）：额度窗口未挂载时 emit 无人接收
-                    sendDeepLink("goto-quota-account", { accountId: a.id });
+                    // 懒创建兜底（2026-10-16）：额度窗口未挂载时 emit 无人接收；
+                    // 目标已存在时不落条目（6.4 防陈旧消费）
+                    void sendDeepLink("goto-quota-account", "quotas", { accountId: a.id });
                     act("quotas");
                   }}
                 >

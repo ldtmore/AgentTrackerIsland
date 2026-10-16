@@ -635,9 +635,13 @@ impl AgentAdapter for ClaudeCodeAdapter {
                     source_id: Some(source_id),
                     is_background: false,
                 };
-                // 同源消息多行（流式复制快照）：保留用量快照最大者（与文件遍历顺序无关）
+                // 同源消息多行（流式复制快照）：保留用量快照最大者（与文件遍历顺序无关）。
+                // 去重键带会话维度（2026-10-17 审查 6.7a）：与自库幂等键
+                // (agent, session_id, source_id) 同构——腾讯系形态 message.id 缺失时
+                // 回退行级 j.id 作 source_id，若该 id 仅会话内唯一，同 tick 多会话
+                // 活跃时跨会话同 id 行会被 keep-max 合并、其中一行静默丢弃（漏计）
                 let total = row_total(&row);
-                let key = row.source_id.clone().unwrap_or_default();
+                let key = format!("{}:{}", row.session_id, row.source_id.clone().unwrap_or_default());
                 dedup.entry(key)
                     .and_modify(|old| {
                         if total > row_total(old) {
@@ -927,6 +931,35 @@ mod tests {
         assert!(rows2.is_empty());
         // 但注意：该临时文件 mtime 是"现在"，> 大水位？不——水位比较用文件 mtime <= watermark 跳过，
         // 1.8e15 是远未来，mtime（现在）< 水位 → 文件被跳过，结果一致为空，验证文件级过滤也生效
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 去重键带会话维度（2026-10-17 审查 6.7a）：腾讯系形态 message.id 缺失时
+    /// 回退行级顶层 "id" 作 source_id，若该 id 仅会话内唯一，同 tick 多会话活跃
+    /// 时旧实现（去重键只含 source_id）把跨会话同 id 行 keep-max 合并、静默丢行。
+    /// 键改 (session_id, source_id)（与自库幂等键同构）后两行都保留——修复前
+    /// 本用例只采到 1 行（失败），修复后 2 行
+    #[test]
+    fn test_dedup_key_has_session_dimension() {
+        let dir = std::env::temp_dir().join(format!("at-t4-dedupkey-{}", std::process::id()));
+        let proj = dir.join("F--dedupkey-test");
+        std::fs::create_dir_all(&proj).unwrap();
+        // 两个会话各一行：无 message.id、无 providerData.messageId → 回退行级
+        // 顶层 "id"（恒为 "row-1"，模拟仅会话内唯一的序号型行 id）
+        let mk = |sid: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-09-15T10:00:01.000Z","sessionId":"{sid}","id":"row-1","message":{{"model":"glm-5.3","usage":{{"input_tokens":100,"output_tokens":50}}}}}}"#
+            )
+        };
+        std::fs::write(proj.join("sess-dk-a.jsonl"), mk("sess-dk-a")).unwrap();
+        std::fs::write(proj.join("sess-dk-b.jsonl"), mk("sess-dk-b")).unwrap();
+
+        let ad = ClaudeCodeAdapter::with_root(dir.clone());
+        let rows = ad.collect_usage(0).unwrap().rows;
+        assert_eq!(rows.len(), 2, "跨会话同 id 行必须都保留（修复前被合并为 1 行）");
+        let mut sids: Vec<&str> = rows.iter().map(|r| r.session_id.as_str()).collect();
+        sids.sort();
+        assert_eq!(sids, ["claude-code:sess-dk-a", "claude-code:sess-dk-b"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

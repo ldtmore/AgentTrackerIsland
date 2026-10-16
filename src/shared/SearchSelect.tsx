@@ -7,7 +7,7 @@
  * 2026-10-03 审查补充：listbox 语义＋方向键导航（↑↓ 移动高亮、Enter 选中高亮项、
  * Esc 关闭）——此前只有鼠标可操作选项行
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ChevronIcon } from "./icons";
 import "./searchselect.css";
 
@@ -38,6 +38,9 @@ export default function SearchSelect({
   /** 键盘高亮行（0=「全部」，1..n=filtered 项；-1=无高亮） */
   const [hi, setHi] = useState(-1);
   const ref = useRef<HTMLDivElement>(null);
+  // listbox 的 DOM id（useId 保证同页多实例不撞——报表页同时挂四个筛选）：
+  // 方向键高亮行经 aria-activedescendant 暴露给读屏（2026-10-17 审查 6.5）
+  const listId = useId();
 
   // 点击组件外部关闭浮层
   useEffect(() => {
@@ -126,6 +129,10 @@ export default function SearchSelect({
             autoFocus
             value={q}
             placeholder="输入关键字过滤…"
+            role="combobox"
+            aria-controls={listId}
+            aria-expanded={open}
+            aria-activedescendant={hi >= 0 ? `${listId}-opt-${hi}` : undefined}
             onChange={(e) => {
               setQ(e.target.value);
               setHi(-1); // 过滤变化重置高亮
@@ -147,10 +154,11 @@ export default function SearchSelect({
               }
             }}
           />
-          <div className="sel-list" role="listbox">
+          <div className="sel-list" role="listbox" id={listId}>
             <div
               className={`sel-opt${(multi ? values == null : value == null) ? " on" : ""}${hi === 0 ? " hi" : ""}`}
               role="option"
+              id={`${listId}-opt-0`}
               aria-selected={multi ? values == null : value == null}
               onMouseEnter={() => setHi(0)}
               onClick={() => pick(0)}
@@ -164,6 +172,7 @@ export default function SearchSelect({
                   key={o.value}
                   className={`sel-opt${on ? " on" : ""}${hi === i + 1 ? " hi" : ""}`}
                   role="option"
+                  id={`${listId}-opt-${i + 1}`}
                   aria-selected={on}
                   title={o.value}
                   onMouseEnter={() => setHi(i + 1)}

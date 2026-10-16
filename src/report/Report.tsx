@@ -1322,6 +1322,7 @@ export default function Report() {
               <button
                 key={r.key}
                 className={`rp-btn${range === r.key ? " active" : ""}`}
+                aria-pressed={range === r.key}
                 onClick={() => setRange(r.key)}
               >
                 {r.label}

@@ -241,6 +241,9 @@ impl AgentAdapter for CopilotAdapter {
         // 90 天窗口：TEXT 字典序可比，直接用同构字符串作下界
         let cutoff = ms_to_sql_datetime(now_ms() - RANGE_CUTOFF_MS);
         let mut out: Vec<SessionInfo> = vec![];
+        // 行级映射失败计数（第七轮 6.7b 举一反三）：会话行与用量行同款防御，
+        // 列型漂移此前被 filter_map 静默吞掉零留痕（openclaw 会话行同范式）
+        let mut err_rows = 0usize;
         for (tag, db) in &dbs {
             let Some(conn) = open_db(db) else { continue };
             let mut stmt = match conn.prepare(
@@ -267,7 +270,14 @@ impl AgentAdapter for CopilotAdapter {
                 Ok((id, summary, cwd, created, updated))
             });
             let Ok(rows) = rows else { continue };
-            for (id, summary, cwd, created, updated) in rows.filter_map(|x| x.ok()) {
+            for row in rows {
+                let (id, summary, cwd, created, updated) = match row {
+                    Ok(v) => v,
+                    Err(_) => {
+                        err_rows += 1;
+                        continue;
+                    }
+                };
                 // 时间列解析失败（异常值）按 0 处理：会话仍可见但不参与时效排序
                 let first_seen_ms = parse_sql_datetime(&created).unwrap_or(0);
                 let last_seen_ms = parse_sql_datetime(&updated)
@@ -288,6 +298,11 @@ impl AgentAdapter for CopilotAdapter {
                     last_usage_at: Some(last_seen_ms),
                 });
             }
+        }
+        // 行级映射失败汇总（6.7b 举一反三）：持续出现即「上游 Schema 漂移」的
+        // 排障线索，正常轮零输出零噪音
+        if err_rows > 0 {
+            log::debug!("[copilot] 会话列表 {err_rows} 行映射失败已跳过（schema 漂移？）");
         }
         // 跨库混排：按最近活动降序，全局截断 100（与单库口径一致）
         out.sort_by(|a, b| b.last_seen_at.cmp(&a.last_seen_at));
@@ -316,6 +331,9 @@ impl AgentAdapter for CopilotAdapter {
         // 时间解析失败计数（2026-10-16 审查）：跳过行为是既有口径（错账比漏账
         // 危害大），但 rowid 水位照常推进——格式漂移会让通道静默失明，必须留痕
         let mut bad_ts = 0usize;
+        // 行级映射失败计数（2026-10-17 审查 6.7b）：列型漂移等 Schema 变更此前被
+        // filter_map 静默吞掉零留痕，该家用量整通道静默归零（goose err_rows 同款范式）
+        let mut err_rows = 0usize;
         for (tag, db) in &dbs {
             let Some(conn) = open_db(db) else { continue };
             let row_watermark = *self.lock_row_watermarks().get(tag).unwrap_or(&0);
@@ -354,7 +372,7 @@ impl AgentAdapter for CopilotAdapter {
                 continue;
             };
             let mut max_row_id = row_watermark;
-            for data in rows_iter.filter_map(|x| x.ok()) {
+            for data in rows_iter {
                 let (
                     row_id,
                     session_id,
@@ -368,7 +386,13 @@ impl AgentAdapter for CopilotAdapter {
                     ttft_ms,
                     initiator,
                     created_at,
-                ) = data;
+                ) = match data {
+                    Ok(v) => v,
+                    Err(_) => {
+                        err_rows += 1;
+                        continue;
+                    }
+                };
                 if row_id > max_row_id {
                     max_row_id = row_id;
                 }
@@ -412,6 +436,11 @@ impl AgentAdapter for CopilotAdapter {
             if bad_ts > 0 {
                 log::debug!("[copilot] {tag} 本轮 {bad_ts} 行 created_at 解析失败被跳过（格式漂移？）");
             }
+        }
+        // 行级映射失败汇总（6.7b）：持续出现即「上游 Schema 漂移」的排障线索；
+        // 放库循环外按全轮累计输出，正常轮零输出零噪音
+        if err_rows > 0 {
+            log::debug!("[copilot] 本轮 {err_rows} 行映射失败被跳过（schema 漂移？）");
         }
         let result = CollectOutput::default().with_rows(rows);
         *self.lock_collect_cache() = Some(result.clone());

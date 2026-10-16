@@ -402,12 +402,11 @@ pub fn run() {
                 let store2 = store.clone();
                 std::thread::spawn(move || {
                     let removed = provider::worker::run_scheduled_cleanup(&store2);
+                    // 不展示保留天数（第七轮 6.2 举一反三）：超档旧值经
+                    // run_scheduled_cleanup 归一执行，此处 parse 原始值会与实际
+                    // 口径不符（旧值 730 实按 365 删）；文案对齐 worker 每日节拍
                     if removed > 0 {
-                        let cleanup_days = store2
-                            .get_setting("cleanup_days")
-                            .and_then(|v| v.parse::<i64>().ok())
-                            .unwrap_or(365);
-                        log::info!("启动清理：按保留 {cleanup_days} 天删除 {removed} 条过期数据");
+                        log::info!("启动清理：删除 {removed} 条过期数据");
                     }
                 });
             }
