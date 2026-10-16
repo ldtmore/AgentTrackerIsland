@@ -183,6 +183,18 @@ export const AGENT_COLORS: Record<string, string> = Object.fromEntries(
   AGENT_DEFS.map((a) => [a.id, a.color]),
 );
 
+// ===== 适配器补注册（#3.9 颜色一致性排查修复）=====
+// 不进 AGENT_DEFS 的合法采集器（kimi-code／qwen-code／aider——设置页勾选卡
+// 零 UI 变化）：此前走散列兜底，实算 aider 散列色恰与 Codex 身份色全等
+//（#38bdf8），贴边分段条纯色块相邻融段、被误读为单个 Agent。改为确定性
+// 注册——与现有 8 家默认色 RGB 距 ≥85、三家互距 ≥189，双主题对底色
+// WCAG 对比度 3.05~5.57 全部高于图形 3:1（消费面含浅色主题徽章/堆叠段）
+Object.assign(AGENT_COLORS, {
+  "kimi-code": "#16a34a",
+  "qwen-code": "#8b5cf6",
+  aider: "#b45309",
+});
+
 /** 用户自定义色注册表（运行时由 App 从设置注入；颜色 = 身份，状态用亮度/动效表达） */
 let currentColors: Record<string, string> = {};
 
@@ -190,14 +202,45 @@ export function setAgentColors(colors: Record<string, string>) {
   currentColors = colors;
 }
 
-const FALLBACK_COLORS = ["#a78bfa", "#38bdf8", "#f472b6", "#facc15", "#4ade80", "#fb7185"];
+// 散列调色板 12 色（#3.8 多模型撞色修复扩板，原 6 色）：前 6 色保持原序——
+// 既有标签颜色不变；追加 6 色取色相空档（橙/青绿/靛蓝/亮绿/洋红/蓝），双主题
+// 对底色（#141418／#f5f6f8）对比度实算 4.62~12.19:1，全部高于 WCAG 图形 3:1
+const FALLBACK_COLORS = [
+  "#a78bfa",
+  "#38bdf8",
+  "#f472b6",
+  "#facc15",
+  "#4ade80",
+  "#fb7185",
+  "#fb923c",
+  "#2dd4bf",
+  "#818cf8",
+  "#a3e635",
+  "#e879f9",
+  "#60a5fa",
+];
 // 浅色档（五轮审查实算修正）：深色高饱和值在浅底 #f5f6f8 上 1.11~1.98:1，
 // 低于 WCAG 图形 3:1（#facc15 仅 1.11 近隐形）——与 Report seriesColors
 // 双主题分档同一先例。agentColor 的兜底仍走深色档：其消费面是徽章/贴边分段
-// （badgeLuminance 黑白双算＋近黑底件），深色档在那里对比充足
-const FALLBACK_COLORS_LIGHT = ["#7c3aed", "#0284c7", "#be185d", "#b45309", "#047857", "#be123c"];
+// （badgeLuminance 黑白双算＋近黑底件），深色档在那里对比充足。
+// 后 6 色为 #3.8 扩板追加（与深色档新增色一一对应同色相）
+const FALLBACK_COLORS_LIGHT = [
+  "#7c3aed",
+  "#0284c7",
+  "#be185d",
+  "#b45309",
+  "#047857",
+  "#be123c",
+  "#c2410c",
+  "#0f766e",
+  "#4338ca",
+  "#4d7c0f",
+  "#a21caf",
+  "#1d4ed8",
+];
 
-/** 取 Agent 身份色：用户自定义 → 默认表 → 未知 Agent 按名字散列稳定分配 */
+/** 取 Agent 身份色：用户自定义 → 默认表（含适配器补注册，见 AGENT_COLORS
+ *  追加段注释）→ 未注册 id 按名字散列稳定分配 */
 export function agentColor(agent: string): string {
   const custom = currentColors[agent];
   if (custom) return custom;
@@ -222,6 +265,47 @@ export function hashColor(label: string, theme: "dark" | "light" = "dark"): stri
   for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) >>> 0;
   const palette = theme === "light" ? FALLBACK_COLORS_LIGHT : FALLBACK_COLORS;
   return palette[h % palette.length];
+}
+
+/** 按稳定序给一组标签贪心分配互不重复的颜色计划（#3.8 多模型撞色修复）：
+ *  首选色按名字散列，被计划内先到的标签占用则从下一格顺延找空位——同图内
+ *  色板规模内绝不两两同色（原 hashColor 直取 h%N，多模型场景 6 色下 3 个
+ *  模型就有 44% 概率撞色）。输入序必须稳定（消费方约定传 snap.options.*
+ *  全集序：筛选不改变全集）——同集合同序 ⇒ 同计划，堆叠图与维度条共用同一
+ *  份计划即可保证同一标签跨视图同色、跨筛选稳定；标签数超过色板规模时
+ *  超出者回退各自首选色（复用不可避免，退化为直取散列） */
+export function hashColorPlan(
+  labels: string[],
+  theme: "dark" | "light" = "dark",
+): Map<string, string> {
+  const palette = theme === "light" ? FALLBACK_COLORS_LIGHT : FALLBACK_COLORS;
+  const plan = new Map<string, string>();
+  const used = new Set<string>();
+  for (const label of labels) {
+    let h = 0;
+    for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) >>> 0;
+    const first = h % palette.length;
+    // 从首选格起找第一个未被占用的颜色；全占（标签数超色板规模）回退首选色
+    let pick = -1;
+    for (let step = 0; step < palette.length; step++) {
+      const cand = (first + step) % palette.length;
+      if (!used.has(palette[cand])) {
+        pick = cand;
+        break;
+      }
+    }
+    if (pick < 0) pick = first;
+    plan.set(label, palette[pick]);
+    used.add(palette[pick]);
+  }
+  return plan;
+}
+
+/** 主题散列色板只读出口（#3.9 额度曲线近色避让消费）：需要「与图内已分配
+ *  色动态比对后顺延取色」的场景无法预建 plan，直接取板自行贪心；返回浅
+ *  拷贝防调用方改动共享板 */
+export function hashPalette(theme: "dark" | "light" = "dark"): string[] {
+  return [...(theme === "light" ? FALLBACK_COLORS_LIGHT : FALLBACK_COLORS)];
 }
 
 /** 会话状态 → 状态点 class 与中文标签 */

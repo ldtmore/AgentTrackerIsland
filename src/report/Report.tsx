@@ -28,7 +28,7 @@ import Toast, { type ToastData } from "../shared/Toast";
 import { openWindow } from "../shared/openWindow";
 import EmptyState from "../shared/EmptyState";
 import { ArrowIcon, ChevronIcon, InfoIcon, ReportIcon, WarnIcon } from "../shared/icons";
-import { fmtDTFull, fmtMs, fmtUsd, tail } from "../shared/format";
+import { fmtDTFull, fmtMs, fmtUsd, fmtUsdShort, tail } from "../shared/format";
 import {
   accountLabel,
   fmtTokens,
@@ -36,6 +36,9 @@ import {
   agentColor,
   agentColorKnown,
   hashColor,
+  hashColorPlan,
+  hashPalette,
+  instanceColor,
   errorReason,
   windowLabel,
   windowRank,
@@ -456,6 +459,7 @@ function DimBars({
   active,
   onToggle,
   colorFn,
+  colorPlan,
   hashTheme,
   fmt,
   fmtVal,
@@ -472,6 +476,10 @@ function DimBars({
   onToggle: (label: string) => void;
   /** 行颜色（缺省按名字散列稳定取色） */
   colorFn?: (label: string) => string;
+  /** 颜色计划（#3.8 撞色修复）：调用方按 options 全集序预构建的贪心分配
+   *  Map，命中则优先于散列直取——条目间互不重复且与堆叠图同色；
+   *  未传或标签不在计划内（如特殊口径段的临时标签）回退 hashColor */
+  colorPlan?: Map<string, string>;
   /** 哈希兜底色的主题档（五轮审查）：浅色主题必须传 "light"，否则浅底近隐形 */
   hashTheme: "dark" | "light";
   /** 标签显示转换（如项目路径→尾段；过滤值仍用原值） */
@@ -503,7 +511,7 @@ function DimBars({
     metric === "calls"
       ? it.calls.toLocaleString()
       : metric === "cost"
-        ? fmtUsd(it.cost)
+        ? fmtUsdShort(it.cost) // 缩写防溢出（#17）：全值由行悬浮提示承接
         : fmtVal
           ? fmtVal(it.total)
           : fmtTokens(it.total);
@@ -554,13 +562,15 @@ function DimBars({
                 {name}
               </span>
               <span className="rp-dim-track">
-                <span
-                  className="rp-dim-fill"
-                  style={{
-                    width: `${(metricOf(it) / max) * 100}%`,
-                    background: colorFn ? colorFn(it.label) : hashColor(it.label, hashTheme),
-                  }}
-                />
+              <span
+                className="rp-dim-fill"
+                style={{
+                  width: `${(metricOf(it) / max) * 100}%`,
+                  background: colorFn
+                    ? colorFn(it.label)
+                    : (colorPlan?.get(it.label) ?? hashColor(it.label, hashTheme)),
+                }}
+              />
               </span>
               <span className="rp-dim-val">{valText(it)}</span>
             </div>
@@ -605,6 +615,18 @@ export default function Report() {
   const [stackDim, setStackDim] = useState<"token" | "agent" | "model">("token");
   const [heatMetric, setHeatMetric] = useState<MetricKey>("token");
   const [dimMetric, setDimMetric] = useState<"token" | "calls" | "cost">("token");
+  // 维度条颜色计划（#3.8 多模型撞色修复）：项目/模型/供应商三维度按 options
+  // 全集稳定序贪心分配互不重复色（Agent 维度走身份色不参与；按模型首字延迟
+  // 段与「按模型」同口径共用 models 计划）；堆叠图按模型用同一 options.models
+  // 序 ⇒ 同一模型维度条与堆叠图同色，筛选不改变全集 ⇒ 跨筛选颜色稳定
+  const dimColorPlans = useMemo(
+    () => ({
+      projects: hashColorPlan(snap?.options.projects ?? [], theme),
+      models: hashColorPlan(snap?.options.models ?? [], theme),
+      providers: hashColorPlan(snap?.options.providers ?? [], theme),
+    }),
+    [snap, theme],
+  );
   // 手动刷新计数器（触发重拉）与「数据截至」时间戳（与 会话窗口 同一诚实模式）
   const [refreshTick, setRefreshTick] = useState(0);
   const [stamp, setStamp] = useState<string | null>(null);
@@ -833,11 +855,16 @@ export default function Report() {
     const t = snap?.trend ?? [];
     const byBucket = new Map(t.map((r) => [r.bucket, r]));
     let keys: string[];
+    // 今日档基准日（#16 跨零点全零柱修复）：以快照首桶日期为准（与「数据截至」
+    // 时点同口径）——后端 trend 桶升序，t[0] 即当日首桶；报表窗跨零点挂着不刷新
+    // 时渲染时刻已是次日，按渲染时刻生成 keys 会与昨天的桶全部 miss 出 24 根
+    // 全零柱（与同屏汇总卡仍显示的昨日累积值自相矛盾）。t 为空（真空态）回退今天
+    const pad2 = (n: number) => String(n).padStart(2, "0");
+    const now = new Date();
+    const fallbackDay = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
     if (range === "today") {
-      const d = new Date();
-      const p = (n: number) => String(n).padStart(2, "0");
-      const day = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-      keys = Array.from({ length: 24 }, (_, i) => `${day} ${p(i)}:00`);
+      const day = (t[0]?.bucket ?? "").slice(0, 10) || fallbackDay;
+      keys = Array.from({ length: 24 }, (_, i) => `${day} ${pad2(i)}:00`);
     } else {
       keys = t.map((r) => r.bucket);
     }
@@ -939,11 +966,27 @@ export default function Report() {
       for (const sl of slices) {
         idx.set(`${sl.bucket}\u{0}${sl.label}`, sl.total);
       }
-      // Agent 维度的「未知」系列也传主题（2026-10-16 审查）：agentColor 兜底
-      // 走深色档散列色——浅色主题下高饱和深色与同图其余浅色档系列失衡
-      //（types.ts 注释自认的遗留）；已知 Agent 仍优先身份色
+      // 每桶全量和（formatter 外预构建，避免每悬停重算）：ECharts axis 触发的
+      // params 只含未被图例隐藏的系列，逐项相加在隐藏「缓存读」等系列后会把
+      // 「合计」误读为可见项和——改从全量切片按桶求和，与数据口径恒一致
+      //（同四分类分支的既有口径，#13 合计虚低修复）
+      const bucketTotals = new Map<string, number>();
+      for (const sl of slices) {
+        bucketTotals.set(sl.bucket, (bucketTotals.get(sl.bucket) ?? 0) + sl.total);
+      }
+      // 颜色计划（#3.8 多模型撞色修复）：按 options 全集稳定序贪心分配互不
+      // 重复色——散列首选色被先到的系列占用则顺延空位；与维度条同源同序
+      //（options.models/agents）⇒ 同一标签两处同色。已知 Agent 仍优先身份色
+      //（用户/内置注册色不参与散列计划）；未知 Agent 传主题（2026-10-16 审查）：
+      // 浅色主题下不再深浅失衡
+      const plan = hashColorPlan(
+        stackDim === "agent" ? (snap?.options.agents ?? []) : (snap?.options.models ?? []),
+        theme,
+      );
       const colorOf = (l: string) =>
-        stackDim === "agent" && agentColorKnown(l) ? agentColor(l) : hashColor(l, theme);
+        stackDim === "agent" && agentColorKnown(l)
+          ? agentColor(l)
+          : (plan.get(l) ?? hashColor(l, theme));
       // 图例＝紧凑位（2026-09-30 名称口径统一）：Agent 维度走短名，替换旧裸 id
       const nameOf = (l: string) =>
         stackDim === "agent"
@@ -959,6 +1002,7 @@ export default function Report() {
           trigger: "axis",
           formatter: (params: unknown) => {
             const arr = (Array.isArray(params) ? params : [params]) as {
+              dataIndex: number;
               marker: string;
               seriesName: string;
               value: number;
@@ -968,7 +1012,10 @@ export default function Report() {
             const lines = arr
               .filter((p) => p.value > 0)
               .map((p) => `${p.marker}${p.seriesName}　${fmtTokens(p.value)}`);
-            const sum = arr.reduce((acc, p) => acc + (p.value || 0), 0);
+            // 合计按全量切片（#13 合计虚低修复）：params 只含未被图例隐藏的系列，
+            // 逐项相加在隐藏任一系列后会把「合计」误读为可见项和——从预构建的
+            // 每桶全量和取值，与四分类分支口径一致
+            const sum = bucketTotals.get(keys[arr[0].dataIndex]) ?? 0;
             return `${arr[0].axisValue}<br/>${lines.join("<br/>")}<br/>合计　${fmtTokens(sum)}`;
           },
         },
@@ -1091,35 +1138,87 @@ export default function Report() {
         axisLabel: { ...axisText, formatter: "{value}%" },
         splitLine: { lineStyle: { color: splitLine } },
       },
-      // 图例固定窗口序（5h → 7d，windowRank 与后端出库规范序同口径）：分组
-      // Map 的插入序取决于各序列最早数据点的出现先后，图例顺序会随数据漂移；
-      // 同权重时保持插入序（Array.sort 稳定），多实例间相对位置不受扰动
-      series: [...groups.entries()]
-        .sort((x, y) => windowRank(x[1][0].window_kind) - windowRank(y[1][0].window_kind))
-        .map(([key, list]) => {
-        const kind = list[0].window_kind;
-        const acc = list[0].account_id
-          ? accounts.find((a) => a.account_id === list[0].account_id)
-          : undefined;
-        const base = acc
-          ? acc.alias
-            ? accountLabel(acc.kind_name, acc.alias)
-            : acc.kind_name
-          : providerLabel(list[0].provider);
-        // 身份色（2026-10-03 审查修复）：按厂商品牌色取色（注册表投影），
-        // 窗口类型用实线/虚线区分（5h 实线、周窗口虚线）——原固定色
-        // 5h 蓝＝Codex 身份色、weekly 紫＝Qwen 身份色，曲线会被误读为某 Agent
-        const identity =
-          kindColors.get(acc?.provider ?? list[0].provider) ?? hashColor(key, theme);
-        return {
-          name: `${base} ${windowLabel(kind)}`,
-          type: "line",
-          showSymbol: false,
-          data: list.map((p) => [p.fetched_at, p.used_percent]),
-          itemStyle: { color: identity },
-          lineStyle: { width: 1.5, type: kind === "weekly" ? "dashed" : "solid" },
+      // ===== 实例身份色分配（#3.9 额度曲线撞色修复，两问题叠加）=====
+      // ①同厂商多实例恒同色：原 identity 只按厂商取品牌色，线型只分窗口类型，
+      //   同厂商同窗口类型的两实例曲线同色同线型不可分——岛面板额度区同类
+      //   场景早有 instanceColor 亮度色阶消歧，此处属漏同步；
+      // ②品牌色挤在蓝紫区：GLM #2f6bff／DeepSeek #4d6bfe／硅基流动 #6b7cff／
+      //   OpenRouter #8b5cf6 两两 RGB 距 30~94，曲线唯一的系列区分通道即颜色。
+      // 修复：按「实例」（provider:account）贪心分配——同实例两窗口共用一色
+      //（线型仍分窗口），首选 instanceColor(品牌色, 同厂商实例序)；候选与图内
+      // 已分配色 RGB 距 <80（肉眼难分阈值，实测品牌蓝紫区互距 30~62）时从
+      // 主题散列板顺延（散列起点＝同实例恒同序列，确定性），全板无可选回退
+      // 候选色。厂商注册表缺色时的兜底同样按实例键散列（原按含窗口的 key 散
+      // 列，同实例两窗口兜底色不一致）。
+      series: (() => {
+        const rgbDist = (a: string, b: string) => {
+          const pa = a.replace("#", "").match(/../g)?.map((v) => parseInt(v, 16));
+          const pb = b.replace("#", "").match(/../g)?.map((v) => parseInt(v, 16));
+          if (!pa || !pb || pa.length !== 3 || pb.length !== 3) return Infinity;
+          return Math.sqrt(pa.reduce((s, v, i) => s + (v - pb[i]) ** 2, 0));
         };
-      }),
+        const LINE_RGB_DIST_MIN = 80; // 低于此距离视为肉眼难分（实测 <80 的色对不可辨）
+        // 图例固定窗口序（5h → 7d，windowRank 与后端出库规范序同口径）：分组
+        // Map 的插入序取决于各序列最早数据点的出现先后，图例顺序会随数据漂移；
+        // 同权重时保持插入序（Array.sort 稳定），多实例间相对位置不受扰动
+        const ordered = [...groups.entries()].sort(
+          (x, y) => windowRank(x[1][0].window_kind) - windowRank(y[1][0].window_kind),
+        );
+        // 按渲染序给实例分配身份色（首现顺序稳定 ⇒ 分配结果确定不漂移）
+        const kindSeq = new Map<string, number>(); // 同厂商实例序（instanceColor 色阶档）
+        const usedColors: string[] = []; // 图内已分配的实例色（近色判定集合）
+        const instanceColors = new Map<string, string>(); // provider:account → 身份色
+        const palette = hashPalette(theme);
+        for (const [, list] of ordered) {
+          const p0 = list[0];
+          const instKey = `${p0.provider}:${p0.account_id ?? ""}`;
+          if (instanceColors.has(instKey)) continue; // 同实例其余窗口曲线复用一色
+          const seq = kindSeq.get(p0.provider) ?? 0;
+          kindSeq.set(p0.provider, seq + 1);
+          const brand = kindColors.get(p0.provider) ?? hashColor(instKey, theme);
+          const candidate = instanceColor(brand, seq);
+          let picked = candidate;
+          if (usedColors.some((u) => rgbDist(u, candidate) < LINE_RGB_DIST_MIN)) {
+            // 近色：从该实例键的散列格起顺延，找与全部已用色都拉开距离的板色
+            let h = 0;
+            for (let i = 0; i < instKey.length; i++) h = (h * 31 + instKey.charCodeAt(i)) >>> 0;
+            for (let step = 0; step < palette.length; step++) {
+              const cand = palette[(h + step) % palette.length];
+              if (usedColors.every((u) => rgbDist(u, cand) >= LINE_RGB_DIST_MIN)) {
+                picked = cand;
+                break;
+              }
+            }
+          }
+          usedColors.push(picked);
+          instanceColors.set(instKey, picked);
+        }
+        return ordered.map(([key, list]) => {
+          const kind = list[0].window_kind;
+          const acc = list[0].account_id
+            ? accounts.find((a) => a.account_id === list[0].account_id)
+            : undefined;
+          const base = acc
+            ? acc.alias
+              ? accountLabel(acc.kind_name, acc.alias)
+              : acc.kind_name
+            : providerLabel(list[0].provider);
+          // 身份色（2026-10-03 审查修复）：按厂商品牌色取色（注册表投影），
+          // 窗口类型用实线/虚线区分（5h 实线、周窗口虚线）——原固定色
+          // 5h 蓝＝Codex 身份色、weekly 紫＝Qwen 身份色，曲线会被误读为某 Agent；
+          // #3.9 起经上方实例分配（色阶消歧＋近色顺延），查表命中
+          const instKey = `${list[0].provider}:${list[0].account_id ?? ""}`;
+          const identity = instanceColors.get(instKey) ?? hashColor(key, theme);
+          return {
+            name: `${base} ${windowLabel(kind)}`,
+            type: "line",
+            showSymbol: false,
+            data: list.map((p) => [p.fetched_at, p.used_percent]),
+            itemStyle: { color: identity },
+            lineStyle: { width: 1.5, type: kind === "weekly" ? "dashed" : "solid" },
+          };
+        });
+      })(),
     };
   }, [snap, theme, kindsTick]);
 
@@ -1599,6 +1698,7 @@ export default function Report() {
                   items={snap.by_project}
                   active={projects}
                   onToggle={toggleOf(setProjects)}
+                  colorPlan={dimColorPlans.projects}
                   hashTheme={theme}
                   fmt={(l) => tail(l) || "未知项目"}
                   metric={dimMetric}
@@ -1608,6 +1708,7 @@ export default function Report() {
                   items={snap.by_model}
                   active={models}
                   onToggle={toggleOf(setModels)}
+                  colorPlan={dimColorPlans.models}
                   hashTheme={theme}
                   metric={dimMetric}
                 />
@@ -1619,6 +1720,7 @@ export default function Report() {
                     items={snap.ttft_by_model}
                     active={models}
                     onToggle={toggleOf(setModels)}
+                    colorPlan={dimColorPlans.models}
                     hashTheme={theme}
                     fmtVal={(t) => fmtMs(t)}
                     tipFormat={(it, name) =>
@@ -1633,6 +1735,7 @@ export default function Report() {
                   items={snap.by_provider}
                   active={providers}
                   onToggle={toggleOf(setProviders)}
+                  colorPlan={dimColorPlans.providers}
                   hashTheme={theme}
                   fmt={(l) => (l === "unknown" ? "未知供应商" : providerLabel(l))}
                   metric={dimMetric}

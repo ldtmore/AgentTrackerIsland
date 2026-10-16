@@ -351,8 +351,10 @@
   text-overflow: ellipsis;
 }
 
-/* 首列（状态）与第二列（会话名）不截断挤压；会话名列弹性收窄 */
-.ss-table td:nth-child(2) {
+/* 第三列（会话名）主信息提亮放宽；首列序号、次列状态走通用样式。
+   列序依据（Sessions.tsx 表头）：1 序号、2 状态、3 会话——旧选择器
+   nth-child(2) 停留在插入序号列之前的列序，实际命中状态列致主次颠倒 */
+.ss-table td:nth-child(3) {
   max-width: 280px;
   color: var(--text-1);
 }

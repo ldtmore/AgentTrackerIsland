@@ -43,7 +43,7 @@ import {
   windowLabelCN,
   type Thresholds,
 } from "../shared/types";
-import { fmtDT, fmtDTFull, fmtMoney, currencySymbol } from "../shared/format";
+import { fmtDT, fmtDTFull, fmtMoney } from "../shared/format";
 import "./quotas.css";
 
 /** 折叠分组记忆键（sessionStorage，会话级——窗口常驻隐藏形态下保持同一次
@@ -770,10 +770,11 @@ export default function Quotas() {
                   <span className="qt-sum-label">余额合计</span>
                   {balancePart.map(([cur, sum], i) => (
                     <span key={cur} className="qt-sum-num" title="启用实例最新余额快照合计">
-                      {/* 分隔符「·」（07-UX 3.9）：原「＋」有跨币种求和歧义 */}
+                      {/* 分隔符「·」（07-UX 3.9）：原「＋」有跨币种求和歧义；
+                          金额走 fmtMoney 与实例卡同口径（#15：千分位＋负号前置，
+                          原手拼 currencySymbol＋toFixed 无千分位且负号藏符后） */}
                       {i > 0 && <span className="qt-sum-sep"> · </span>}
-                      {currencySymbol(cur)}
-                      {sum.toFixed(2)}
+                      {fmtMoney(cur, sum)}
                     </span>
                   ))}
                 </>

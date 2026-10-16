@@ -277,9 +277,12 @@ export default function Sessions() {
   // 无（首载失败）→错误空态。ref 免 useCallback 闭包过期问题）
   const hasDataRef = useRef(false);
 
-  /** 拉取一页（o=偏移）；筛选变更拉第一页，翻页拉目标页 */
+  /** 拉取一页（o=偏移）；筛选变更拉第一页，翻页拉目标页。
+   *  返回落定态供调用方决定是否推进页码（#19 页码与数据错位修复，「成功后置」）：
+   *  ok＝本请求落定且成功；fail＝失败（错误反馈已在本函数内给出，页码纹丝不动）；
+   *  stale＝已被更新的请求取代（同样不动 UI） */
   const fetchPage = useCallback(
-    async (o: number) => {
+    async (o: number): Promise<"ok" | "fail" | "stale"> => {
       const seq = ++pageSeq.current;
       // 拉取中只降透明不塌表（2026-10-16 审查，对齐报表页 fetching 模式）：
       // 本地毫秒级查询让表格消失再出现是纯损失——切筛选/排序/翻页时保留
@@ -297,13 +300,14 @@ export default function Sessions() {
           pageSize,
           offset: o,
         });
-        if (seq !== pageSeq.current) return; // 已有更新请求在途/落定，丢弃过期响应
+        if (seq !== pageSeq.current) return "stale"; // 已有更新请求在途/落定，丢弃过期响应
         setPage(p);
         setError(null);
         hasDataRef.current = true;
         setStamp(fmtDTFull(Date.now()));
+        return "ok";
       } catch (e) {
-        if (seq !== pageSeq.current) return;
+        if (seq !== pageSeq.current) return "stale";
         setError(String(e));
         // 失败反馈收口（2026-10-10 审查，对齐报表页「失败≠换页」纪律）：手上
         // 有旧数据时保留旧表格＋错误 toast 报告失败（原先进 EmptyState 整表被
@@ -312,6 +316,7 @@ export default function Sessions() {
         if (hasDataRef.current) {
           setToast({ text: `刷新失败：${String(e)}`, kind: "error" });
         }
+        return "fail";
       } finally {
         if (seq === pageSeq.current) {
           setLoaded(true);
@@ -324,10 +329,13 @@ export default function Sessions() {
 
   // 筛选/搜索/排序变更：回到第一页重拉；下拉选项只随范围变化（四轮审查拆出：
   // 原先挂在同一 effect 里，防抖击键/切排序也会多触发一次 session_options）。
-  // 不再 setLoaded(false)（2026-10-16）：塌陷改由 fetching 降透明承接
+  // 不再 setLoaded(false)（2026-10-16）：塌陷改由 fetching 降透明承接。
+  // 页码成功后置（#19）：失败时 offset 保持旧值，页脚页码与表格数据一致地
+  // 停在旧页（错误 toast 已报告），不出现「页脚第 2 页表格第 1 页」的错位帧
   useEffect(() => {
-    setOffset(0);
-    void fetchPage(0);
+    void fetchPage(0).then((r) => {
+      if (r === "ok") setOffset(0);
+    });
   }, [range, status, agent, project, model, keyword, sort, fetchPage]);
 
   useEffect(() => {
@@ -336,17 +344,20 @@ export default function Sessions() {
       .catch(() => {}); // 选项拉取失败不打扰：下拉 retains 上一次内容
   }, [range]);
 
-  /** 翻页：只重拉会话表；翻页后视口回顶（2026-10-03 审查补充：末页翻回首页时
-   *  视口仍停在页尾空白，看起来像空页） */
+  /** 翻页：只重拉会话表；成功才推进页码并回顶（2026-10-03 审查补充：末页翻回
+   *  首页时视口仍停在页尾空白，看起来像空页；#19 成功后置——失败时页码与数据
+   *  同步停在旧页，回顶也不执行，不产生中间错位帧） */
   const turnPage = (dir: 1 | -1) => {
     const size = page?.page_size ?? 20;
     const total = page?.total ?? 0;
     const pages = Math.max(1, Math.ceil(total / size));
     const next = Math.min(Math.max(offset + dir * size, 0), (pages - 1) * size);
     if (next === offset) return;
-    setOffset(next);
-    void fetchPage(next).then(() => {
-      document.querySelector(".ss-root")?.scrollTo({ top: 0 });
+    void fetchPage(next).then((r) => {
+      if (r === "ok") {
+        setOffset(next);
+        document.querySelector(".ss-root")?.scrollTo({ top: 0 });
+      }
     });
   };
 
@@ -354,7 +365,8 @@ export default function Sessions() {
   const refresh = () => void fetchPage(offset);
 
   /** 跳页（07-UX 3.2）：输入页码 Enter 跳转——空值/非数字不动作，越界钳回
-   *  [1, 总页数]；与翻页同款拉取＋视口回顶。无论是否成行都清空草稿 */
+   *  [1, 总页数]；与翻页同款「成功后置」（#19）：失败时页码纹丝不动。
+   *  无论是否成行都清空草稿 */
   const jumpToPage = (raw: string) => {
     setJumpDraft("");
     const n = Number(raw.trim());
@@ -363,9 +375,11 @@ export default function Sessions() {
     const pages = Math.max(1, Math.ceil((page?.total ?? 0) / size));
     const next = (Math.min(Math.max(Math.round(n), 1), pages) - 1) * size;
     if (next === offset) return;
-    setOffset(next);
-    void fetchPage(next).then(() => {
-      document.querySelector(".ss-root")?.scrollTo({ top: 0 });
+    void fetchPage(next).then((r) => {
+      if (r === "ok") {
+        setOffset(next);
+        document.querySelector(".ss-root")?.scrollTo({ top: 0 });
+      }
     });
   };
 

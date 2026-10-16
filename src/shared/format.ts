@@ -32,6 +32,16 @@ export function fmtUsd(v: number): string {
   return `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/** 美元金额缩写 → "$12.3K"/"$1.2M"（≥1000 走 K/M/B 档一位小数，规则与 fmtTokens
+ *  同族；低于千仍走全格式）：维度条成本档值列窄，千分位全格式大额时溢出轨道
+ *  （#17 挤破列宽），缩写后全值仍由悬浮提示承接（调用方 title 含 fmtUsd 全值） */
+export function fmtUsdShort(v: number): string {
+  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(1)}B`;
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`;
+  return fmtUsd(v);
+}
+
 /** 货币符号（余额展示口径：USD 用 $，其余按人民币；与后端 describe_snapshot 同口径）。
  *  M3-6 从 Quotas/ProviderCard 的各自本地实现抽共享，消除两处漂移 */
 export function currencySymbol(currency: string): string {

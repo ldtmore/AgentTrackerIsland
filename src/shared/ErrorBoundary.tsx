@@ -35,16 +35,21 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.error) {
       return (
+        // 走主题变量＋深色 fallback（#18 白底爆闪修复）：fallback 只在 CSS 变量
+        // 不可用时生效，取值与 index.html 首帧底色 #141418 一致——深色主题下
+        // 崩溃瞬间不再闪出刺眼纯白（原硬编码 background:#fff/color:#333）
         <div
           style={{
             padding: 24,
             fontFamily: "system-ui, sans-serif",
-            background: "#fff",
-            color: "#333",
+            background: "var(--root-bg, #141418)",
+            color: "var(--text-1, #e8eaf0)",
           }}
         >
           <h2 style={{ fontSize: 16 }}>界面出错了（{this.props.name}）</h2>
-          <p style={{ fontSize: 13, color: "#888" }}>{this.state.error.message}</p>
+          <p style={{ fontSize: 13, color: "var(--text-3, #9ca3af)" }}>
+            {this.state.error.message}
+          </p>
           <button
             type="button"
             onClick={() => this.setState({ error: null })}

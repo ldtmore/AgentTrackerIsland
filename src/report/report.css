@@ -395,7 +395,9 @@
 
 .rp-dim-row {
   display: grid;
-  grid-template-columns: minmax(64px, 128px) 1fr 52px;
+  /* 值列下限 52px、内容更宽时弹性扩展（#17 溢出修复）：成本档大额经 fmtUsdShort
+     缩写后通常不再触顶，触顶时挤压中列比例条而非溢出卡片右缘 */
+  grid-template-columns: minmax(64px, 128px) 1fr minmax(52px, auto);
   gap: 8px;
   align-items: center;
   padding: 3px 6px;
