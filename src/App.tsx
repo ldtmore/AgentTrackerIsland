@@ -33,6 +33,7 @@ import { DEFAULT_THRESHOLDS, sanitizeThresholds } from "./shared/types";
 import type { IslandSnapshot, Thresholds } from "./shared/types";
 import { buildTooltipPayload } from "./shared/islandTooltip";
 import { ErrorBoundary } from "./shared/ErrorBoundary";
+import { BootLoading } from "./shared/BootLoading";
 import "./App.css";
 
 // 报表页 lazy 分割：echarts 只在报表窗口加载，岛窗口 bundle 不受影响（01-RESEARCH §9）
@@ -784,11 +785,12 @@ function App() {
     // lazy 分割（四轮审查补漏）：设置页原是唯一静态导入的窗口页，打进岛窗口
     // 入口 chunk（实测 306KB）；与其余五窗「独立窗口独立加载」的既有注释意图对齐。
     // 每页独立错误边界（2026-10-16 审查）：原先仅 main.tsx 一层根边界，任一页
-    // 子组件渲染崩溃整窗降级；lazy chunk 加载失败（Suspense fallback=null）更是
-    // 静默白屏——分层后崩溃只降级本页且带组件栈留痕
+    // 子组件渲染崩溃整窗降级；lazy chunk 加载失败（当时 fallback=null）更是
+    // 静默白屏——分层后崩溃只降级本页且带组件栈留痕。fallback 现为 BootLoading
+    // （长空窗治理）：chunk 缓存命中时不足一帧不闪现，真加载中显示可知等待
     return (
       <ErrorBoundary name="settings">
-        <Suspense fallback={null}>
+        <Suspense fallback={<BootLoading />}>
           <Settings />
         </Suspense>
       </ErrorBoundary>
@@ -797,7 +799,7 @@ function App() {
   if (route === "#tray-menu") {
     return (
       <ErrorBoundary name="tray-menu">
-        <Suspense fallback={null}>
+        <Suspense fallback={<BootLoading />}>
           <TrayMenu />
         </Suspense>
       </ErrorBoundary>
@@ -806,7 +808,7 @@ function App() {
   if (route === "#tooltip") {
     return (
       <ErrorBoundary name="tooltip">
-        <Suspense fallback={null}>
+        <Suspense fallback={<BootLoading />}>
           <TooltipWindow />
         </Suspense>
       </ErrorBoundary>
@@ -815,7 +817,7 @@ function App() {
   if (route === "#report") {
     return (
       <ErrorBoundary name="report">
-        <Suspense fallback={null}>
+        <Suspense fallback={<BootLoading />}>
           <Report />
         </Suspense>
       </ErrorBoundary>
@@ -824,7 +826,7 @@ function App() {
   if (route === "#quotas") {
     return (
       <ErrorBoundary name="quotas">
-        <Suspense fallback={null}>
+        <Suspense fallback={<BootLoading />}>
           <Quotas />
         </Suspense>
       </ErrorBoundary>
@@ -833,7 +835,7 @@ function App() {
   if (route === "#sessions") {
     return (
       <ErrorBoundary name="sessions">
-        <Suspense fallback={null}>
+        <Suspense fallback={<BootLoading />}>
           <Sessions />
         </Suspense>
       </ErrorBoundary>
@@ -842,7 +844,7 @@ function App() {
   if (route === "#about") {
     return (
       <ErrorBoundary name="about">
-        <Suspense fallback={null}>
+        <Suspense fallback={<BootLoading />}>
           <About />
         </Suspense>
       </ErrorBoundary>

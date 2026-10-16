@@ -2105,6 +2105,37 @@ body,
   stroke-width: 5;
 }
 
+/* ===== 全窗加载指示（懒创建业务窗长空窗治理）=====
+   仅出现在 chunk 加载／后端就绪重试等可感知长空窗（Suspense fallback 与
+   main.tsx 就绪门提示共用同一套类名）；首帧 100~300ms 短过渡维持 index.html
+   二稿定稿的纯底色——来不及被看懂的区间不放内容 */
+.boot-loading {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  user-select: none;
+}
+
+.boot-loading-logo {
+  width: 56px;
+  height: 56px;
+  animation: boot-breathe 1.2s ease-in-out infinite;
+}
+
+.boot-loading-text {
+  font-size: var(--fs-lg);
+  color: var(--text-3);
+}
+
+@keyframes boot-breathe {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
 /* ===== 无障碍（宪法红线⑤延伸）：系统开启"减弱动态效果"时，全部动效立即收束 =====
    循环动画（呼吸/快闪/波纹）收敛为单帧静止，过渡与入场动画压到近似瞬时；
    只影响时长与次数，不改变最终视觉状态（位置/透明度落点不变） */
