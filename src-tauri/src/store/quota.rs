@@ -4,8 +4,9 @@
 
 use super::*;
 
-/// 额度曲线单序列点数上限：超出按等步长抽样（保留首尾），
-/// 防止"全部"档把数月历史一次性塞进一次 IPC（5 分钟一条，两年约 20 万点）
+/// 额度曲线单序列点数上限：quota_history 的 SQL 侧抽样按它计算等步长
+/// （保留首尾），防止"全部"档把数月历史一次性塞进一次 IPC
+/// （5 分钟一条，两年约 20 万点）
 const QUOTA_MAX_POINTS: usize = 4000;
 
 /// 窗口固定排序权重（2026-10-10 岛顶栏拍板口径，2026-10-16 收口到数据出口）：
@@ -208,15 +209,32 @@ impl Store {
     }
 
     /// 额度消耗历史采样（额度曲线用）：fetched_at 升序、跳过无百分比的历史行；
-    /// 超上限时按等步长抽样并保留首尾——锯齿（用满→重置）形态靠首点极值不丢
+    /// 超上限时按序列等步长抽样并保留首尾——锯齿（用满→重置）形态靠首点极值不丢。
+    /// 抽样在 SQL 侧窗口函数内完成（第七轮性能 5.1）：此前无 LIMIT 全量读进
+    /// Vec 再 Rust 分组抽样，重度使用一年后数十万行快照全量物化（数十 MB 瞬时
+    /// 尖峰）且全程持只读锁阻塞其余报表查询——现在内存只过抽样后的点集。
+    /// 语义与原 Rust 抽样逐点一致：步长向上取整、末点必留、每序列独立抽样
+    /// （点少的全留）；fetched_at 过滤走 0008 的 idx_quota_fetched
     pub fn quota_history(&self, cutoff_ms: i64) -> Vec<QuotaPoint> {
         let conn = self.lock_read();
-        let Ok(mut stmt) = conn.prepare(
-            "SELECT provider, IFNULL(account_id,''), window_kind, fetched_at, used_percent
-             FROM quota_snapshots
-             WHERE fetched_at >= ?1 AND used_percent IS NOT NULL
+        // 抽样上限以常量拼入 SQL（步长 = ceil(cnt/上限)；prepare_cached 按串缓存，
+        // 常量恒定故编译一次），上限单点维护不再有第二份 Rust 侧逻辑
+        let sql = format!(
+            "SELECT provider, IFNULL(account_id,'') AS account_id, window_kind, fetched_at, used_percent
+             FROM (
+               SELECT provider, account_id, window_kind, fetched_at, used_percent,
+                      ROW_NUMBER() OVER (PARTITION BY provider, account_id, window_kind
+                                         ORDER BY fetched_at) AS rn,
+                      COUNT(*)     OVER (PARTITION BY provider, account_id, window_kind) AS cnt
+               FROM quota_snapshots
+               WHERE fetched_at >= ?1 AND used_percent IS NOT NULL
+             )
+             WHERE rn = cnt
+                OR (rn - 1) % CAST((cnt + {cap} - 1) / {cap} AS INTEGER) = 0
              ORDER BY fetched_at ASC",
-        ) else {
+            cap = QUOTA_MAX_POINTS,
+        );
+        let Ok(mut stmt) = conn.prepare(&sql) else {
             return vec![];
         };
         let rows = stmt.query_map([cutoff_ms], |r| {
@@ -230,45 +248,13 @@ impl Store {
                 used_percent: r.get(4)?,
             })
         });
-        let all: Vec<QuotaPoint> = match rows {
+        match rows {
             Ok(it) => it.filter_map(|x| x.ok()).collect(),
             Err(e) => {
                 log::warn!("[存储] quota_history 查询失败（本轮返回空降级）：{e}");
                 vec![]
             },
-        };
-        if all.len() <= QUOTA_MAX_POINTS {
-            return all;
         }
-        // 按序列（厂商×实例×窗口）分组后各自等步长抽样（2026-09-29 审查修复 #8：
-        // 原全局抽样在多实例下会把点数少的线抽稀甚至抽空；组内语义与原实现一致，
-        // 步长向上取整、末点必留）
-        let mut groups: std::collections::BTreeMap<(String, Option<String>, String), Vec<QuotaPoint>> =
-            Default::default();
-        for p in all {
-            groups
-                .entry((p.provider.clone(), p.account_id.clone(), p.window_kind.clone()))
-                .or_default()
-                .push(p);
-        }
-        let mut out = Vec::new();
-        for (_, mut pts) in groups {
-            if pts.len() <= QUOTA_MAX_POINTS {
-                out.append(&mut pts);
-                continue;
-            }
-            let n = pts.len();
-            let step = n.div_ceil(QUOTA_MAX_POINTS);
-            // 末点必留（四轮审查，兑现上行注释承诺）：pts 按时间升序，末点＝最新
-            // 采样——纯等步长抽样在 (n-1)%step≠0 时会把曲线末端抽成旧值
-            out.extend(
-                pts.into_iter()
-                    .enumerate()
-                    .filter(|(i, _)| i % step == 0 || *i == n - 1)
-                    .map(|(_, p)| p),
-            );
-        }
-        out
     }
 
     /// pace 近期采样点（#21）：某实例某窗口近 cutoff 内的 (fetched_at, used_percent)

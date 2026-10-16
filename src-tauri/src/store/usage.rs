@@ -92,9 +92,11 @@ impl Store {
             }
         };
         let mut changed = 0usize;
-        for r in rows {
-            let n = tx.execute(
-                "INSERT INTO usage_records(
+        // 语句预编译（第七轮性能 5.3）：循环外 prepare_cached 一次，循环内复用
+        // ——批量插入此前逐行 execute（每次重新 prepare），数据重建回溯场景
+        // 单事务数万行时 SQL 编译开销放大数秒；prepare_cached 连接级缓存，
+        // 跨事务跨 tick 同样命中。行为零变化（同一条 INSERT 语句）
+        let sql = "INSERT INTO usage_records(
                    session_id, agent, model, provider, ts,
                    input_tokens, output_tokens, reasoning_tokens,
                    cache_read_tokens, cache_creation_tokens,
@@ -115,7 +117,16 @@ impl Store {
                       + COALESCE(excluded.cache_read_tokens,0) + COALESCE(excluded.cache_creation_tokens,0))
                        >
                        (COALESCE(input_tokens,0) + COALESCE(output_tokens,0)
-                      + COALESCE(cache_read_tokens,0) + COALESCE(cache_creation_tokens,0))",
+                      + COALESCE(cache_read_tokens,0) + COALESCE(cache_creation_tokens,0))";
+        let mut stmt = match tx.prepare_cached(sql) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("insert_usage 预编译失败（本轮 {} 行放弃，下轮重采）：{e}", rows.len());
+                return Err(anyhow::anyhow!("insert_usage 预编译失败：{e}"));
+            }
+        };
+        for r in rows {
+            let n = stmt.execute(
                 params![
                     r.session_id, r.agent, r.model, r.provider, r.ts,
                     r.input_tokens, r.output_tokens, r.reasoning_tokens,
@@ -129,6 +140,8 @@ impl Store {
                 Err(e) => log::warn!("insert_usage 单行写库失败（ts={} model={}）：{e}", r.ts, r.model),
             }
         }
+        // 先释放语句对事务的借用再提交（stmt 持有 &mut tx）
+        drop(stmt);
         if let Err(e) = tx.commit() {
             log::warn!("insert_usage 提交事务失败（本轮全部回滚，下轮重采）：{e}");
             return Err(anyhow::anyhow!("insert_usage 提交事务失败：{e}"));

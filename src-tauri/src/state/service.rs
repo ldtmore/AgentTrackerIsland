@@ -185,12 +185,13 @@ pub(crate) fn island_accounts(store: &Store, latest: &[crate::store::QuotaRow]) 
 /// 岛快照：一次 tick 的完整产出。
 /// 2026-09-18 展示改造：新增今日口径（today_*）；
 /// M3-6：额度段改按实例视图（accounts）展示，glm_configured 标志随之移除
-/// （岛/托盘/面板全部改走实例视图，单真值源）
+/// （岛/托盘/面板全部改走实例视图，单真值源）；
+/// 第七轮性能 5.4c：顶层 quotas 停发（M3-6 起前端零消费，每次快照广播白发
+/// 一份冗余数组；实例明细统一走 accounts[].quotas）
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct IslandSnapshot {
     pub sessions: Vec<SessionView>,
     pub island: IslandState,
-    pub quotas: Vec<QuotaView>,
     /// 供应商实例视图（M3-6）：启用实例全量（in_island 标记由岛端过滤）
     pub accounts: Vec<IslandAccountView>,
     /// GLM 5h 额度已耗尽（100%）：不改写会话状态，由前端驱动胶囊变红/标签红光
@@ -823,6 +824,17 @@ impl Aggregator {
             self.session_rows.remove(id);
             log::debug!("[聚合] 会话从观测列表消失：{id}");
         }
+        // cost-state 校准缓存同步清理（第七轮性能 5.4a）：只 insert 会在常驻数月
+        // ＋大量 CC 会话后缓慢无界增长（违背同函数"防长期运行泄漏"的既有语义）。
+        // 键空间核对（实施留白）：last_cost_cum 的键第一元 = cost_snapshots 的
+        // session_id，collector 侧构造时已统一带 agent 前缀（claude_code.rs
+        // `format!("{}:{sid}", agent_id)`），与 gone 集合的 info.id 同构——
+        // 直接按完整 id 精确匹配，无需剥前缀，也不做模糊匹配（非 CC 家族的
+        // gone id 与该键空间不相交，天然不受影响）；第二元（模型名）随键整体移除
+        let gone_set: std::collections::HashSet<&str> =
+            gone.iter().map(|s| s.as_str()).collect();
+        self.last_cost_cum
+            .retain(|(id, _), _| !gone_set.contains(id.as_str()));
 
         // ③′＋④ 供应商实例热刷新与到期外呼：已整体迁至 provider/worker.rs
         //    独立线程（2026-09-29 审查修复）——fetch 阻塞不再绑架聚合 tick，
@@ -848,7 +860,6 @@ impl Aggregator {
         }
 
         let island = aggregate(&views.iter().map(|v| v.state).collect::<Vec<_>>());
-        let quota_views = quotas.iter().map(QuotaView::from).collect();
         // degraded：连续多轮有采集源失败才置位；恢复即清零。
         // 进入/恢复各留痕一次（不再 degraded 期间每轮重复刷 warn），
         // 进入时带上最近错误根因（2026-09-17 埋点审查）
@@ -889,7 +900,6 @@ impl Aggregator {
         IslandSnapshot {
             sessions: views,
             island,
-            quotas: quota_views,
             // 供应商实例视图（M3-6）：岛轮播/托盘归一的共用数据源（注册表投影）；
             // 批次三起 quota_exhausted 与此同源（上方已算好，避免二次投影）
             accounts: accounts_view,
@@ -1096,11 +1106,21 @@ mod tests {
         let mut agg = Aggregator::new(store.clone());
 
         let snap1 = agg.tick();
+        // 额度调试行走实例视图（5.4c 停发顶层 quotas 后的唯一数据面）
+        let mut quota_dbg = vec![];
+        for a in &snap1.accounts {
+            for q in &a.quotas {
+                quota_dbg.push(format!(
+                    "{}·{}:{}%",
+                    a.kind_name, q.window_kind, q.used_percent.unwrap_or(0.0) as i32
+                ));
+            }
+        }
         println!(
             "tick1：会话 {} 个 | 岛 {:?} | 额度 {:?}",
             snap1.sessions.len(),
             snap1.island,
-            snap1.quotas.iter().map(|q| format!("{}:{}%", q.window_kind, q.used_percent.unwrap_or(0.0) as i32)).collect::<Vec<_>>()
+            quota_dbg
         );
         // 本机双 Agent 都在运行，必有会话；状态必须合法
         assert!(!snap1.sessions.is_empty(), "本机应有活跃会话");

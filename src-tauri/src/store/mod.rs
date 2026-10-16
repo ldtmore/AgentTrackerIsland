@@ -1899,4 +1899,146 @@ mod tests {
         assert_eq!(snap.options.providers, vec!["qwen".to_string(), "unknown".to_string()]);
         let _ = std::fs::remove_file(&path);
     }
+
+    /// quota_history 抽样点的对比键：五元组全等（f64 经 to_bits 参与 Ord 比较，
+    /// 测试数据无负零/NaN，位模式等价于值相等）
+    fn quota_point_key(p: &QuotaPoint) -> (String, String, String, i64, u64) {
+        (
+            p.provider.clone(),
+            p.account_id.clone().unwrap_or_default(),
+            p.window_kind.clone(),
+            p.fetched_at,
+            p.used_percent.to_bits(),
+        )
+    }
+
+    /// 原 Rust 侧分组抽样（第七轮性能 5.1 改造前的逻辑原样保留）：仅作
+    /// 「SQL 抽样与旧实现点集逐点一致」的测试参考实现，不参与生产路径
+    fn legacy_quota_sample(all: Vec<QuotaPoint>) -> Vec<QuotaPoint> {
+        const CAP: usize = 4000;
+        if all.len() <= CAP {
+            return all;
+        }
+        let mut groups: std::collections::BTreeMap<
+            (String, Option<String>, String),
+            Vec<QuotaPoint>,
+        > = Default::default();
+        for p in all {
+            groups
+                .entry((p.provider.clone(), p.account_id.clone(), p.window_kind.clone()))
+                .or_default()
+                .push(p);
+        }
+        let mut out = Vec::new();
+        for (_, mut pts) in groups {
+            if pts.len() <= CAP {
+                out.append(&mut pts);
+                continue;
+            }
+            let n = pts.len();
+            let step = n.div_ceil(CAP);
+            out.extend(
+                pts.into_iter()
+                    .enumerate()
+                    .filter(|(i, _)| i % step == 0 || *i == n - 1)
+                    .map(|(_, p)| p),
+            );
+        }
+        out
+    }
+
+    /// quota_history SQL 侧抽样回归锁（第七轮性能 5.1）：
+    /// ① 超 4000 行单序列抽样后 ≤4000 且首尾必留；② 与原 Rust 抽样参考实现
+    /// 点集逐点一致（语义等价的强断言）；③ 点少的序列全留（2026-09-29 #8
+    /// 多实例不互抽的语义不回退）；④ 无百分比行不进结果；⑤ cutoff 过滤有效。
+    /// 改造前本测试的参考对比断言必然失败（旧实现走 Rust 全量物化路径），
+    /// 新实现（SQL 窗口函数抽样）下通过
+    #[test]
+    fn test_quota_history_sql_sampling() {
+        let path = tmp_db("quota-history-sampling");
+        let store = Store::open(&path).unwrap();
+        let t0 = 1_700_000_000_000i64;
+        // 序列 A：4500 行（>4000 触发抽样），used_percent 随行号变化以便逐点辨识
+        for i in 0..4500i64 {
+            store.insert_quota(&QuotaRow {
+                provider: "glm".into(),
+                window_kind: "5h".into(),
+                used_percent: Some(i as f64),
+                used_tokens: None,
+                reset_at: None,
+                fetched_at: t0 + i * 60_000,
+                account_id: Some("acc-a".into()),
+            });
+        }
+        // 序列 B：30 行（≤4000 应全留）——另一实例不参与 A 的抽样配额
+        for i in 0..30i64 {
+            store.insert_quota(&QuotaRow {
+                provider: "glm".into(),
+                window_kind: "5h".into(),
+                used_percent: Some(1000.0 + i as f64),
+                used_tokens: None,
+                reset_at: None,
+                fetched_at: t0 + i * 60_000,
+                account_id: Some("acc-b".into()),
+            });
+        }
+        // 无百分比行：跳过，不进结果
+        store.insert_quota(&QuotaRow {
+            provider: "glm".into(),
+            window_kind: "5h".into(),
+            used_percent: None,
+            used_tokens: None,
+            reset_at: None,
+            fetched_at: t0,
+            account_id: Some("acc-a".into()),
+        });
+        let pts = store.quota_history(0);
+        // ② 参考实现对比：直接开库读全量喂给旧抽样逻辑，断言点集逐点一致
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT provider, IFNULL(account_id,''), window_kind, fetched_at, used_percent
+                 FROM quota_snapshots WHERE fetched_at >= 0 AND used_percent IS NOT NULL
+                 ORDER BY fetched_at ASC",
+            )
+            .unwrap();
+        let all: Vec<QuotaPoint> = stmt
+            .query_map([], |r| {
+                let acc: String = r.get(1)?;
+                Ok(QuotaPoint {
+                    provider: r.get(0)?,
+                    account_id: if acc.is_empty() { None } else { Some(acc) },
+                    window_kind: r.get(2)?,
+                    fetched_at: r.get(3)?,
+                    used_percent: r.get(4)?,
+                })
+            })
+            .unwrap()
+            .filter_map(|x| x.ok())
+            .collect();
+        let mut got: Vec<_> = pts.iter().map(quota_point_key).collect();
+        got.sort();
+        let mut want: Vec<_> = legacy_quota_sample(all).iter().map(quota_point_key).collect();
+        want.sort();
+        assert_eq!(got, want, "SQL 抽样与原 Rust 抽样点集应逐点一致");
+        // ① A 序列（4500 行，步长 ceil(4500/4000)=2）抽样后精确 2251 点：
+        // 偶数下标 2250 个＋末点（奇数下标 4499 必留）1 个
+        let a: Vec<_> = pts.iter().filter(|p| p.account_id.as_deref() == Some("acc-a")).collect();
+        assert_eq!(a.len(), 2251, "A 序列等步长抽样点数");
+        assert_eq!(a[0].fetched_at, t0, "A 序列首点必留");
+        assert_eq!(a.last().unwrap().fetched_at, t0 + 4499 * 60_000, "A 序列末点必留");
+        // ③ B 序列 30 行全留
+        let b: Vec<_> = pts.iter().filter(|p| p.account_id.as_deref() == Some("acc-b")).collect();
+        assert_eq!(b.len(), 30, "点少的序列全留（多实例不互抽）");
+        // ④ 无百分比行不进结果（插入的 NULL 行 fetched_at 与 A 首点同刻，
+        // 若误入会令 A 首点数对不上——此处显式断言 used_percent 均非哨兵缺失态）
+        assert!(pts.iter().all(|p| p.used_percent.is_finite()), "无百分比行不应出现");
+        // ⑤ cutoff 过滤：cut 落在 B 序列中段（i=20 前），B 剩 10 行、A 照常抽样在档
+        let cut = t0 + 20 * 60_000;
+        let late = store.quota_history(cut);
+        assert!(late.iter().all(|p| p.fetched_at >= cut), "cutoff 之后才有点");
+        assert_eq!(late.iter().filter(|p| p.account_id.as_deref() == Some("acc-b")).count(), 10);
+        assert!(!late.is_empty() && late.iter().any(|p| p.account_id.as_deref() == Some("acc-a")));
+        let _ = std::fs::remove_file(&path);
+    }
 }

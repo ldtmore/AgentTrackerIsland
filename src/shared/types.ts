@@ -75,10 +75,6 @@ export interface IslandAccountView {
 export interface IslandSnapshot {
   sessions: SessionView[];
   island: IslandStateName;
-  /** @deprecated M3-6 批次三起岛 UI 一律消费 accounts[].quotas（∩ 展示集），
-   *  本顶层字段前端零消费仅随广播下发（每次快照多序列化一份冗余数组），
-   *  待后端择机停发（serde skip_serializing）后删除本字段 */
-  quotas: QuotaView[];
   /** 供应商实例视图（M3-6）：启用实例全量（in_island 标记由岛端过滤） */
   accounts: IslandAccountView[];
   /** GLM 5h 额度已耗尽（100%）：胶囊/标签据此变红，但会话状态保持真实值 */

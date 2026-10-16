@@ -23,43 +23,64 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
-use super::engine::{mtime_ms, now_ms, GlobWalker, HotSignal, ProcessMatch, RANGE_CUTOFF_MS};
+use super::engine::{mtime_ms, now_ms, GlobWalker, HotSignal, ProcessMatch, RANGE_CUTOFF_MS, ScanBudget};
 use super::{AgentAdapter, CollectOutput, SessionInfo};
 
 /// 会话标题最大长度（字符数；岛端与报表标题展示的统一口径）
 const TITLE_MAX_CHARS: usize = 50;
+
+/// scan 节流预算（第七轮性能 5.2）：探测根是家目录整体递归，大目录机器每轮
+/// GlobWalker 仍要对每目录做一次 metadata（剪枝缓存只省 read_dir），聚合器
+/// active 档 1s 一拍会打满 CPU/磁盘底噪。aider 无用量数据、只喂会话列表与
+/// last_seen 活动信号，状态变化最多延迟 60s 无感知；且其官方已一年多未发版，
+/// 非当前主流
+const SCAN_THROTTLE_MS: u64 = 60_000;
 
 pub struct AiderAdapter {
     /// 探测根（家目录：历史文件散落各仓库，从家目录整体发现，模块注释③）
     root: PathBuf,
     /// 目录枚举树器（目录 mtime 剪枝缓存，CC 同款）
     walker: Mutex<GlobWalker>,
+    /// scan 节流预算（goose 同款范式）：窗口内返回上轮缓存
+    scan_budget: Mutex<ScanBudget>,
+    /// 上轮 scan 结果缓存（首扫前为空 → 返回空列表）
+    scan_cache: Mutex<Option<Vec<SessionInfo>>>,
     /// 历史文件解析缓存：路径 → (mtime_ms, 会话列表)。append-only 文件 mtime
     /// 不变时零重读（长历史文件数十万行时省每 tick 全文解析）
     file_cache: Mutex<HashMap<PathBuf, (i64, Vec<SessionInfo>)>>,
 }
 
 impl AiderAdapter {
-    /// 生产档：家目录为探测根
+    /// 生产档：家目录为探测根，启用 60s 节流
     pub fn new() -> Self {
         let root = std::env::var_os("USERPROFILE")
             .or_else(|| std::env::var_os("HOME"))
             .map(PathBuf::from)
             .unwrap_or_default();
-        Self::with_root(root)
+        Self::with_root(root, SCAN_THROTTLE_MS)
     }
 
-    /// 指定探测根构造（单测注入临时目录用）
-    pub(crate) fn with_root(root: PathBuf) -> Self {
+    /// 指定探测根构造（单测注入临时目录用：throttle_ms=0 即每轮都实扫）
+    pub(crate) fn with_root(root: PathBuf, throttle_ms: u64) -> Self {
         Self {
             root,
             walker: Mutex::new(GlobWalker::default()),
+            scan_budget: Mutex::new(ScanBudget::new(throttle_ms)),
+            scan_cache: Mutex::new(None),
             file_cache: Mutex::new(HashMap::new()),
         }
     }
 
     fn lock_walker(&self) -> MutexGuard<'_, GlobWalker> {
         self.walker.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_scan_budget(&self) -> MutexGuard<'_, ScanBudget> {
+        self.scan_budget.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_scan_cache(&self) -> MutexGuard<'_, Option<Vec<SessionInfo>>> {
+        self.scan_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn lock_cache(&self) -> MutexGuard<'_, HashMap<PathBuf, (i64, Vec<SessionInfo>)>> {
@@ -150,7 +171,8 @@ impl AgentAdapter for AiderAdapter {
     /// 每 1~2 秒无缓存裸遍历（AppData/OneDrive/node_modules 全扫）——CPU/磁盘
     /// 底噪与耗电的结构性问题；且 aider 官方已一年多未发版、五个月零提交，
     /// 非当前主流（2026-10-16 调研），不值得为其付高频扫描成本。活动感知改靠
-    /// 常规 tick（scan_sessions 的节流档），状态变化最多延迟一个常规周期
+    /// 常规 tick：scan_sessions 走 60s 节流档（第七轮性能 5.2 实装，此前注释
+    /// 声称的"节流档"实为裸扫），状态变化最多延迟 60s
     fn hot_signals(&self) -> Vec<HotSignal> {
         vec![]
     }
@@ -165,8 +187,13 @@ impl AgentAdapter for AiderAdapter {
     }
 
     /// 会话发现：枚举全部历史文件 → mtime 缓存解析 → 90 天窗口内会话列表。
+    /// 60s 节流（SCAN_THROTTLE_MS）：窗口内直接返回上轮缓存（首扫前为空列表）。
     /// collect_usage 恒空（模块注释①），scan 的 last_usage_at 是唯一活动信号
     fn scan_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
+        // 节流门控（goose 同款范式）：未到期返回上轮缓存，免家目录全量 stat
+        if !self.lock_scan_budget().ready() {
+            return Ok(self.lock_scan_cache().clone().unwrap_or_default());
+        }
         // walker 需可变（内部剪枝缓存），自持锁
         let files = {
             let mut w = self.lock_walker();
@@ -205,6 +232,9 @@ impl AgentAdapter for AiderAdapter {
             log::debug!("[aider] 会话 {} 个，截断保留最近 100", out.len());
         }
         out.truncate(100);
+        // 缓存本轮结果：节流窗口内的后续 tick 直接复用（ScanBudget 首次恒放行，
+        // 缓存为空的首扫前窗口返回空列表，与 goose 行为一致）
+        *self.lock_scan_cache() = Some(out.clone());
         Ok(out)
     }
 
@@ -255,7 +285,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("at-aider-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         seed(&dir);
-        let ad = AiderAdapter::with_root(dir.clone());
+        // throttle_ms=0：每轮实扫（其余测试不受节流缓存干扰）
+        let ad = AiderAdapter::with_root(dir.clone(), 0);
 
         let sessions = ad.scan_sessions().unwrap();
         // proj_a 两块 + proj_b 一块（坏时间块跳过）；README.md 不匹配
@@ -290,11 +321,39 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("at-aider-cache-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         seed(&dir);
-        let ad = AiderAdapter::with_root(dir.clone());
+        let ad = AiderAdapter::with_root(dir.clone(), 0);
         let s1 = ad.scan_sessions().unwrap();
         let s2 = ad.scan_sessions().unwrap();
         assert_eq!(s1.len(), s2.len());
         assert_eq!(s1[0].id, s2[0].id, "同文件同会话 id 稳定");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// scan 节流（第七轮性能 5.2）：预算窗口内的后续 tick 返回上轮缓存——
+    /// 新文件落盘也不实扫（状态变化最多延迟一个节流周期，生产档 60s）；
+    /// 无节流档（throttle_ms=0，单测注入）同场景每轮实扫、立即可见
+    #[test]
+    fn test_scan_throttle_returns_cache() {
+        let dir = std::env::temp_dir().join(format!("at-aider-throttle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        seed(&dir);
+        let ad = AiderAdapter::with_root(dir.clone(), 60_000);
+        let s1 = ad.scan_sessions().unwrap();
+        assert_eq!(s1.len(), 3, "首次调用恒实扫");
+        // 节流窗口内新增历史文件：不实扫，仍返回 3 个会话的缓存
+        let proj_c = dir.join("F--proj-c");
+        std::fs::create_dir_all(&proj_c).unwrap();
+        std::fs::write(
+            proj_c.join(".aider.chat.history.md"),
+            "# aider chat started at 2026-10-09 21:00:00\n> 节流窗口内不应被看见\n",
+        )
+        .unwrap();
+        let s2 = ad.scan_sessions().unwrap();
+        assert_eq!(s2.len(), 3, "节流窗口内返回缓存，新文件下轮才可见");
+        // 对照：无节流档实扫，新文件立即可见
+        let ad0 = AiderAdapter::with_root(dir.clone(), 0);
+        let s3 = ad0.scan_sessions().unwrap();
+        assert_eq!(s3.len(), 4, "无节流档实扫可见新文件");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

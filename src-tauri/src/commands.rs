@@ -1267,8 +1267,11 @@ pub(crate) fn env_creds_probe(var: String) -> Result<String, String> {
 }
 
 /// hooks 安装状态（按 Agent 查询：配置文件中是否存在自家注入条目）。
-/// #19 起三命令统一走 crate::collector::hooks_of 注册表（单点维护＋三函数防护一致）
-#[tauri::command]
+/// #19 起三命令统一走 crate::collector::hooks_of 注册表（单点维护＋三函数防护一致）。
+/// async 标记：读各家配置文件属文件 IO，杀软实时扫描拖慢 IO 时同步命令会冻结
+/// 全部窗口（Tauri 2 同步命令跑主线程）——install/uninstall 早已 async 化，
+/// status 是漏改的最后一处（第七轮性能 5.4b）
+#[tauri::command(async)]
 pub(crate) fn hooks_status(agent: String) -> Result<bool, String> {
     let ops = crate::collector::hooks_of(&agent).ok_or_else(|| format!("不支持的 Agent：{agent}"))?;
     Ok((ops.installed)())
