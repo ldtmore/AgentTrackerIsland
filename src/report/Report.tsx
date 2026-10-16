@@ -36,6 +36,7 @@ import {
   hashColor,
   errorReason,
   windowLabel,
+  windowRank,
 } from "../shared/types";
 import { agentFullName, agentShortName } from "../shared/sessionDisplay";
 import { orderAgentIds, parseAgentOrder, setAgentOrder } from "../shared/agentOrder";
@@ -1085,7 +1086,12 @@ export default function Report() {
         axisLabel: { ...axisText, formatter: "{value}%" },
         splitLine: { lineStyle: { color: splitLine } },
       },
-      series: [...groups.entries()].map(([key, list]) => {
+      // 图例固定窗口序（5h → 7d，windowRank 与后端出库规范序同口径）：分组
+      // Map 的插入序取决于各序列最早数据点的出现先后，图例顺序会随数据漂移；
+      // 同权重时保持插入序（Array.sort 稳定），多实例间相对位置不受扰动
+      series: [...groups.entries()]
+        .sort((x, y) => windowRank(x[1][0].window_kind) - windowRank(y[1][0].window_kind))
+        .map(([key, list]) => {
         const kind = list[0].window_kind;
         const acc = list[0].account_id
           ? accounts.find((a) => a.account_id === list[0].account_id)

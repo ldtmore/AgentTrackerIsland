@@ -8,6 +8,34 @@ use super::*;
 /// 防止"全部"档把数月历史一次性塞进一次 IPC（5 分钟一条，两年约 20 万点）
 const QUOTA_MAX_POINTS: usize = 4000;
 
+/// 窗口固定排序权重（2026-10-10 岛顶栏拍板口径，2026-10-16 收口到数据出口）：
+/// 5h → 7d（weekly）→ 其他。短窗口时间敏感度更高列前；未知窗口种类兜底排尾，
+/// 未来适配器新增窗口时依然全序，不会回退成乱序
+fn window_rank(kind: &str) -> u8 {
+    match kind {
+        "5h" => 0,
+        "weekly" => 1,
+        _ => 2,
+    }
+}
+
+/// latest_quotas 出库统一规范序。此前返回顺序取自 HashMap 遍历序（进程重启
+/// 还换随机种子），同一实例的 5h/weekly 两行时前时后，凡是按数组序渲染的
+/// 界面全部受累（额度页窗口条、岛面板悬浮明细、报表图例等）。排序收口在此处：
+/// 额度页/设置页/岛/托盘/本地 API 全部经本函数取数，一处修全部受益；
+/// 岛顶栏前端的同款排序保留为防御层（修后为无操作）。
+/// 权重并列时按 window_kind、account_id、provider 逐级兜底，保证全序确定
+fn canonical_quota_order(mut rows: Vec<QuotaRow>) -> Vec<QuotaRow> {
+    rows.sort_unstable_by(|a, b| {
+        window_rank(&a.window_kind)
+            .cmp(&window_rank(&b.window_kind))
+            .then_with(|| a.window_kind.cmp(&b.window_kind))
+            .then_with(|| a.account_id.cmp(&b.account_id))
+            .then_with(|| a.provider.cmp(&b.provider))
+    });
+    rows
+}
+
 impl Store {
     /// 插入额度快照（M3-2 起带实例归属；account_id 为空 = 迁移前的历史口径）
     pub fn insert_quota(&self, row: &QuotaRow) {
@@ -89,13 +117,15 @@ impl Store {
     /// 聚合 tick（活跃档 1s）上且持全局连接锁——改为进程内缓存快路径直读，
     /// insert_quota 同步维护、清理/回填改写历史分组时整体失效，仅冷启动首轮
     /// 走 latest_quotas_scan 全量回源一次
+    /// 2026-10-16 规范序收口：scan 与缓存两条路径的返回都经 canonical_quota_order
+    /// 出库（5h → weekly → 其他），消费方不再各自面对无序数组
     pub fn latest_quotas(&self) -> Vec<QuotaRow> {
         let cache = self
             .quota_latest_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(map) = cache.as_ref() {
-            return map.values().cloned().collect();
+            return canonical_quota_order(map.values().cloned().collect());
         }
         drop(cache);
         let rows = self.latest_quotas_scan();
@@ -110,7 +140,7 @@ impl Store {
             .quota_latest_cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(map);
-        rows
+        canonical_quota_order(rows)
     }
 
     /// 全量扫描各分组最新一行（仅缓存回源时调用；语义同缓存分组约定）

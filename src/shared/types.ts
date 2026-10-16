@@ -290,6 +290,16 @@ export function windowLabelCN(kind: string): string {
   return kind;
 }
 
+/** 窗口固定排序权重：5h → 7d（weekly）→ 其他（2026-10-10 岛顶栏拍板口径，
+ *  与后端 latest_quotas 出库规范序同规则）。短窗口时间敏感度更高列前；
+ *  后端已收口出库序，此处供前端自行重组数据的展示点防御使用（如报表
+ *  曲线分组、岛顶栏防御层排序） */
+export function windowRank(kind: string): number {
+  if (kind === "5h") return 0;
+  if (kind === "weekly") return 1;
+  return 2;
+}
+
 /** 中文时长（悬浮提示用，消除"1h48m"类缩写的歧义）。
  *  返回 null＝重置时间已过但快照未刷新——调用方必须改说「等待供应商刷新」，
  *  不得把返回值拼进「预计 X 后重置」（五轮审查：原先返回「即将刷新」

@@ -1116,6 +1116,68 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// 出库规范序回归锁定（2026-10-16）：latest_quotas 此前顺序取自 HashMap
+    /// 遍历序，同一实例 5h/weekly 时前时后（重启即换），额度页窗口条等按数组
+    /// 序渲染的界面全部受累。2026-10-10 岛顶栏拍板"5h → 7d 固定序"只改了单个
+    /// 展示点，额度页/面板悬浮漏改——本次收口到数据出口后，scan 与缓存两条
+    /// 路径都必须出同一规范序，此测试防止未来回退
+    #[test]
+    fn test_latest_quotas_canonical_window_order() {
+        let path = tmp_db("quotarank");
+        let store = Store::open(&path).unwrap();
+        // 故意乱序：weekly 先写、5h 后写，且跨两实例交错
+        store.insert_quota(&sample_quota(Some("acc-x"), "weekly", 20.0, 100));
+        store.insert_quota(&sample_quota(Some("acc-y"), "weekly", 30.0, 101));
+        store.insert_quota(&sample_quota(Some("acc-x"), "5h", 40.0, 102));
+        store.insert_quota(&sample_quota(Some("acc-y"), "5h", 50.0, 103));
+
+        // 首次调用走 latest_quotas_scan 路径（缓存未初始化）
+        let latest = store.latest_quotas();
+        let idx = |account: &str, window: &str| {
+            latest
+                .iter()
+                .position(|q| q.account_id.as_deref() == Some(account) && q.window_kind == window)
+                .unwrap_or_else(|| panic!("缺少 {account}@{window} 快照"))
+        };
+        assert!(
+            idx("acc-x", "5h") < idx("acc-x", "weekly"),
+            "scan 路径：acc-x 的 5h 应排在 weekly 前"
+        );
+        assert!(
+            idx("acc-y", "5h") < idx("acc-y", "weekly"),
+            "scan 路径：acc-y 的 5h 应排在 weekly 前"
+        );
+
+        // 再插一条触发缓存同步维护，第二次调用走缓存快路径（此前该路径直接
+        // map.values() 出库，顺序即 HashMap 遍历序——正是乱序的源头）
+        store.insert_quota(&sample_quota(Some("acc-x"), "5h", 45.0, 200));
+        let latest = store.latest_quotas();
+        let idx = |account: &str, window: &str| {
+            latest
+                .iter()
+                .position(|q| q.account_id.as_deref() == Some(account) && q.window_kind == window)
+                .unwrap_or_else(|| panic!("缺少 {account}@{window} 快照"))
+        };
+        assert_eq!(
+            latest
+                .iter()
+                .find(|q| q.account_id.as_deref() == Some("acc-x") && q.window_kind == "5h")
+                .unwrap()
+                .used_percent,
+            Some(45.0),
+            "缓存路径：同窗口取最新一条"
+        );
+        assert!(
+            idx("acc-x", "5h") < idx("acc-x", "weekly"),
+            "缓存路径：5h 同样应排在 weekly 前"
+        );
+        assert!(
+            idx("acc-y", "5h") < idx("acc-y", "weekly"),
+            "缓存路径：acc-y 的 5h 应排在 weekly 前"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// 实例编辑/删除/岛展示集（M3-4 设置页命令的存储层）
     #[test]
     fn test_provider_account_update_delete_in_island() {
