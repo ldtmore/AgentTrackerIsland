@@ -474,8 +474,9 @@ function dotTip(a: IslandAccountView, t: Thresholds): ReactNode {
 }
 
 /** 实例额度体（轮播帧内容，M3-6）：Windows 口径＝双窗口 chip 行（与单实例
- *  旧版同款）；Balance 口径＝金额 chip（低于警戒线 danger 色）；其余口径
- *  （LocalEstimate，第五批才有生产者）＝灰字占位预留臂 */
+ *  旧版同款）；Balance 口径＝金额 chip（标签灰/金额重两段式，2026-10-16；
+ *  赠金 >0 才追加展示——纯充值账户恒显「赠金 ¥0」是噪声；低于警戒线
+ *  danger 色）；其余口径（LocalEstimate，第五批才有生产者）＝灰字占位预留臂 */
 function AccountQuotaBody({
   account,
   thresholds,
@@ -501,7 +502,7 @@ function AccountQuotaBody({
         low ? `（低于警戒线 ${fmtMoney(b.currency, line)}）` : ""
       }${b.total < 0 ? "，账户欠费" : ""}`,
       b.granted != null
-        ? `赠金 ${fmtMoney(b.currency, b.granted)} · 现金 ${fmtMoney(b.currency, b.total - b.granted)}`
+        ? `赠金 ${fmtMoney(b.currency, b.granted)} · 充值 ${fmtMoney(b.currency, b.total - b.granted)}`
         : "",
       `最近数据 ${fmtDT(b.fetched_at)}`,
     ]
@@ -510,7 +511,18 @@ function AccountQuotaBody({
     return (
       <Tip content={tip}>
         <span className={`quota-money${low ? " quota-money-low" : ""}`}>
-          余额 {fmtMoney(b.currency, b.total)}
+          {/* 标签灰/金额重两段式（2026-10-16）：与窗口口径 chip 同一视觉语言
+              ——「余额」「赠金」走 quota-cap 弱化，只有金额保持 600 加重；
+              低于警戒线时金额转红、标签保持灰，与窗口 chip 档位色只作用于
+              数字同规则。赠金条件展示：>0 才追加——纯充值账户恒显「赠金
+              ¥0」是噪声（宁缺毋滥）；granted 已在视图模型，零后端改动 */}
+          <span className="quota-cap">余额</span> {fmtMoney(b.currency, b.total)}
+          {b.granted != null && b.granted > 0 && (
+            <>
+              {" · "}
+              <span className="quota-cap">赠金</span> {fmtMoney(b.currency, b.granted)}
+            </>
+          )}
         </span>
       </Tip>
     );

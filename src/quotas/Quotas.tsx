@@ -5,8 +5,9 @@
  *    窗口口径实例计数＋数据截至＋手动刷新（重拉本地库，外呼不做在此处）；
  * ② 实例卡片流：复用设置页 ProviderCard（M3-5 插槽化——detail 承载完整
  *    额度体，actions 承载脚注）：Windows 口径＝每窗口进度条＋重置倒计时；
- *    Balance 口径＝金额大字＋赠金/现金拆分（M3-3 口径：available 三家统一
- *    无值，拆分行按 total−granted 反推现金）；LocalEstimate＝第五批预留。
+ *    Balance 口径＝金额大字＋赠金/充值拆分（M3-3 口径：available 三家统一
+ *    无值，拆分行按 total−granted 反推充值，2026-10-16 文案对齐官方词汇）；
+ *    LocalEstimate＝第五批预留。
  *    脚注＝上次刷新时间＋状态徽标＋单卡刷新（provider_account_refresh 真实
  *    落库，与设置页"检测"只查询不同；失败文案即时红字反馈＝network_error
  *    表达——自动查询的静默退避失败无持久化字段，靠时间戳陈旧性诚实呈现）；
@@ -277,11 +278,12 @@ function QuotaDetail({
           {neg && <span className="qt-amount-tag">欠费</span>}
           {low && <span className="qt-amount-tag">低于警戒线</span>}
         </div>
-        {/* 拆分行：granted=赠金，total−granted=现金（充值）；无赠金数据不拆分 */}
+        {/* 拆分行：granted=赠金，total−granted=充值（2026-10-16 对齐官方词汇：
+            DeepSeek/硅基流动的 total 均为赠金＋充值之和）；无赠金数据不拆分 */}
         {b.granted != null && (
           <div className="qt-amount-split">
             赠金 {sym}
-            {b.granted.toFixed(2)} · 现金 {sym}
+            {b.granted.toFixed(2)} · 充值 {sym}
             {(b.total - b.granted).toFixed(2)}
           </div>
         )}
