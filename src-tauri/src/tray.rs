@@ -318,11 +318,12 @@ pub(crate) fn toggle_island(app: &tauri::AppHandle) {
         island_transition(app, IslandTarget::Gone);
         return;
     }
-    // 隐藏中 → 召回
+    // 隐藏中 → 召回。锁中毒自恢复（2026-10-16 审查收尾补：全库纪律——
+    // 单次 panic 不应放大为托盘召回入口连锁失败，lib.rs 同款写法）
     let edge = app
         .state::<Arc<Mutex<IslandMotion>>>()
         .lock()
-        .unwrap()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .edge
         .clone();
     island_transition(
