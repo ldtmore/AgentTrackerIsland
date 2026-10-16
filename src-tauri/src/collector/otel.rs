@@ -143,7 +143,10 @@ impl OtelOutfileSink {
         let len = meta.len();
         let mtime = mtime_ms(&path);
         let mut cur = self.inner.lock_cursor();
-        if cur.mtime == mtime {
+        // 无新字节判定须同时比对长度（2026-10-16 审查，与 engine.rs 同款修复）：
+        // mtime 粒度有限，CLI 毫秒级连写两条（api_response→api_error）时第二条
+        // 落在同一粒度内，只比 mtime 会把它永久漏掉（CLI 不再写则无下轮）
+        if cur.mtime == mtime && cur.offset == len {
             return batch; // 无新字节
         }
         if cur.offset >= len {
@@ -625,6 +628,68 @@ mod tests {
         let expect = format!("otq:q-sess:{}", ts_ms("2026-09-23T10:00:03.000Z"));
         assert_eq!(b3.rows[0].source_id.as_deref(), Some(expect.as_str()));
         assert_eq!(b3.rows[0].input_tokens, Some(40), "50 − 10 拆分");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 同 mtime 粒度内追加（#4 回归锁）：CLI 毫秒级连写两条（api_response→
+    /// api_error 间隔毫秒级），tick 恰在两条之间读过文件尾时，第二条与首条
+    /// 同 mtime——修复前只比 mtime 直接短路漏采，CLI 不再写则永久丢失；
+    /// 修复后补长度比对（offset != len）把追加段补采出来
+    #[test]
+    fn test_same_mtime_append_not_missed() {
+        let dir = tmp_dir("append");
+        let outfile = dir.join("telemetry.log");
+        let first = log_record(
+            "api_response",
+            serde_json::json!({
+                "session.id": "s",
+                "event.timestamp": "2026-09-23T10:00:01.000Z",
+                "model": "qwen3-coder-plus",
+                "input_token_count": 10,
+                "output_token_count": 1,
+                "cached_content_token_count": 0,
+            }),
+        );
+        std::fs::write(&outfile, &first).unwrap();
+        let settings = dir.join("settings.json");
+        let settings_text = format!(
+            r#"{{"telemetry": {{"enabled": true, "outfile": {}}}}}"#,
+            serde_json::to_string(outfile.to_str().unwrap()).unwrap()
+        );
+        std::fs::write(&settings, settings_text).unwrap();
+        let sink = OtelOutfileSink::new(QWEN_PROFILE, settings);
+        let b1 = sink.collect();
+        assert_eq!(b1.rows.len(), 1, "首条应产出");
+        assert_eq!(b1.rows[0].input_tokens, Some(10));
+
+        // 模拟同粒度追加：写入第二条后把 mtime 设回首条的时刻（毫秒精度同域）
+        let mtime0 = mtime_ms(&outfile);
+        let second = log_record(
+            "api_response",
+            serde_json::json!({
+                "session.id": "s",
+                "event.timestamp": "2026-09-23T10:00:01.500Z",
+                "model": "qwen3-coder-plus",
+                "input_token_count": 20,
+                "output_token_count": 2,
+                "cached_content_token_count": 0,
+            }),
+        );
+        std::fs::write(&outfile, format!("{first}{second}")).unwrap();
+        let f = std::fs::File::options().write(true).open(&outfile).unwrap();
+        f.set_modified(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(mtime0.max(0) as u64),
+        )
+        .unwrap();
+        drop(f);
+        assert_eq!(mtime_ms(&outfile), mtime0, "测试前置：mtime 应已设回同粒度值");
+
+        let b2 = sink.collect();
+        assert_eq!(b2.rows.len(), 1, "同 mtime 追加的第二条应被长度比对补采");
+        assert_eq!(b2.rows[0].input_tokens, Some(20), "补采的应是第二条（增量段）");
+        // 再采一轮：真无新字节，不得重复产出
+        let b3 = sink.collect();
+        assert!(b3.rows.is_empty(), "游标已到尾，不应重复产出");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

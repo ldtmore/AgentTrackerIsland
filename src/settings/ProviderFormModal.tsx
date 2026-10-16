@@ -101,9 +101,10 @@ export default function ProviderFormModal({
     );
   // 明文 Key 的回显（编辑态专用，2026-10-16 所有者需求改为明文直出）：
   // 挂载时从钥匙串按需拉取完整明文填入 fSecret（默认打码，点眼睛可见）；
-  // 拉取失败/进行中回退后端脱敏值（渲染合成——fSecret 恒为真实值，杜绝
-  // 「掩码被当新 Key 保存」）。plainKey 缓存首次拉取结果，凭据类型来回
-  // 切换时恢复，避免二次请求
+  // 拉取失败/进行中 fSecret 保持空串——输入框恒绑真实值（value={fSecret}，
+  // 杜绝「掩码被当新 Key 保存」，2026-10-16 审查：|| 回退渲染会让清空后
+  // 的输入拼上脱敏串整体入库），脱敏串只出现在 placeholder 引导重贴。
+  // plainKey 缓存首次拉取结果，凭据类型来回切换时恢复，避免二次请求
   const maskedDisplay =
     editing && fCredMode === "plain" ? editing.cred_masked ?? "" : "";
   const [plainKey, setPlainKey] = useState<string | null>(null);
@@ -369,7 +370,7 @@ export default function ProviderFormModal({
                     <input
                       className="st-combo-input"
                       type={fCredMode === "plain" && fSecret && !fShowSecret ? "password" : "text"}
-                      value={fSecret || maskedDisplay}
+                      value={fSecret}
                       maxLength={fCredMode === "env" ? 128 : 500}
                       placeholder={
                         editing && fCredMode === "plain"
@@ -431,10 +432,9 @@ export default function ProviderFormModal({
                   <span className="st-form-hint">
                     {fCredMode === "plain"
                       ? `${
-                          editing
-                            ? plainKey != null
-                              ? "框内为已保存的完整 Key（默认打码，点右侧眼睛可见）；"
-                              : "钥匙串读取失败，框内为脱敏回显，保持原样＝不修改；"
+                          // 拉取失败才需要引导（成功态点眼睛看明文是通用规则，不赘述）
+                          editing && plainKey == null
+                            ? "钥匙串读取失败，框内留空＝保持原 Key 不变；"
                             : ""
                         }仅保存到系统凭据管理器，不上传`
                       : "终端会话临时设置的变量对常驻应用无效；新设变量后需重启应用"}

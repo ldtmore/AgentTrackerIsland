@@ -308,14 +308,17 @@ impl AgentAdapter for GooseAdapter {
                     l.input_tokens, l.output_tokens,
                     l.cache_read_tokens, l.cache_write_tokens, l.is_compaction
              FROM usage_ledger l
-             WHERE l.created_timestamp > ?1 OR l.created_timestamp < 10000000000
+             WHERE l.created_timestamp > ?1
+                OR (l.created_timestamp < 10000000000 AND l.created_timestamp * 1000 > ?1)
              ORDER BY l.created_timestamp ASC
              LIMIT 5000",
         )?;
-        // SQL 下界说明（2026-10-16 审查修复）：?1 是毫秒水位（~1e12），秒编码行
-        //（~1e9）恒小于它——原先会被下界直接滤掉、首轮之后再进不了增量窗口。
-        // OR 分支把秒编码行恒拉出来，交由下方 normalize_ms 归一后的行级水位
-        // 二次过滤＋幂等键去重兜底（重复拉取无副作用）
+        // SQL 下界说明（2026-10-16 审查修复）：两分支各自只放行「归一后 > 水位」
+        // 的行——第一分支管毫秒编码行（原始值即毫秒）；第二分支管秒编码行
+        //（<10^10，×1000 后与水位同域比较），历史秒行在 SQL 层即被滤掉。
+        // 不能把秒编码行无视水位恒拉出：它们按原始值升序恒排在前，会把
+        // LIMIT 5000 的增量窗口整体占满，新毫秒行永远进不了窗口（停采回归）。
+        // 行级 normalize_ms 水位二次过滤＋幂等键去重继续兜底（重复拉取无副作用）
         let rows = stmt.query_map([watermark_ts], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -499,6 +502,71 @@ mod tests {
         let sec = usage.iter().find(|u| u.source_id == Some("gs:ledger_3".into())).unwrap();
         assert_eq!(sec.ts, ((base + 3000) / 1000) * 1000, "秒编码 ×1000 归一");
         assert_eq!(sec.reasoning_tokens, None, "goose 无 reasoning 分项");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 秒编码历史行堆积不再堵死增量窗口（#1 回归锁）：库内 ≥5000 条已采过的
+    /// 秒编码行（归一后 ≤ 水位）时，LIMIT 5000 窗口曾被 ORDER BY ASC 排前的
+    /// 它们整体占满，新毫秒行永远进不了窗口——静默停采。修复后历史秒行在
+    /// SQL 下界滤掉，毫秒行与秒编码新行照常入窗
+    #[test]
+    fn test_sec_encoded_history_does_not_starve_window() {
+        let dir = std::env::temp_dir().join(format!("at-goose-starve-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("sessions.db");
+        let _ = std::fs::remove_file(&db);
+        let base = seed_db(&db);
+        // 灌 5000 条历史秒编码行：时间戳取两小时前（秒编码，归一后 ≤ 水位 base），
+        // 模拟老版本 goose 留下的遗留数据
+        let sec_old = (base - 3_600_000) / 1000;
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("BEGIN").unwrap();
+        for i in 0..5000 {
+            conn.execute(
+                "INSERT INTO usage_ledger (session_id, created_timestamp, model, input_tokens, output_tokens, is_compaction)
+                    VALUES ('sess_a', ?1, 'glm-5.3', 1, 1, 0)",
+                [sec_old - i as i64],
+            )
+            .unwrap();
+        }
+        conn.execute_batch("COMMIT").unwrap();
+        // 新毫秒行两条（走 SQL 第一分支）＋新秒编码行一条（归一后 > 水位，走第二分支）
+        conn.execute(
+            "INSERT INTO usage_ledger (session_id, created_timestamp, model, input_tokens, output_tokens, is_compaction)
+                VALUES ('sess_a', ?1, 'glm-5.3', 7, 3, 0)",
+            [base + 10_000],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO usage_ledger (session_id, created_timestamp, model, input_tokens, output_tokens, is_compaction)
+                VALUES ('sess_a', ?1, 'glm-5.3', 8, 4, 0)",
+            [base + 20_000],
+        )
+        .unwrap();
+        let sec_new = (base + 60_000) / 1000;
+        conn.execute(
+            "INSERT INTO usage_ledger (session_id, created_timestamp, model, input_tokens, output_tokens, is_compaction)
+                VALUES ('sess_a', ?1, 'glm-5.3', 9, 5, 0)",
+            [sec_new],
+        )
+        .unwrap();
+        drop(conn);
+
+        let ad = goose_at(&db);
+        let rows = ad.collect_usage(base).unwrap().rows;
+        // 历史秒行（5000 条）＋seed 三行中 ≤ 水位的部分全被滤掉；
+        // 应采到：seed 的 ledger_1/2（毫秒，>base）、ledger_3（秒编码，归一后
+        // = base+3000 >base）＋新毫秒两条＋新秒一条，共 6 行
+        assert_eq!(rows.len(), 6, "窗口不被历史秒行堵死：应采到 6 行，实际 {}", rows.len());
+        assert!(
+            rows.iter().any(|r| r.source_id == Some("gs:ledger_5004".into()))
+                && rows.iter().any(|r| r.source_id == Some("gs:ledger_5005".into())),
+            "两条新毫秒行必须采到（修复前被历史秒行挤出窗口）"
+        );
+        let sec_row = rows.iter().find(|r| r.source_id == Some("gs:ledger_5006".into()));
+        assert!(sec_row.is_some(), "秒编码新行（归一后 > 水位）应采到");
+        assert_eq!(sec_row.unwrap().ts, sec_new * 1000, "秒编码 ×1000 归一");
+        assert!(rows.iter().all(|r| r.ts > base), "归一后 ≤ 水位的历史秒行不得出现在结果里");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

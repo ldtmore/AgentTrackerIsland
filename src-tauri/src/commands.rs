@@ -338,11 +338,15 @@ pub(crate) const SETTING_KEYS_ALLOW: &[&str] = &[
 /// 读取全部设置。
 /// glm_token 不再随设置下发（2026-10-16 D1 决策推翻 2026-09-17 回显拍板）：
 /// 明文回显诉求已由 provider_account_reveal_key 编辑态正规通道承接，旧键
-/// 在迁移时清洗——出口再剥离一层兜底（防历史残留/外部写入）
+/// 在迁移时清洗——出口再剥离一层兜底（防历史残留/外部写入）。
+/// local_api_token 同款纪律（2026-10-16 审查）：内部令牌不随全量下发，任何
+/// 窗口 JS 都不该能读到它；设置页经专用命令 local_api_token 按需读取
 #[tauri::command]
 pub(crate) fn get_settings(store: tauri::State<'_, Arc<Store>>) -> std::collections::HashMap<String, String> {
     let mut all = store.all_settings();
     all.remove("glm_token");
+    // 内部凭据与令牌不随全量下发（glm_token 同款纪律）；设置页经专用命令按需读取
+    all.remove("local_api_token");
     all
 }
 
@@ -963,15 +967,22 @@ pub(crate) async fn provider_account_update(
                 .map_err(|e| format!("凭据写入钥匙串失败（可改用环境变量模式）：{e}"))?;
         }
     }
-    // 旧明文 → 新环境变量：钥匙串条目删除（无条目幂等忽略）
-    if old.cred_kind == "plain" && cred_kind == "env" {
-        if let Ok(entry) = keyring::Entry::new(crate::provider::KEYRING_SERVICE, &id) {
-            let _ = entry.delete_credential();
-        }
-    }
     store
         .update_provider_account(&id, &alias, base_override, &cred_kind, cred_value, note)
         .map_err(|e| e.to_string())?;
+    // 旧明文 → 新环境变量：钥匙串条目删除放在写库成功之后（2026-10-16 审查：
+    // 删除不可逆，若先删后写库、写库失败则库里仍是 plain 模式而 Key 已永久丢失）。
+    // 删除失败容忍（无条目幂等忽略；残留无害条目——库内已是 env 模式不读钥匙串，
+    // 可下轮切换重试或卸载实例时清理），留 debug 痕
+    if old.cred_kind == "plain" && cred_kind == "env" {
+        if let Ok(entry) = keyring::Entry::new(crate::provider::KEYRING_SERVICE, &id) {
+            let deleted = entry.delete_credential();
+            log::debug!(
+                "[设置] 实例 {id} 切换环境变量模式，旧钥匙串条目清理：{}",
+                if deleted.is_ok() { "已删除" } else { "无条目或删除失败（容忍，库内已不引用）" }
+            );
+        }
+    }
     log::info!("[设置] 实例 {alias}（{id}）已更新");
     Ok(())
     })

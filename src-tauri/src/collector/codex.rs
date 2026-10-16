@@ -3,8 +3,9 @@
 //!   ① 行 envelope：`{timestamp: ISO 毫秒字符串, ordinal?, type, payload}`（flatten 平铺）；
 //!   ② token 用量两条通路：`token_usage_record` 行（payload.response_id 作幂等键，
 //!      新版权威记账通路）与 `event_msg→token_count` 行（info.last_token_usage 单次量，
-//!      无 id 的旧通路）——**同轮增量内 record 优先、token_count 整体丢弃**（文件级互斥
-//!      防双计：新版本同一调用两通路都会写）；
+//!      无 id 的旧通路）——**同文件增量内 record 优先、该文件 token_count 整体丢弃**
+//!      （文件级互斥防双计：新版本同一调用两通路都会写；2026-10-16 审查 #5 修复，
+//!      原实现误为 tick 级，混存过渡期会误杀旧版文件的行）；
 //!   ③ TokenUsage 字段 snake_case：input_tokens / cached_input_tokens /
 //!      cache_write_input_tokens / output_tokens / reasoning_output_tokens / total_tokens；
 //!   ④ 缓存语义差异：OpenAI 的 cached_input_tokens 是 input_tokens 的**子集**
@@ -288,11 +289,15 @@ impl AgentAdapter for CodexAdapter {
     ///   record 通路 key = "tur:{response_id}"（官方幂等键）；
     ///   token_count 退路 key = "tc:{行时间戳毫秒}"（无官方 id，同刻多响应按
     ///   last 量最大保留——流式中间快照合并，跨毫秒分裂的少量双计留待装机对账）；
-    ///   两通路互斥：本轮增量中出现任何 record 行则整体丢弃 token_count 行
+    ///   两通路互斥为文件级（2026-10-16 审查 #5，原为 tick 级误杀）：单文件增量内
+    ///   出现权威 record 行则丢弃该文件的 token_count 行——同调用两通路双计只可能
+    ///   发生在同一 rollout 文件内（互斥的本意），跨文件并存（混存过渡期旧文件
+    ///   event＋新文件 record）是正常态，整体丢弃会永久漏计已推游标的行
     fn collect_usage(&self, watermark_ts: i64) -> anyhow::Result<CollectOutput> {
-        // record 通路：（response_id → 行）；token_count 退路：（ts → 行）
-        let mut record_rows: HashMap<String, UsageRow> = HashMap::new();
-        let mut event_rows: HashMap<String, UsageRow> = HashMap::new();
+        // 全局聚合集合：每文件先局部互斥、胜出通路再并入；键空间 tur:/tc: 前缀
+        // 天然不相交，最终并集输出无跨文件双计（keep-max 防御跨文件撞键）
+        let mut all_record_rows: HashMap<String, UsageRow> = HashMap::new();
+        let mut all_event_rows: HashMap<String, UsageRow> = HashMap::new();
         let (mut err_open, mut bad_lines) = (0usize, 0usize);
         for f in self.transcript_files() {
             if mtime_ms(&f) <= watermark_ts {
@@ -314,6 +319,10 @@ impl AgentAdapter for CodexAdapter {
             let Some(body) = body_after_partial(&text, start) else {
                 continue;
             };
+            // 每文件局部两通路集合（#5：互斥域＝文件）——本文件读完即按文件判定
+            // record 通路：（response_id → 行）；token_count 退路：（ts → 行）
+            let mut record_rows: HashMap<String, UsageRow> = HashMap::new();
+            let mut event_rows: HashMap<String, UsageRow> = HashMap::new();
             // 本轮增量内最近的模型名（turn_context 行更新；跨轮由缓存承接）
             let mut model = self.lock_model().get(&f).cloned().unwrap_or_default();
             for line in body.lines() {
@@ -420,6 +429,14 @@ impl AgentAdapter for CodexAdapter {
                 }
             }
             self.lock_model().insert(f.clone(), model);
+            // 文件级互斥判定（#5）：本文件有权威 record 就丢弃本文件 token_count
+            // 退路（防同调用双计——只可能同文件）；胜出通路 keep-max 并入全局
+            // （跨文件撞键概率≈0 但不赌，防御写法原样保留）
+            if record_rows.is_empty() {
+                merge_keep_max(&mut all_event_rows, event_rows);
+            } else {
+                merge_keep_max(&mut all_record_rows, record_rows);
+            }
         }
         if err_open + bad_lines > 0 {
             log::debug!(
@@ -427,14 +444,28 @@ impl AgentAdapter for CodexAdapter {
                  （新版 rollout 压缩变体也可能计入坏行，静默容忍）"
             );
         }
-        // 通路互斥：有权威 record 就整体丢弃 token_count 退路（防同调用双计）
-        let mut rows: Vec<UsageRow> = if record_rows.is_empty() {
-            event_rows.into_values().collect()
-        } else {
-            record_rows.into_values().collect()
-        };
+        // 并集输出（#5：不做跨文件互斥——混存过渡期旧文件 event 行与新文件
+        // record 行并存是正常态，tick 级整体丢弃会永久漏计已推游标的行）
+        let mut rows: Vec<UsageRow> = all_record_rows
+            .into_values()
+            .chain(all_event_rows.into_values())
+            .collect();
         rows.sort_by_key(|r| r.ts);
         Ok(CollectOutput::default().with_rows(rows))
+    }
+}
+
+/// 局部集合 keep-max 并入全局：同键撞车保留用量大者（原 and_modify 防御逻辑原样复制）
+fn merge_keep_max(dst: &mut HashMap<String, UsageRow>, src: HashMap<String, UsageRow>) {
+    for (k, row) in src {
+        let total = row_total(&row);
+        dst.entry(k)
+            .and_modify(|old| {
+                if total > row_total(old) {
+                    *old = row.clone();
+                }
+            })
+            .or_insert(row);
     }
 }
 
@@ -832,6 +863,54 @@ mod tests {
             "退路幂等键应为 tc:<thread_id>:<行毫秒>"
         );
         assert_eq!(out.rows[0].input_tokens, Some(100));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 文件级互斥（#5 回归锁）：新旧版本 rollout 混存过渡期，两文件（旧版只有
+    /// event 行／新版只有 record 行）同轮采集互不误杀——修复前 tick 级互斥会把
+    /// 旧文件的 event 行整体丢弃且游标已推、永久漏计；同文件双通路并存时仍
+    /// record 优先（互斥的本意：防同一调用双计，只可能发生在同一文件内）
+    #[test]
+    fn test_collect_file_level_mutex() {
+        let dir = tmp_dir("mutex");
+        let day = dir.join("2026").join("09").join("21");
+        std::fs::create_dir_all(&day).unwrap();
+        // 旧版文件：只有 token_count 退路行
+        let old_f = day.join("rollout-2026-09-21T10-00-00-11111111-2222-4333-8444-555555555555.jsonl");
+        let old_lines = [
+            r#"{"timestamp":"2026-09-21T10:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":110},"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":110}}}}"#,
+        ];
+        std::fs::write(&old_f, old_lines.join("\n")).unwrap();
+        // 新版文件：只有权威 record 行
+        let new_f = day.join("rollout-2026-09-21T10-05-00-99999999-8888-4777-8666-aaaaaaaaaaaa.jsonl");
+        let new_lines = [
+            r#"{"timestamp":"2026-09-21T10:05:01.000Z","type":"token_usage_record","payload":{"thread_id":"99999999","response_id":"resp_mix","usage":{"input_tokens":300,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":0,"total_tokens":350}}}"#,
+        ];
+        std::fs::write(&new_f, new_lines.join("\n")).unwrap();
+
+        let ad = CodexAdapter::with_root(dir.clone());
+        let out = ad.collect_usage(0).unwrap();
+        assert_eq!(out.rows.len(), 2, "两文件各采一行：文件级互斥不再 tick 级误杀");
+        assert!(
+            out.rows.iter().any(|r| r
+                .source_id
+                .as_deref()
+                .unwrap()
+                .starts_with("tc:11111111-2222-4333-8444-555555555555:")),
+            "旧版文件的 event 行必须采到"
+        );
+        assert!(
+            out.rows.iter().any(|r| r.source_id.as_deref() == Some("tur:resp_mix")),
+            "新版文件的 record 行必须采到"
+        );
+
+        // 同文件双通路并存（旧文件追加 record 行，小文件全量重读 → 局部两通路并存）：
+        // 该文件仍 record 优先、event 丢弃（互斥防双计保留），新文件无增量不重复
+        let rec_line = r#"{"timestamp":"2026-09-21T10:00:02.000Z","type":"token_usage_record","payload":{"thread_id":"11111111","response_id":"resp_old","usage":{"input_tokens":110,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0,"total_tokens":120}}}"#;
+        std::fs::write(&old_f, format!("{}\n{rec_line}\n", old_lines.join("\n"))).unwrap();
+        let out2 = ad.collect_usage(0).unwrap();
+        assert_eq!(out2.rows.len(), 1, "同文件双通路并存：只出 record 一行");
+        assert_eq!(out2.rows[0].source_id.as_deref(), Some("tur:resp_old"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
