@@ -1,6 +1,6 @@
 [package]
 name = "agenttrackerisland"
-version = "0.7.0"
+version = "0.8.0"
 description = "主流 AI Agent 的旁路观测台:状态监控与用量统计"
 authors = ["LDT"]
 license = "MIT"
