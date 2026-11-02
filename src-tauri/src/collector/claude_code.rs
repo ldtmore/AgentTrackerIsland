@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use super::engine::{body_after_partial, inject_json_hooks, iso_to_ms, mtime_ms, now_ms, row_total, uninstall_json_hooks, GlobWalker, HotSignal, IncrementalFileReader, ProcessMatch, RANGE_CUTOFF_MS};
+use super::engine::{body_after_partial, inject_json_hooks, iso_to_ms, mtime_ms, now_ms, row_total, uninstall_json_hooks, FILE_SCAN_THROTTLE_MS, GlobWalker, HotSignal, IncrementalFileReader, ProcessMatch, RANGE_CUTOFF_MS, ScanBudget};
 use super::{AgentAdapter, CollectOutput, CostSnapshot, SessionInfo, provider_from_model};
 use crate::store::UsageRow;
 
@@ -281,6 +281,15 @@ pub struct ClaudeCodeAdapter {
     /// cwd 提取缓存（审查 2.2.3）：路径 → （mtime_ms， 项目目录）。转录头部 cwd
     /// 恒定，旧实现每 tick 对每文件重读 8KB；缓存后仅 mtime 变化时重读
     cwd_cache: Mutex<HashMap<PathBuf, (i64, Option<String>)>>,
+    /// scan 节流预算（第九轮审查刀一）：预算窗口内返回上轮缓存，与 SQLite 档同治
+    scan_budget: Mutex<ScanBudget>,
+    /// collect 节流预算：独立于 scan 防止相互吃掉配额
+    collect_budget: Mutex<ScanBudget>,
+    /// 上轮 scan 结果缓存（首扫前为空 → 返回空列表）
+    scan_cache: Mutex<Option<Vec<SessionInfo>>>,
+    /// 上轮 collect 结果缓存：以旧水位算出的行是超集，自库幂等键保证重复
+    /// 入库零副作用，缓存返回安全（校准/标题同为幂等重放）
+    collect_cache: Mutex<Option<CollectOutput>>,
 }
 
 impl ClaudeCodeAdapter {
@@ -319,19 +328,32 @@ impl ClaudeCodeAdapter {
         Self::with_profile(PROFILE_WORKBUDDY_AI)
     }
 
-    /// 按档案构造（生产档：解析真实环境变量）
+    /// 按档案构造（生产档：解析真实环境变量，带 2s 扫描节流）
     fn with_profile(profile: FamilyProfile) -> Self {
-        Self::with_profile_root(profile, current_root(&profile).unwrap_or_else(|| PathBuf::from("")))
+        Self::with_profile_budget(
+            profile,
+            current_root(&profile).unwrap_or_else(|| PathBuf::from("")),
+            FILE_SCAN_THROTTLE_MS,
+        )
     }
 
-    /// 指定档案与根目录构造（单测注入临时目录用）
+    /// 指定档案与根目录构造（单测注入临时目录用）：0＝每轮实扫，回归测试不受节流影响
     pub(crate) fn with_profile_root(profile: FamilyProfile, root: PathBuf) -> Self {
+        Self::with_profile_budget(profile, root, 0)
+    }
+
+    /// 按档案＋根目录＋节流预算构造（预算为公共终点的唯一实现）
+    fn with_profile_budget(profile: FamilyProfile, root: PathBuf, throttle_ms: u64) -> Self {
         Self {
             profile,
             root,
             walker: Mutex::new(GlobWalker::default()),
             reader: Mutex::new(IncrementalFileReader::default()),
             cwd_cache: Mutex::new(HashMap::new()),
+            scan_budget: Mutex::new(ScanBudget::new(throttle_ms)),
+            collect_budget: Mutex::new(ScanBudget::new(throttle_ms)),
+            scan_cache: Mutex::new(None),
+            collect_cache: Mutex::new(None),
         }
     }
 
@@ -351,6 +373,22 @@ impl ClaudeCodeAdapter {
 
     fn lock_cwd(&self) -> MutexGuard<'_, HashMap<PathBuf, (i64, Option<String>)>> {
         self.cwd_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_scan_budget(&self) -> MutexGuard<'_, ScanBudget> {
+        self.scan_budget.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_collect_budget(&self) -> MutexGuard<'_, ScanBudget> {
+        self.collect_budget.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_scan_cache(&self) -> MutexGuard<'_, Option<Vec<SessionInfo>>> {
+        self.scan_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_collect_cache(&self) -> MutexGuard<'_, Option<CollectOutput>> {
+        self.collect_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// 遍历所有转录文件（projects/{项目编码目录}/{sessionId}.jsonl）。
@@ -425,8 +463,12 @@ impl AgentAdapter for ClaudeCodeAdapter {
         })
     }
 
-    /// 会话发现：每个 jsonl 文件即一个会话；最近 90 天有修改的才纳入
+    /// 会话发现：每个 jsonl 文件即一个会话；最近 90 天有修改的才纳入。
+    /// 节流（第九轮审查刀一）：预算窗口内返回上轮缓存，最迟 2s 采到文件变化
     fn scan_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
+        if !self.lock_scan_budget().ready() {
+            return Ok(self.lock_scan_cache().clone().unwrap_or_default());
+        }
         let cutoff = now_ms() - RANGE_CUTOFF_MS;
         let mut out = vec![];
         for f in self.transcript_files() {
@@ -474,6 +516,7 @@ impl AgentAdapter for ClaudeCodeAdapter {
             log::debug!("[{}] 会话 {} 个，截断保留最近 100", self.profile.agent_id, out.len());
         }
         out.truncate(100);
+        *self.lock_scan_cache() = Some(out.clone());
         Ok(out)
     }
 
@@ -485,8 +528,13 @@ impl AgentAdapter for ClaudeCodeAdapter {
     /// 去重键（2026-09-21 双计根治）：message.id(+requestId) 作为 source_id 直接入库，
     /// 自库幂等键 (agent, session_id, source_id) 与此对齐——同消息的流式复制快照行
     /// 即使 timestamp 各异、跨 tick 分裂，也会原地合并而非各自成行（实测双计 +27.8% 的根因）。
-    /// 同时解析 cost-state 行的会话级累计快照返回，供 service 层重算后台差值
+    /// 同时解析 cost-state 行的会话级累计快照返回，供 service 层重算后台差值。
+    /// 节流（第九轮审查刀一）：预算窗口内返回上轮缓存——以旧水位算出的行是
+    /// 超集，自库幂等键保证重复入库零副作用，缓存返回安全
     fn collect_usage(&self, watermark_ts: i64) -> anyhow::Result<CollectOutput> {
+        if !self.lock_collect_budget().ready() {
+            return Ok(self.lock_collect_cache().clone().unwrap_or_default());
+        }
         let mut dedup: std::collections::HashMap<String, UsageRow> = std::collections::HashMap::new();
         // cost 累计快照：会话×归一化模型 → （最大累计， 最新行时间）
         let mut cost: std::collections::HashMap<(String, String), (i64, i64)> = std::collections::HashMap::new();
@@ -671,11 +719,13 @@ impl AgentAdapter for ClaudeCodeAdapter {
                 ts,
             })
             .collect();
-        Ok(CollectOutput {
+        let out = CollectOutput {
             rows,
             cost_snapshots,
             titles: titles.into_iter().collect(),
-        })
+        };
+        *self.lock_collect_cache() = Some(out.clone());
+        Ok(out)
     }
 }
 

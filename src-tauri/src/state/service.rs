@@ -28,6 +28,7 @@ use crate::collector::opencode::OpenCodeFamilyAdapter;
 use crate::collector::qwen::QwenCodeAdapter;
 use crate::collector::zcode::ZcodeAdapter;
 use crate::collector::{AgentAdapter, provider_from_model};
+use crate::store::TokenBreakdown;
 use crate::store::UsageRow;
 use crate::state::{
     aggregate, compute_state, is_failure_event, ERROR_FRESH_MS, IslandState, SessionSignals,
@@ -234,6 +235,13 @@ pub struct Aggregator {
     /// 放大——空闲会话的 last_seen/state/标题全部稳定，签名未变即跳过写库；
     /// 内存态，重启后首轮全量重写一遍（幂等无害）。仅在写库成功后更新缓存
     session_rows: HashMap<String, SessionRowSig>,
+    /// 会话批量查询组缓存（第九轮审查刀二）：会话 id → 上轮查询值。用量拆解/
+    /// 最近模型/最近错误/最近调用时间四项均纯 usage 行驱动——仅在该会话本轮
+    /// 有新行（采集行 ∪ cost 校准行）或缓存未命中时重查，未变更会话复用上轮值；
+    /// 写库失败时下轮同批行重采仍进变更集，缓存顶多旧一拍即被刷新。
+    /// 标题查询不缓存（sessions 主键点查非热点，且与 upsert 时序无耦合）。
+    /// 内存态，重启后首轮全量重查（幂等无害）
+    session_batch_cache: HashMap<String, SessionBatchCached>,
     /// 上轮额度耗尽标志（翻转留痕用）
     last_quota_exhausted: bool,
     /// cost-state 校准缓存：会话×模型 → 上次入库的累计值（值未变则跳过重算；
@@ -256,6 +264,16 @@ struct SessionRowSig {
     /// 生效 last_seen_at（本输入与库值的 MAX 结果＝两者较大者）
     last_seen_at: i64,
     state: String,
+}
+
+/// 会话五连批中四个纯 usage 行驱动查询的单会话缓存值（第九轮审查刀二）：
+/// None＝上轮查询该会话无对应数据（与批量查询缺键语义一致，回填时跳过）
+#[derive(Default, Clone)]
+struct SessionBatchCached {
+    breakdown: Option<TokenBreakdown>,
+    model: Option<String>,
+    error: Option<(String, i64)>,
+    last_call: Option<i64>,
 }
 
 impl Aggregator {
@@ -331,21 +349,22 @@ impl Aggregator {
         // Codex＋Kimi Code 多根并存注册（2026-09-29 审查修复 #18）：默认根＋env
         // 重定向根各一个实例（同 id 共享水位/幂等键命名空间，会话 id 跨根唯一
         // 不冲突；hooks 事件文件同 id 单文件、第二个实例增量读到空集天然去重；
-        // 会话消失检测已改为全体实例并集判定）
+        // 会话消失检测已改为全体实例并集判定）。生产入口带 2s 扫描节流
+        // （第九轮审查刀一，与 zcode 等 SQLite 档同治；with_root 为单测注入入口）
         for root in crate::collector::codex::data_roots() {
-            adapters.push(Box::new(CodexAdapter::with_root(root)));
+            adapters.push(Box::new(CodexAdapter::with_root_throttled(root)));
         }
         for root in crate::collector::kimi::data_roots() {
-            adapters.push(Box::new(KimiCodeAdapter::with_root(root)));
+            adapters.push(Box::new(KimiCodeAdapter::with_root_throttled(root)));
         }
         // Gemini CLI＋Qwen Code（M2-11）：fork 已分叉故各自独立适配器（调研推翻
         // 「同族参数化换根即用」预想，01-RESEARCH §13）；#18 多根并存＝默认根＋
         // env 重定向根各一实例（同 codex/kimi）
         for root in crate::collector::gemini::data_roots() {
-            adapters.push(Box::new(GeminiAdapter::with_root(root)));
+            adapters.push(Box::new(GeminiAdapter::with_root_throttled(root)));
         }
         for (root, settings) in crate::collector::qwen::runtime_roots() {
-            adapters.push(Box::new(QwenCodeAdapter::with_roots(root, settings)));
+            adapters.push(Box::new(QwenCodeAdapter::with_roots_throttled(root, settings)));
         }
         Self {
             store,
@@ -358,6 +377,7 @@ impl Aggregator {
             last_error: None,
             last_states: HashMap::new(),
             session_rows: HashMap::new(),
+            session_batch_cache: HashMap::new(),
             last_quota_exhausted: false,
             last_cost_cum: HashMap::new(),
             adapter_slow: HashMap::new(),
@@ -484,6 +504,7 @@ impl Aggregator {
                 // 禁用的适配器：清掉其会话观测缓存（用户主动关闭不算"会话消失"）
                 self.last_states.retain(|k, _| !k.starts_with(agent_id));
                 self.session_rows.retain(|k, _| !k.starts_with(agent_id));
+                self.session_batch_cache.retain(|k, _| !k.starts_with(agent_id));
                 continue;
             }
             // 看门狗冷却（#17）：冷却期内跳过该适配器（其余 Agent 不受拖累）；
@@ -653,15 +674,59 @@ impl Aggregator {
             }
 
             // 批量取本批会话的用量拆解、最近模型与最近错误（审查 2.2.2:
-            // 批量 GROUP BY/窗口函数替代逐会话点查——100 会话即每 10s 数百次无索引扫描）
+            // 批量 GROUP BY/窗口函数替代逐会话点查——100 会话即每 10s 数百次无索引扫描）。
+            // 刀二门控（第九轮审查）：四项均纯 usage 行驱动，仅对本轮变更集
+            // （采集行 ∪ cost 校准行的会话）与缓存未命中者重查，其余复用上轮值
+            // ——活跃档 1s tick 下绝大多数会话无新行，重查集趋近空集
             let ids: Vec<String> = info_list.iter().map(|i| i.id.clone()).collect();
-            let breakdowns = self.store.session_usage_breakdown(&ids);
-            let latest_models = self.store.latest_session_models(&ids);
-            let latest_errors = self.store.latest_session_errors(&ids);
+            let mut changed: std::collections::HashSet<&str> =
+                usage.iter().map(|u| u.session_id.as_str()).collect();
+            for snap in &output.cost_snapshots {
+                changed.insert(snap.session_id.as_str());
+            }
+            let need: Vec<String> = ids
+                .iter()
+                .filter(|id| {
+                    changed.contains(id.as_str()) || !self.session_batch_cache.contains_key(*id)
+                })
+                .cloned()
+                .collect();
+            let mut breakdowns = self.store.session_usage_breakdown(&need);
+            let mut latest_models = self.store.latest_session_models(&need);
+            let mut latest_errors = self.store.latest_session_errors(&need);
             // 已入库标题（持久层兜底）：快照不能依赖"本轮恰好采到新标题"
             let stored_titles = self.store.session_titles(&ids);
             // 每会话最近调用时间（CC 假 working 治理，用法见循环内注释）
-            let latest_calls = self.store.latest_call_ts(&ids);
+            let mut latest_calls = self.store.latest_call_ts(&need);
+            // 重查值回写缓存；随后对全部在扫会话回填视图数据源——变更会话回填
+            // 的是与查询结果相同的值（幂等），未变更会话回填缓存值，下游零改动
+            for id in &need {
+                self.session_batch_cache.insert(
+                    id.clone(),
+                    SessionBatchCached {
+                        breakdown: breakdowns.get(id).cloned(),
+                        model: latest_models.get(id).cloned(),
+                        error: latest_errors.get(id).cloned(),
+                        last_call: latest_calls.get(id).cloned(),
+                    },
+                );
+            }
+            for id in &ids {
+                if let Some(c) = self.session_batch_cache.get(id) {
+                    if let Some(b) = &c.breakdown {
+                        breakdowns.insert(id.clone(), b.clone());
+                    }
+                    if let Some(m) = &c.model {
+                        latest_models.insert(id.clone(), m.clone());
+                    }
+                    if let Some(e) = &c.error {
+                        latest_errors.insert(id.clone(), e.clone());
+                    }
+                    if let Some(t) = c.last_call {
+                        latest_calls.insert(id.clone(), t);
+                    }
+                }
+            }
 
             for info in &info_list {
                 let raw_sid = info.id.split_once(':').map(|(_, s)| s).unwrap_or("");
@@ -822,6 +887,7 @@ impl Aggregator {
         for id in &gone {
             self.last_states.remove(id);
             self.session_rows.remove(id);
+            self.session_batch_cache.remove(id);
             log::debug!("[聚合] 会话从观测列表消失：{id}");
         }
         // cost-state 校准缓存同步清理（第七轮性能 5.4a）：只 insert 会在常驻数月

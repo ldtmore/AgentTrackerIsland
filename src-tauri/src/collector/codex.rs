@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use super::engine::{
-    body_after_partial, iso_to_ms, mtime_ms, now_ms, row_total, GlobWalker, HotSignal,
-    IncrementalFileReader, ProcessMatch, RANGE_CUTOFF_MS,
+    body_after_partial, iso_to_ms, mtime_ms, now_ms, row_total, FILE_SCAN_THROTTLE_MS, GlobWalker,
+    HotSignal, IncrementalFileReader, ProcessMatch, RANGE_CUTOFF_MS, ScanBudget,
 };
 use super::{AgentAdapter, CollectOutput, SessionInfo, provider_from_model};
 use crate::store::UsageRow;
@@ -113,21 +113,44 @@ pub struct CodexAdapter {
     /// per-file 当前模型缓存：model 随 `turn_context` 行逐 turn 更新，增量读时
     /// 旧行不在本轮增量内，跨轮记住最近模型供用量行回填（UsageRow.model 非空）
     model_cache: Mutex<HashMap<PathBuf, String>>,
+    /// scan 节流预算（第九轮审查刀一）：预算窗口内返回上轮缓存，与 SQLite 档同治
+    scan_budget: Mutex<ScanBudget>,
+    /// collect 节流预算：独立于 scan 防止相互吃掉配额
+    collect_budget: Mutex<ScanBudget>,
+    /// 上轮 scan 结果缓存（首扫前为空 → 返回空列表）
+    scan_cache: Mutex<Option<Vec<SessionInfo>>>,
+    /// 上轮 collect 结果缓存：以旧水位算出的行是超集，自库幂等键保证重复
+    /// 入库零副作用，缓存返回安全
+    collect_cache: Mutex<Option<CollectOutput>>,
 }
 
 impl CodexAdapter {
     pub fn new() -> Self {
-        Self::with_root(sessions_root().unwrap_or_else(|| PathBuf::from("")))
+        Self::with_root_throttled(sessions_root().unwrap_or_else(|| PathBuf::from("")))
     }
 
-    /// 指定根目录构造（单测注入临时目录用）
+    /// 生产档：带 2s 扫描节流（第九轮审查刀一，service.rs 注册走此入口）
+    pub fn with_root_throttled(root: PathBuf) -> Self {
+        Self::with_root_budget(root, FILE_SCAN_THROTTLE_MS)
+    }
+
+    /// 指定根目录构造（单测注入临时目录用）：0＝每轮实扫，回归测试不受节流影响
     pub fn with_root(root: PathBuf) -> Self {
+        Self::with_root_budget(root, 0)
+    }
+
+    /// 根目录＋节流预算构造（预算为公共终点的唯一实现）
+    fn with_root_budget(root: PathBuf, throttle_ms: u64) -> Self {
         Self {
             root,
             walker: Mutex::new(GlobWalker::default()),
             reader: Mutex::new(IncrementalFileReader::default()),
             cwd_cache: Mutex::new(HashMap::new()),
             model_cache: Mutex::new(HashMap::new()),
+            scan_budget: Mutex::new(ScanBudget::new(throttle_ms)),
+            collect_budget: Mutex::new(ScanBudget::new(throttle_ms)),
+            scan_cache: Mutex::new(None),
+            collect_cache: Mutex::new(None),
         }
     }
 
@@ -145,6 +168,22 @@ impl CodexAdapter {
 
     fn lock_model(&self) -> MutexGuard<'_, HashMap<PathBuf, String>> {
         self.model_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_scan_budget(&self) -> MutexGuard<'_, ScanBudget> {
+        self.scan_budget.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_collect_budget(&self) -> MutexGuard<'_, ScanBudget> {
+        self.collect_budget.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_scan_cache(&self) -> MutexGuard<'_, Option<Vec<SessionInfo>>> {
+        self.scan_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_collect_cache(&self) -> MutexGuard<'_, Option<CollectOutput>> {
+        self.collect_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn transcript_files(&self) -> Vec<PathBuf> {
@@ -230,8 +269,12 @@ impl AgentAdapter for CodexAdapter {
         })
     }
 
-    /// 会话发现：每个 rollout 文件即一个会话；最近 90 天有修改的才纳入
+    /// 会话发现：每个 rollout 文件即一个会话；最近 90 天有修改的才纳入。
+    /// 节流（第九轮审查刀一）：预算窗口内返回上轮缓存，最迟 2s 采到文件变化
     fn scan_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
+        if !self.lock_scan_budget().ready() {
+            return Ok(self.lock_scan_cache().clone().unwrap_or_default());
+        }
         let cutoff = now_ms() - RANGE_CUTOFF_MS;
         let mut out = vec![];
         for f in self.transcript_files() {
@@ -282,6 +325,7 @@ impl AgentAdapter for CodexAdapter {
             log::debug!("[codex] 会话 {} 个，截断保留最近 100", out.len());
         }
         out.truncate(100);
+        *self.lock_scan_cache() = Some(out.clone());
         Ok(out)
     }
 
@@ -292,8 +336,13 @@ impl AgentAdapter for CodexAdapter {
     ///   两通路互斥为文件级（2026-10-16 审查 #5，原为 tick 级误杀）：单文件增量内
     ///   出现权威 record 行则丢弃该文件的 token_count 行——同调用两通路双计只可能
     ///   发生在同一 rollout 文件内（互斥的本意），跨文件并存（混存过渡期旧文件
-    ///   event＋新文件 record）是正常态，整体丢弃会永久漏计已推游标的行
+    ///   event＋新文件 record）是正常态，整体丢弃会永久漏计已推游标的行。
+    ///   节流（第九轮审查刀一）：预算窗口内返回上轮缓存——以旧水位算出的行是
+    ///   超集，自库幂等键保证重复入库零副作用，缓存返回安全
     fn collect_usage(&self, watermark_ts: i64) -> anyhow::Result<CollectOutput> {
+        if !self.lock_collect_budget().ready() {
+            return Ok(self.lock_collect_cache().clone().unwrap_or_default());
+        }
         // 全局聚合集合：每文件先局部互斥、胜出通路再并入；键空间 tur:/tc: 前缀
         // 天然不相交，最终并集输出无跨文件双计（keep-max 防御跨文件撞键）
         let mut all_record_rows: HashMap<String, UsageRow> = HashMap::new();
@@ -451,7 +500,9 @@ impl AgentAdapter for CodexAdapter {
             .chain(all_event_rows.into_values())
             .collect();
         rows.sort_by_key(|r| r.ts);
-        Ok(CollectOutput::default().with_rows(rows))
+        let out = CollectOutput::default().with_rows(rows);
+        *self.lock_collect_cache() = Some(out.clone());
+        Ok(out)
     }
 }
 

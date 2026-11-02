@@ -17,7 +17,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use super::engine::{
     body_after_partial, inject_json_hooks, iso_to_ms, mtime_ms, now_ms, row_total, uninstall_json_hooks,
-    GlobWalker, HotSignal, IncrementalFileReader, ProcessMatch, RANGE_CUTOFF_MS,
+    FILE_SCAN_THROTTLE_MS, GlobWalker, HotSignal, IncrementalFileReader, ProcessMatch,
+    RANGE_CUTOFF_MS, ScanBudget,
 };
 use super::otel::{self, OtelOutfileSink};
 use super::{AgentAdapter, CollectOutput, SessionInfo, provider_from_model};
@@ -67,16 +68,35 @@ pub struct GeminiAdapter {
     model_cache: Mutex<HashMap<PathBuf, String>>,
     /// OTel outfile 增强通道（M2-12，见 collector/otel.rs 模块注释；token 行暂不入库）
     otel: OtelOutfileSink,
+    /// scan 节流预算（第九轮审查刀一）：预算窗口内返回上轮缓存，与 SQLite 档同治
+    scan_budget: Mutex<ScanBudget>,
+    /// collect 节流预算：独立于 scan 防止相互吃掉配额
+    collect_budget: Mutex<ScanBudget>,
+    /// 上轮 scan 结果缓存（首扫前为空 → 返回空列表）
+    scan_cache: Mutex<Option<Vec<SessionInfo>>>,
+    /// 上轮 collect 结果缓存：以旧水位算出的行是超集，自库幂等键保证重复
+    /// 入库零副作用，缓存返回安全
+    collect_cache: Mutex<Option<CollectOutput>>,
 }
 
 impl GeminiAdapter {
     pub fn new() -> Self {
         // home 定位失败同样落空路径：settings.json 永远发现不到，outfile 通道静默降级
-        Self::with_root(gemini_home().unwrap_or_else(|| PathBuf::from("")))
+        Self::with_root_throttled(gemini_home().unwrap_or_else(|| PathBuf::from("")))
     }
 
-    /// 指定根目录构造（单测注入临时目录用）
+    /// 生产档：带 2s 扫描节流（第九轮审查刀一，service.rs 注册走此入口）
+    pub fn with_root_throttled(root: PathBuf) -> Self {
+        Self::with_root_budget(root, FILE_SCAN_THROTTLE_MS)
+    }
+
+    /// 指定根目录构造（单测注入临时目录用）：0＝每轮实扫，回归测试不受节流影响
     pub fn with_root(root: PathBuf) -> Self {
+        Self::with_root_budget(root, 0)
+    }
+
+    /// 根目录＋节流预算构造（预算为公共终点的唯一实现）
+    fn with_root_budget(root: PathBuf, throttle_ms: u64) -> Self {
         // OTel outfile 通道的 settings 路径跟随注入根目录（单测注入语义；
         // sink 需在 root 被 move 前构造）
         let sink = OtelOutfileSink::new(otel::GEMINI_PROFILE, root.join("settings.json"));
@@ -87,6 +107,10 @@ impl GeminiAdapter {
             head_cache: Mutex::new(HashMap::new()),
             model_cache: Mutex::new(HashMap::new()),
             otel: sink,
+            scan_budget: Mutex::new(ScanBudget::new(throttle_ms)),
+            collect_budget: Mutex::new(ScanBudget::new(throttle_ms)),
+            scan_cache: Mutex::new(None),
+            collect_cache: Mutex::new(None),
         }
     }
 
@@ -104,6 +128,22 @@ impl GeminiAdapter {
 
     fn lock_model(&self) -> MutexGuard<'_, HashMap<PathBuf, String>> {
         self.model_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_scan_budget(&self) -> MutexGuard<'_, ScanBudget> {
+        self.scan_budget.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_collect_budget(&self) -> MutexGuard<'_, ScanBudget> {
+        self.collect_budget.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_scan_cache(&self) -> MutexGuard<'_, Option<Vec<SessionInfo>>> {
+        self.scan_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_collect_cache(&self) -> MutexGuard<'_, Option<CollectOutput>> {
+        self.collect_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn transcript_files(&self) -> Vec<PathBuf> {
@@ -248,8 +288,12 @@ impl AgentAdapter for GeminiAdapter {
         })
     }
 
-    /// 会话发现：每个 session-*.jsonl 即一个会话；最近 90 天有修改的才纳入
+    /// 会话发现：每个 session-*.jsonl 即一个会话；最近 90 天有修改的才纳入。
+    /// 节流（第九轮审查刀一）：预算窗口内返回上轮缓存，最迟 2s 采到文件变化
     fn scan_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
+        if !self.lock_scan_budget().ready() {
+            return Ok(self.lock_scan_cache().clone().unwrap_or_default());
+        }
         let cutoff = now_ms() - RANGE_CUTOFF_MS;
         let mut out = vec![];
         for f in self.transcript_files() {
@@ -278,6 +322,7 @@ impl AgentAdapter for GeminiAdapter {
             log::debug!("[gemini] 会话 {} 个，截断保留最近 100", out.len());
         }
         out.truncate(100);
+        *self.lock_scan_cache() = Some(out.clone());
         Ok(out)
     }
 
@@ -285,8 +330,13 @@ impl AgentAdapter for GeminiAdapter {
     ///   消息行（type=gemini 且 tokens）key = "gm:{消息id}"（同 id 重 append 靠
     ///   幂等键＋库层 UPSERT 后写覆盖；同轮增量保留用量大者）；
     ///   error 行只携带 error_type（token 全缺），走 recent_error 链路；
-    ///   $set 行只取 summary 作标题（忽略 messages 全量数组——内存与隐私双保险）
+    ///   $set 行只取 summary 作标题（忽略 messages 全量数组——内存与隐私双保险）。
+    ///   节流（第九轮审查刀一）：预算窗口内返回上轮缓存——以旧水位算出的行是
+    ///   超集，自库幂等键保证重复入库零副作用，缓存返回安全
     fn collect_usage(&self, watermark_ts: i64) -> anyhow::Result<CollectOutput> {
+        if !self.lock_collect_budget().ready() {
+            return Ok(self.lock_collect_cache().clone().unwrap_or_default());
+        }
         // 同轮内按幂等键合并（同 id 重 append/增量回退重读：保留用量大者）
         let mut rows: HashMap<String, UsageRow> = HashMap::new();
         let mut titles: HashMap<String, String> = HashMap::new();
@@ -431,11 +481,13 @@ impl AgentAdapter for GeminiAdapter {
         }
         let mut rows: Vec<UsageRow> = rows.into_values().collect();
         rows.sort_by_key(|r| r.ts);
-        Ok(CollectOutput {
+        let out = CollectOutput {
             rows,
             titles: titles.into_iter().collect(),
             ..CollectOutput::default()
-        })
+        };
+        *self.lock_collect_cache() = Some(out.clone());
+        Ok(out)
     }
 }
 

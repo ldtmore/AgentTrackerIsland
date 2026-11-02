@@ -211,6 +211,12 @@ pub fn body_after_partial<'a>(text: &'a str, start: u64) -> Option<&'a str> {
 
 // ===== 扫描节流（SQLite 档自律预算，04-EXPANSION §2.3.2） =====
 
+/// 文件型适配器统一扫描节流（第九轮审查刀一）：CC 家族/codex/kimi/gemini/qwen
+/// 五家 jsonl 转录扫描挂同款 2s 预算——与 zcode/copilot/goose 等 SQLite 档既有
+/// 取舍完全一致（快轮信号保证文件变化唤醒，缓存命中期最迟 2s 采到，水位增量
+/// 不丢数据）。此前仅七家 SQLite 档在用、五家文件型漏挂的「同类不同治」收口
+pub const FILE_SCAN_THROTTLE_MS: u64 = 2_000;
+
 /// 扫描预算：距上次放行不足 min_interval 时拒绝本次扫描，调用方返回缓存结果。
 /// 有状态，适配器内持有（scan 与 collect 各一份，避免相互吃掉预算）
 #[derive(Debug)]

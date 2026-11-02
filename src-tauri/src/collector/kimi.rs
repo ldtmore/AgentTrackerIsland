@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use super::engine::{
-    body_after_partial, mtime_ms, now_ms, GlobWalker, HotSignal, IncrementalFileReader,
-    ProcessMatch, RANGE_CUTOFF_MS,
+    body_after_partial, mtime_ms, now_ms, FILE_SCAN_THROTTLE_MS, GlobWalker, HotSignal,
+    IncrementalFileReader, ProcessMatch, RANGE_CUTOFF_MS, ScanBudget,
 };
 use super::{AgentAdapter, CollectOutput, SessionInfo, provider_from_model};
 use crate::store::UsageRow;
@@ -76,20 +76,43 @@ pub struct KimiCodeAdapter {
     reader: Mutex<IncrementalFileReader>,
     /// state.json 读取缓存：会话目录 →（state.json mtime，解析结果）
     state_cache: Mutex<HashMap<PathBuf, (i64, Option<KimiState>)>>,
+    /// scan 节流预算（第九轮审查刀一）：预算窗口内返回上轮缓存，与 SQLite 档同治
+    scan_budget: Mutex<ScanBudget>,
+    /// collect 节流预算：独立于 scan 防止相互吃掉配额
+    collect_budget: Mutex<ScanBudget>,
+    /// 上轮 scan 结果缓存（首扫前为空 → 返回空列表）
+    scan_cache: Mutex<Option<Vec<SessionInfo>>>,
+    /// 上轮 collect 结果缓存：以旧水位算出的行是超集，自库幂等键保证重复
+    /// 入库零副作用，缓存返回安全
+    collect_cache: Mutex<Option<CollectOutput>>,
 }
 
 impl KimiCodeAdapter {
     pub fn new() -> Self {
-        Self::with_root(sessions_root().unwrap_or_else(|| PathBuf::from("")))
+        Self::with_root_throttled(sessions_root().unwrap_or_else(|| PathBuf::from("")))
     }
 
-    /// 指定根目录构造（单测注入临时目录用）
+    /// 生产档：带 2s 扫描节流（第九轮审查刀一，service.rs 注册走此入口）
+    pub fn with_root_throttled(root: PathBuf) -> Self {
+        Self::with_root_budget(root, FILE_SCAN_THROTTLE_MS)
+    }
+
+    /// 指定根目录构造（单测注入临时目录用）：0＝每轮实扫，回归测试不受节流影响
     pub fn with_root(root: PathBuf) -> Self {
+        Self::with_root_budget(root, 0)
+    }
+
+    /// 根目录＋节流预算构造（预算为公共终点的唯一实现）
+    fn with_root_budget(root: PathBuf, throttle_ms: u64) -> Self {
         Self {
             root,
             walker: Mutex::new(GlobWalker::default()),
             reader: Mutex::new(IncrementalFileReader::default()),
             state_cache: Mutex::new(HashMap::new()),
+            scan_budget: Mutex::new(ScanBudget::new(throttle_ms)),
+            collect_budget: Mutex::new(ScanBudget::new(throttle_ms)),
+            scan_cache: Mutex::new(None),
+            collect_cache: Mutex::new(None),
         }
     }
 
@@ -103,6 +126,22 @@ impl KimiCodeAdapter {
 
     fn lock_state(&self) -> MutexGuard<'_, HashMap<PathBuf, (i64, Option<KimiState>)>> {
         self.state_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_scan_budget(&self) -> MutexGuard<'_, ScanBudget> {
+        self.scan_budget.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_collect_budget(&self) -> MutexGuard<'_, ScanBudget> {
+        self.collect_budget.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_scan_cache(&self) -> MutexGuard<'_, Option<Vec<SessionInfo>>> {
+        self.scan_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_collect_cache(&self) -> MutexGuard<'_, Option<CollectOutput>> {
+        self.collect_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn wire_files(&self) -> Vec<PathBuf> {
@@ -156,8 +195,12 @@ impl AgentAdapter for KimiCodeAdapter {
     }
 
     /// 会话发现：wire.jsonl 所在会话目录即一个会话；元数据从 state.json 读
-    /// （mtime 缓存，title/cwd 缺失容忍——写入中途可能短暂不完整）
+    /// （mtime 缓存，title/cwd 缺失容忍——写入中途可能短暂不完整）。
+    /// 节流（第九轮审查刀一）：预算窗口内返回上轮缓存，最迟 2s 采到文件变化
     fn scan_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
+        if !self.lock_scan_budget().ready() {
+            return Ok(self.lock_scan_cache().clone().unwrap_or_default());
+        }
         let cutoff = now_ms() - RANGE_CUTOFF_MS;
         let mut out = vec![];
         for f in self.wire_files() {
@@ -211,6 +254,7 @@ impl AgentAdapter for KimiCodeAdapter {
             log::debug!("[kimi] 会话 {} 个，截断保留最近 100", out.len());
         }
         out.truncate(100);
+        *self.lock_scan_cache() = Some(out.clone());
         Ok(out)
     }
 
@@ -219,8 +263,13 @@ impl AgentAdapter for KimiCodeAdapter {
     /// 同指纹合并为一次调用；单轮去重键带会话维度（第七轮 6.7a 举一反三），
     /// 合并域收窄到会话内（跨会话同指纹不再互吞，旧「碰撞可忽略」判断未覆盖
     /// 0 用量行不过滤的场景）；usageScope 按每请求一行假设全量入库
-    /// （装机对账验证点，见 01-RESEARCH §11）
+    /// （装机对账验证点，见 01-RESEARCH §11）。
+    /// 节流（第九轮审查刀一）：预算窗口内返回上轮缓存——以旧水位算出的行是
+    /// 超集，自库幂等键保证重复入库零副作用，缓存返回安全
     fn collect_usage(&self, watermark_ts: i64) -> anyhow::Result<CollectOutput> {
+        if !self.lock_collect_budget().ready() {
+            return Ok(self.lock_collect_cache().clone().unwrap_or_default());
+        }
         let mut dedup: HashMap<String, UsageRow> = HashMap::new();
         let (mut err_open, mut bad_lines) = (0usize, 0usize);
         for f in self.wire_files() {
@@ -305,7 +354,9 @@ impl AgentAdapter for KimiCodeAdapter {
         }
         let mut rows: Vec<UsageRow> = dedup.into_values().collect();
         rows.sort_by_key(|r| r.ts);
-        Ok(CollectOutput::default().with_rows(rows))
+        let out = CollectOutput::default().with_rows(rows);
+        *self.lock_collect_cache() = Some(out.clone());
+        Ok(out)
     }
 }
 

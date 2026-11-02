@@ -21,7 +21,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use super::engine::{
     body_after_partial, inject_json_hooks, iso_to_ms, mtime_ms, now_ms, uninstall_json_hooks,
-    GlobWalker, HotSignal, IncrementalFileReader, ProcessMatch, RANGE_CUTOFF_MS,
+    FILE_SCAN_THROTTLE_MS, GlobWalker, HotSignal, IncrementalFileReader, ProcessMatch,
+    RANGE_CUTOFF_MS, ScanBudget,
 };
 use super::otel::{self, OtelOutfileSink};
 use super::{AgentAdapter, CollectOutput, SessionInfo, provider_from_model};
@@ -99,6 +100,15 @@ pub struct QwenCodeAdapter {
     model_cache: Mutex<HashMap<PathBuf, String>>,
     /// OTel outfile 增强通道（M2-12，见 collector/otel.rs 模块注释；token 行暂不入库）
     otel: OtelOutfileSink,
+    /// scan 节流预算（第九轮审查刀一）：预算窗口内返回上轮缓存，与 SQLite 档同治
+    scan_budget: Mutex<ScanBudget>,
+    /// collect 节流预算：独立于 scan 防止相互吃掉配额
+    collect_budget: Mutex<ScanBudget>,
+    /// 上轮 scan 结果缓存（首扫前为空 → 返回空列表）
+    scan_cache: Mutex<Option<Vec<SessionInfo>>>,
+    /// 上轮 collect 结果缓存：以旧水位算出的行是超集，自库幂等键保证重复
+    /// 入库零副作用，缓存返回安全
+    collect_cache: Mutex<Option<CollectOutput>>,
 }
 
 impl QwenCodeAdapter {
@@ -106,17 +116,28 @@ impl QwenCodeAdapter {
         // settings 在配置根（qwen_home）不在转录运行时根（runtime_root），两根
         // 不同源须分别给定；qwen_home 取不到时同空路径兜底（sink 内部全程容错）
         let settings = qwen_home().unwrap_or_else(|| PathBuf::from("")).join("settings.json");
-        Self::with_roots(runtime_root().unwrap_or_else(|| PathBuf::from("")), settings)
+        Self::with_roots_throttled(runtime_root().unwrap_or_else(|| PathBuf::from("")), settings)
     }
 
-    /// 指定根目录构造（单测注入临时目录用）：settings 与转录同根
+    /// 指定根目录构造（单测注入临时目录用）：settings 与转录同根。
+    /// 0＝每轮实扫，回归测试不受节流影响
     pub fn with_root(root: PathBuf) -> Self {
-        Self::with_roots(root.clone(), root.join("settings.json"))
+        Self::with_roots_budget(root.clone(), root.join("settings.json"), 0)
+    }
+
+    /// 生产档：带 2s 扫描节流（第九轮审查刀一，service.rs 注册走此入口）
+    pub fn with_roots_throttled(root: PathBuf, settings_path: PathBuf) -> Self {
+        Self::with_roots_budget(root, settings_path, FILE_SCAN_THROTTLE_MS)
     }
 
     /// 公共构造：root＝转录运行时根，settings_path＝遥测配置载体位置
-    /// （#18 多根注册用，pub 化）
+    /// （#18 多根注册用，pub 化；单测注入语义 0＝每轮实扫）
     pub fn with_roots(root: PathBuf, settings_path: PathBuf) -> Self {
+        Self::with_roots_budget(root, settings_path, 0)
+    }
+
+    /// 双根＋节流预算构造（预算为公共终点的唯一实现）
+    fn with_roots_budget(root: PathBuf, settings_path: PathBuf, throttle_ms: u64) -> Self {
         Self {
             root,
             walker: Mutex::new(GlobWalker::default()),
@@ -124,6 +145,10 @@ impl QwenCodeAdapter {
             head_cache: Mutex::new(HashMap::new()),
             model_cache: Mutex::new(HashMap::new()),
             otel: OtelOutfileSink::new(otel::QWEN_PROFILE, settings_path),
+            scan_budget: Mutex::new(ScanBudget::new(throttle_ms)),
+            collect_budget: Mutex::new(ScanBudget::new(throttle_ms)),
+            scan_cache: Mutex::new(None),
+            collect_cache: Mutex::new(None),
         }
     }
 
@@ -141,6 +166,22 @@ impl QwenCodeAdapter {
 
     fn lock_model(&self) -> MutexGuard<'_, HashMap<PathBuf, String>> {
         self.model_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_scan_budget(&self) -> MutexGuard<'_, ScanBudget> {
+        self.scan_budget.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_collect_budget(&self) -> MutexGuard<'_, ScanBudget> {
+        self.collect_budget.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_scan_cache(&self) -> MutexGuard<'_, Option<Vec<SessionInfo>>> {
+        self.scan_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_collect_cache(&self) -> MutexGuard<'_, Option<CollectOutput>> {
+        self.collect_cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn transcript_files(&self) -> Vec<PathBuf> {
@@ -266,8 +307,12 @@ impl AgentAdapter for QwenCodeAdapter {
         })
     }
 
-    /// 会话发现：每个 <uuid>.jsonl 即一个会话；最近 90 天有修改的才纳入
+    /// 会话发现：每个 <uuid>.jsonl 即一个会话；最近 90 天有修改的才纳入。
+    /// 节流（第九轮审查刀一）：预算窗口内返回上轮缓存，最迟 2s 采到文件变化
     fn scan_sessions(&self) -> anyhow::Result<Vec<SessionInfo>> {
+        if !self.lock_scan_budget().ready() {
+            return Ok(self.lock_scan_cache().clone().unwrap_or_default());
+        }
         let cutoff = now_ms() - RANGE_CUTOFF_MS;
         let mut out = vec![];
         for f in self.transcript_files() {
@@ -300,12 +345,18 @@ impl AgentAdapter for QwenCodeAdapter {
             log::debug!("[qwen-code] 会话 {} 个，截断保留最近 100", out.len());
         }
         out.truncate(100);
+        *self.lock_scan_cache() = Some(out.clone());
         Ok(out)
     }
 
     /// 水位增量采集（纯追加转录，无重复行语义；幂等键防增量回退重读双计）：
-    ///   assistant 行 usageMetadata key = "qw:{uuid}"；custom_title 行走 titles 通道
+    ///   assistant 行 usageMetadata key = "qw:{uuid}"；custom_title 行走 titles 通道。
+    ///   节流（第九轮审查刀一）：预算窗口内返回上轮缓存——以旧水位算出的行是
+    ///   超集，自库幂等键保证重复入库零副作用，缓存返回安全
     fn collect_usage(&self, watermark_ts: i64) -> anyhow::Result<CollectOutput> {
+        if !self.lock_collect_budget().ready() {
+            return Ok(self.lock_collect_cache().clone().unwrap_or_default());
+        }
         let mut rows: Vec<UsageRow> = vec![];
         let mut titles: HashMap<String, String> = HashMap::new();
         let (mut err_open, mut bad_lines) = (0usize, 0usize);
@@ -407,11 +458,13 @@ impl AgentAdapter for QwenCodeAdapter {
             log::debug!("[qwen-code] otel outfile：token 行 {}（暂不入库）", batch.rows.len());
         }
         rows.sort_by_key(|r| r.ts);
-        Ok(CollectOutput {
+        let out = CollectOutput {
             rows,
             titles: titles.into_iter().collect(),
             ..CollectOutput::default()
-        })
+        };
+        *self.lock_collect_cache() = Some(out.clone());
+        Ok(out)
     }
 }
 
