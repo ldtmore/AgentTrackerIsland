@@ -522,9 +522,21 @@ body,
 /* 主文案：胶囊唯一的 600 字重（Apple「正文 medium 起」）——与灰阶数据拉开字重层级 */
 .island-text {
   flex: 1;
-  font-weight: 600;
-  white-space: nowrap;
+  min-width: 0;
+  display: flex; /* 第九轮审查：flex 容器承载「文案 clip 层＋警示标」并排 */
+  align-items: center;
   overflow: hidden;
+  font-weight: 600;
+}
+
+/* 文本裁剪层（第九轮审查）：ellipsis 只作用于纯文本元素——降级警示标与文案
+   同层时会被 nowrap+ellipsis 一并截断（长文案下「采集异常」沉默消失），
+   拆出独立 clip 层让标不参与收缩、恒完整可见 */
+.island-text-clip {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
   text-overflow: ellipsis;
 }
 
@@ -737,6 +749,7 @@ body,
   display: inline-flex;
   align-items: center;
   gap: 3px;
+  flex: none; /* 警示标不参与胶囊内收缩，恒完整可见（第九轮审查） */
   margin-left: 8px;
   color: var(--warn-amber);
 }
@@ -771,6 +784,14 @@ body,
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* 岛面板反馈 toast 让位胶囊（第九轮审查）：div.toast 默认贴窗顶 12px 恰是
+   胶囊本体所在（错误态常驻还会拦截胶囊点击）——下移至面板顶：
+   胶囊高 48px＋panel-wrap 间距 6px。选择器带 div.toast 前缀压过
+   toast.css 的 div.toast（0-2-1 > 0-1-1），纯单类会被同文件缺省定位反压 */
+div.toast.toast-below-pill {
+  top: 54px;
 }
 
 .panel {
@@ -1449,6 +1470,13 @@ body,
   color: var(--danger);
 }
 
+/* 弱化层级（第九轮审查补定义）：气泡内标签前缀/累计行等次要素材走 --text-3，
+   与 .tip-dim 同款令牌（浅色主题对比度已验证）——原先该类全库无定义，
+   五处弱化层级全部渲染成主文本色、主次分级失效 */
+.ttw-dim {
+  color: var(--text-3);
+}
+
 /* 额度区（2026-10-03 密度对齐「四行并两行」）：标题行＋帧体两行结构，
    总高对齐一张会话卡——原先 eyebrow／身份行／帧体／轮播点四行纵排，
    一行数据配三行伴随元素，密度不足会话卡一半（面板上紧下松的根因） */
@@ -1483,6 +1511,21 @@ body,
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+/* 本地推算实例的「推算」小标（第九轮审查）：样式真源在 providercard.css
+   （随设置/额度 chunk 才加载，岛窗口不含该文件致类名悬空）——此处镜像同名
+   规则逐参数一致，改动需双处同步 */
+.pc-stale {
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-3);
+  vertical-align: 2px;
 }
 
 /* 额度区：单行双窗口（5h / 7d），迷你条平分行宽；重置时间收敛进各自悬浮提示 */

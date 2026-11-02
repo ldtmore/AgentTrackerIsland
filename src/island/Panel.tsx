@@ -156,8 +156,12 @@ function SessionCard({
               短名＋身份色胶囊（悬浮出全名）；行首旧状态点移除——
               状态右移与文字成组，圆点从此只出现在状态旁 */}
           <AgentBadge agent={s.agent} name={agentShortName(s.agent)} title={agentFullName(s.agent)} />
-          {/* 悬浮展示完整标题（截断有省略号暗示，气泡只作补充——G2 规则③） */}
-          <Tip content={title}>
+          {/* 悬浮展示完整标题（截断有省略号暗示，气泡只作补充——G2 规则③）。
+              卡内四个补充气泡均走纯悬停通道（focusable=false，第九轮审查）：
+              默认注 tabIndex 会让每张卡 5 个 Tab 停留点，面板满载约 160 次才
+              走完会话区——卡本体已是按钮，tag 信息与年度热力图 365 格同属
+              悬浮补充场景，键盘聚焦卡本身即可 */}
+          <Tip focusable={false} content={title}>
             <span className="card-title">{title}</span>
           </Tip>
           {/* 状态组：点＋文字右对齐（点语言不变：呼吸/快闪/暗淡，仅位置移动） */}
@@ -167,19 +171,20 @@ function SessionCard({
           </span>
         </div>
         <div className="card-line2">
-          <Tip content={model ? `使用的模型：${model}` : "尚未捕获该会话的模型调用"}>
+          <Tip focusable={false} content={model ? `使用的模型：${model}` : "尚未捕获该会话的模型调用"}>
             <span className="card-tag">
               <ChipIcon />
               {model ?? "--"}
             </span>
           </Tip>
-          <Tip content={s.project_dir ?? "无法识别工作目录"}>
+          <Tip focusable={false} content={s.project_dir ?? "无法识别工作目录"}>
             <span className="card-tag">
               <FolderIcon />
               {project || "--"}
             </span>
           </Tip>
           <Tip
+            focusable={false}
             content={
               <div className="tip-breakdown">
                 <div>
@@ -731,7 +736,7 @@ function SummaryBar({
       </Tip>
       <span className="sum-actions">
         {snap.degraded && (
-          <Tip content={"采集源连续失败，数据可能滞后\n胶囊上亦有红标提示"}>
+          <Tip content={"采集源连续失败，数据可能滞后\n胶囊上亦有提示标"}>
             <span className="sum-degraded">
               <WarnIcon />
               采集异常
@@ -835,8 +840,9 @@ export default function Panel({
   const showQuota = snap.accounts.length === 0 || islandAccounts.length > 0;
   return (
     <div className="panel" ref={panelRef}>
-      {/* 面板操作反馈（跳转未命中/开窗失败等），贴窗顶居中 */}
-      <Toast data={toast} onDismiss={() => setToast(null)} />
+      {/* 面板操作反馈（跳转未命中/开窗失败等）。定位让位胶囊本体（第九轮审查）：
+          默认贴窗顶 12px 恰压住胶囊并拦截其点击，错误态还常驻——下移进面板区 */}
+      <Toast data={toast} onDismiss={() => setToast(null)} className="toast-below-pill" />
       <SummaryBar snap={snap} onToast={pushToast} />
       {/* 会话区头（批次二 eyebrow 结构）：小标＋计数即入口；常驻提示「点击卡片
           跳转对应窗口」收敛进气泡（空面板 0 卡片时不再显示无对象的指引） */}

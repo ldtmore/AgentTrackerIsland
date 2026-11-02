@@ -146,6 +146,8 @@ impl Store {
             log::warn!("insert_usage 提交事务失败（本轮全部回滚，下轮重采）：{e}");
             return Err(anyhow::anyhow!("insert_usage 提交事务失败：{e}"));
         }
+        // 今日用量单槽缓存失效：本轮有新行入库，「今日」汇总须下轮重算
+        *self.today_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
         Ok(changed)
     }
 
@@ -221,9 +223,21 @@ impl Store {
 
     /// 今日用量汇总（账单口径四项相加）： 本机今日零点之后的 token 总量与调用次数。
     /// 供胶囊/面板"今日"口径展示（2026-09-18 展示改造，替代误导性的全历史"累计"）。
-    /// 调用次数不含后台校准行（is_background，cost-state 差值非真实调用）
+    /// 调用次数不含后台校准行（is_background，cost-state 差值非真实调用）。
+    /// 第九轮审查：纯读迁只读连接（不占写锁与采集写入互斥）＋单槽缓存
+    /// （活跃档每 tick 全量 SUM 的常驻底噪；insert_usage 成功即失效）
     pub fn today_usage(&self, day_start_ms: i64) -> (i64, i64) {
-        let conn = self.lock_conn();
+        if let Some((ds, t, c)) = self
+            .today_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            if *ds == day_start_ms {
+                return (*t, *c);
+            }
+        }
+        let conn = self.lock_read();
         let result: rusqlite::Result<(i64, i64)> = conn.query_row(
             "SELECT COALESCE(SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)
                     +COALESCE(cache_read_tokens,0)+COALESCE(cache_creation_tokens,0)),0),
@@ -233,7 +247,12 @@ impl Store {
             |r| Ok((r.get(0)?, r.get(1)?)),
         );
         match result {
-            Ok(v) => v,
+            Ok(v) => {
+                // 仅缓存成功结果：查询失败下轮重查，不用 (0,0) 污染缓存
+                *self.today_cache.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some((day_start_ms, v.0, v.1));
+                v
+            }
             Err(e) => {
                 log::warn!("today_usage 查询失败（按 0 处理）：{e}");
                 (0, 0)
@@ -505,7 +524,8 @@ impl Store {
     /// 现按 COALESCE(last_seen_at, first_seen_at) 口径（与 cleanup 同源，活跃
     /// 会话每轮 tick 刷新 last_seen_at），且查询失败记日志不再静默
     pub fn recent_session_count(&self) -> i64 {
-        let conn = self.lock_conn();
+        // 纯读迁只读连接（第九轮审查，读写分离纪律）：本地 API 轮询不占写锁
+        let conn = self.lock_read();
         match conn.query_row(
             "SELECT COUNT(*) FROM sessions WHERE COALESCE(last_seen_at, first_seen_at, 0) >= ?1",
             [now_ms() - ENDED_AFTER_MS],
@@ -522,7 +542,9 @@ impl Store {
     /// 今日（本机时区零点起）token 合计与调用次数（本地 API /v1/status 用便捷
     /// 包装；与岛胶囊「今日」同口径：内部转调 today_usage(day_start)）
     pub fn today_usage_now(&self) -> (i64, i64) {
-        let conn = self.lock_conn();
+        // 零点截断计算同样迁只读连接（第九轮审查）：拿完即放，聚合本体在
+        // today_usage 内走缓存＋只读连接
+        let conn = self.lock_read();
         let Some(cutoff) = today_start_ms(&conn) else {
             return (0, 0);
         };

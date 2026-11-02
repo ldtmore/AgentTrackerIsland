@@ -85,7 +85,9 @@ export default function TooltipWindow() {
       {data.degraded && (
         <div className="ttw-row">
           <span className="ttw-flag">⚠ </span>
-          <span className="ttw-danger">采集源连续失败，数据可能滞后</span>
+          {/* 降级＝琥珀（F3 口径矩阵，与胶囊/面板/托盘一致）——原先误用错误红，
+              用户会误读为「出错」级故障（第九轮审查） */}
+          <span className="ttw-warn">采集源连续失败，数据可能滞后</span>
         </div>
       )}
       {data.today && <div className="ttw-row">{data.today}</div>}

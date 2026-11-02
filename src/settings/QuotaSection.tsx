@@ -296,7 +296,9 @@ export default function QuotaSection({
       return;
     }
     setBudgetError("");
-    await saveKey("budget_daily_usd", String(d));
+    // 逐键短路（与上方 commitThresholds 同款纪律）：日预算落库失败即停，
+    // 不再写月预算——避免「月已生效、日还是旧值」的部分保存（第九轮审查）
+    if (!(await saveKey("budget_daily_usd", String(d)))) return;
     await saveKey("budget_monthly_usd", String(m));
   };
 

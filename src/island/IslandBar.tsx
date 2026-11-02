@@ -227,6 +227,7 @@ export default function IslandBar({
   onToggle,
   mode = "full",
   miniW = 240,
+  expanded = false,
 }: {
   snap: IslandSnapshot | null;
   thresholds: Thresholds;
@@ -241,6 +242,9 @@ export default function IslandBar({
   /** 收纳形态宽度（Rust mini_line_width 经 metrics 下发）：驱动 clip-path 裁剪
    *  宽度与小岛内容阶梯（≥280 显今日段，D5） */
   miniW?: number;
+  /** 面板是否展开（App 相位下发）：aria-expanded 读屏播报用——form 态（大岛）
+   *  不等于面板开合，不能拿 mode 兼任（第九轮审查兑现 D12 注释承诺） */
+  expanded?: boolean;
 }) {
   // 额度耗尽时胶囊整体按出错态展示（会话状态本身保持真实值）
   const islandState = snap?.quota_exhausted ? "any_error" : snap?.island;
@@ -339,6 +343,7 @@ export default function IslandBar({
       tabIndex={onToggle ? 0 : undefined}
       role={onToggle ? "button" : undefined}
       aria-label="灵动岛，回车展开或收起信息卡片"
+      aria-expanded={onToggle ? expanded : undefined}
       onKeyDown={(e) => {
         if (!onToggle) return;
         if (e.key === "Enter" || e.key === " ") {
@@ -388,7 +393,12 @@ export default function IslandBar({
       <div className="isle-body isle-full-body">
         <span className={`dot ${meta.dot}`} />
         <span className="island-text">
-          {snap ? activeText(snap) : "「去你的岛」启动中…"}
+          {/* 文本单独包 clip 层承接 ellipsis（第九轮审查）：降级标若与文案同层，
+              会被 nowrap+ellipsis 一并截断——长文案下「采集异常」警示沉默消失，
+              违红线④降级可见；拆层后标不参与收缩，小岛层本就是直接子项无此问题 */}
+          <span className="island-text-clip">
+            {snap ? activeText(snap) : "「去你的岛」启动中…"}
+          </span>
           {
             // 降级可见（审查 1.1 + C7）：警示图标强化，与正常文案拉开视觉差
             snap?.degraded && (

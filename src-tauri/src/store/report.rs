@@ -1134,20 +1134,32 @@ impl Store {
         let rows: Vec<(String, String, String)> = vec![
             ("总 Token".into(), sum.total_tokens.to_string(),
                 delta(sum.total_tokens as f64, prev.map(|p| p.total_tokens as f64))),
+            // 本期为 null（无可计价模型／无时长数据）时环比输出空串，与页面
+            // Delta「value==null 不显示」同口径——原先 unwrap_or(0.0) 摊平成 0
+            // 参与，导出「--」旁边出现「-100.0%」（第九轮审查修复）
             ("估算成本（美元）".into(),
                 sum.est_cost.map(|c| format!("{c:.4}")).unwrap_or_else(|| "--".into()),
-                delta(sum.est_cost.unwrap_or(0.0), prev.and_then(|p| p.est_cost))),
+                sum.est_cost.map_or_else(String::new, |c| delta(c, prev.and_then(|p| p.est_cost)))),
             ("调用次数".into(), sum.calls.to_string(),
                 delta(sum.calls as f64, prev.map(|p| p.calls as f64))),
             ("生成时长（毫秒）".into(), sum.duration_ms.map(|d| d.to_string()).unwrap_or_else(|| "--".into()),
-                delta(sum.duration_ms.unwrap_or(0) as f64, prev.and_then(|p| p.duration_ms).map(|d| d as f64))),
+                sum.duration_ms.map_or_else(String::new, |d| delta(d as f64, prev.and_then(|p| p.duration_ms).map(|v| v as f64)))),
             ("平均首字延迟（毫秒）".into(), sum.ttft_avg_ms.map(|d| d.to_string()).unwrap_or_else(|| "--".into()),
-                delta(sum.ttft_avg_ms.unwrap_or(0) as f64, prev.and_then(|p| p.ttft_avg_ms).map(|d| d as f64))),
+                sum.ttft_avg_ms.map_or_else(String::new, |d| delta(d as f64, prev.and_then(|p| p.ttft_avg_ms).map(|v| v as f64)))),
+            // 比率口径与页面汇总卡一致（Report.tsx：思考／（输入+输出+思考）、
+            // 缓存读／（输入+缓存读））。第九轮审查修复：原分母漏加自身项，
+            // 缓存命中率可导出 300% 这类超 100% 的错误数字
             ("思考占比".into(),
-                if sum.billable_tokens > 0 { format!("{:.1}%", sum.reasoning_tokens as f64 / sum.billable_tokens as f64 * 100.0) } else { "--".into() },
+                {
+                    let denom = sum.billable_tokens + sum.reasoning_tokens;
+                    if denom > 0 { format!("{:.1}%", sum.reasoning_tokens as f64 / denom as f64 * 100.0) } else { "--".into() }
+                },
                 String::new()),
             ("缓存命中率".into(),
-                if sum.input_total > 0 { format!("{:.1}%", sum.cache_read_total as f64 / sum.input_total as f64 * 100.0) } else { "--".into() },
+                {
+                    let denom = sum.input_total + sum.cache_read_total;
+                    if denom > 0 { format!("{:.1}%", sum.cache_read_total as f64 / denom as f64 * 100.0) } else { "--".into() }
+                },
                 String::new()),
             ("会话数".into(), sum.sessions.to_string(),
                 delta(sum.sessions as f64, prev.map(|p| p.sessions as f64))),

@@ -54,11 +54,14 @@
 
 /* 变更中轻量指示（五轮审查）：筛选/范围后续变更保留旧内容只降透明度，
    不再整页塌成「加载中…」重挂 ECharts（闪烁＋图例/交互状态丢失）；
-   头部控件不降（刷新/导出仍可点） */
+   头部控件不降（刷新/导出仍可点）。
+   .rp-live（第九轮审查补覆盖）：同样随快照重拉的周×小时卡与额度卡——
+   原先仅上半页四块变暗，这两卡数据原地突跳无任何变化指示 */
 .rp-root.fetching .rp-cards,
 .rp-root.fetching .rp-budget,
 .rp-root.fetching .rp-filter,
-.rp-root.fetching .rp-main {
+.rp-root.fetching .rp-main,
+.rp-root.fetching .rp-live {
   opacity: 0.55;
   transition: opacity var(--dur-fast, 0.12s) ease;
 }

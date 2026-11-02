@@ -444,10 +444,13 @@ function QuotaCard({
  *  开窗失败经 onFail 回调反馈（2026-10-16 审查 #9；helper 不依赖具体
  *  窗口的 toast 实例，由调用方传入反馈载体） */
 function goSettings(onFail?: (e: unknown) => void) {
-  openWindow("show_settings_window").catch((e) => onFail?.(e));
+  // 深链须先于开窗 invoke（第九轮审查，与 Panel/TrayMenu 两处调用点同序）：
+  // sendDeepLink 经 getAll 查目标存在性，晚于 openWindow 会与其注册竞速——
+  // 窗口恰已注册但尚未挂载时兜底条目被跳过、emit 又已落空，新窗落地页顶丢定位
   emit("goto-quota-section").catch(() => {});
   // 目标已存在时不落条目（6.4 防陈旧消费）：设置窗开着时 emit 已必达
   void sendDeepLink("goto-quota-section", "settings");
+  openWindow("show_settings_window").catch((e) => onFail?.(e));
 }
 
 export default function Quotas() {

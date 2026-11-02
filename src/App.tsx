@@ -507,8 +507,15 @@ function IslandApp() {
     Math.min(metrics.expanded_h, availBelow ?? metrics.expanded_h),
   );
 
+  // useMemo 稳定引用（2026-10-03 审查优化）：此前每渲染新建 {...snap} 对象，
+  // expanded/dock 等局部 state 变化也会让全树拿到新引用，阻断未来的 memo 化。
+  // 第九轮审查前移到高度 effect 之前：面板展开门控需读它（TS2448 使用先于声明）
+  const visibleSnap = useMemo(() => filterSnap(snap, agents), [snap, agents]);
+
   useEffect(() => {
-    const panelOpen = phase === "panel";
+    // 面板展开须等首拍快照（第九轮审查）：面板内容渲染等 visibleSnap 而窗口
+    // 高度不等——启动期点击会展开一块拦截鼠标的透明空窗；收紧为同帧出现
+    const panelOpen = phase === "panel" && visibleSnap != null;
     if (panelPhase == null && panelH != null) setPanelH(null); // 面板卸载后清测量值，下次展开重新上报
     if (!panelOpen && panelPhase != null) return; // 退场动画在播：窗口高度按兵不动
     const win = getCurrentWebviewWindow();
@@ -531,7 +538,7 @@ function IslandApp() {
     win
       .setSize(new LogicalSize(target.w, target.h))
       .catch(() => {});
-  }, [phase, metrics, panelH, panelPhase, expandedCap]);
+  }, [phase, metrics, panelH, panelPhase, expandedCap, visibleSnap]);
 
   // 显示器/缩放变化后重拉岛尺寸（2026-10-03 审查修复）：metrics 原先仅挂载
   // 拉取一次，拖岛跨屏或系统缩放变化后宽度档位/标签宽仍用旧值；贴边吸附
@@ -553,10 +560,6 @@ function IslandApp() {
       un2.then((f) => f());
     };
   }, []);
-
-  // useMemo 稳定引用（2026-10-03 审查优化）：此前每渲染新建 {...snap} 对象，
-  // expanded/dock 等局部 state 变化也会让全树拿到新引用，阻断未来的 memo 化
-  const visibleSnap = useMemo(() => filterSnap(snap, agents), [snap, agents]);
 
   // 宽度降级阶梯（F7，2026-09-28 视觉改版批次一）：按岛宽注根类，
   // CSS 据此收窄胶囊段落（≥560 全量 / 460~559 隐今日 / <460 再隐窗口类厂商短名）；
@@ -735,6 +738,7 @@ function IslandApp() {
             enterEdge={peekEnter}
             onToggle={togglePanel}
             mode={phase === "mini" ? "mini" : "full"}
+            expanded={phase === "panel"}
             miniW={metrics.mini_line_w}
           />
           {/* 面板挂载由相位驱动：in=入场/展开，out=退场动画在播（播完 onAnimationEnd 卸载） */}

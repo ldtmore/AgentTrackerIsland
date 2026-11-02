@@ -71,6 +71,16 @@ export function fetchedAtOf(a: AccountOverview): number {
   return times.length ? Math.max(...times) : a.updated_at;
 }
 
+/** 是否有任一真实快照（余额或窗口的 fetched_at＞0）：无快照时摘要时间位应留空
+ *  ——fetchedAtOf 会回退实例更新时间（创建时刻），把它标成「最近数据」属语义
+ *  作假（第九轮审查，对齐额度页 B2「无快照时间位留空」口径） */
+export function hasRealSnapshot(a: AccountOverview): boolean {
+  return (
+    (a.balance?.fetched_at ?? 0) > 0 ||
+    a.quotas.some((q) => (q.fetched_at ?? 0) > 0)
+  );
+}
+
 /** 小号滑动开关（岛展示用；启停为主开关用常规尺寸） */
 function MiniSwitch({
   on,
@@ -248,8 +258,11 @@ export default function ProviderCard({
             {summaryOf(account, thresholds)}
             {account.cred_error && <span className="pc-stale">历史</span>}
           </span>
-          <span className="pc-summary-time" title={summaryTitleOf(account)}>
-            {fmtDT(fetchedAtOf(account))}
+          <span
+            className="pc-summary-time"
+            title={hasRealSnapshot(account) ? summaryTitleOf(account) : undefined}
+          >
+            {hasRealSnapshot(account) ? fmtDT(fetchedAtOf(account)) : ""}
           </span>
         </div>
       )}

@@ -176,7 +176,13 @@ export default function ProviderFormModal({
    *  base 归一化（2026-10-10）：空值或恰等于 kind 默认端点时存 null——保留
    *  「厂商换默认端点自动跟随」语义，不把今天的默认值冻结进实例 */
   const saveAndTest = async () => {
-    if (!fEntry || saving) return;
+    if (saving) return;
+    // 厂商清单加载失败时 entries 为空（拉取失败仅 toast 提示、不阻塞本弹窗）：
+    // 原先此处静默 return——填完表单点保存毫无反应、无任何提示（第九轮审查）
+    if (!fEntry) {
+      setFormError("厂商清单加载失败，请关闭弹窗重试");
+      return;
+    }
     const alias = fAlias.trim();
     const secret = fSecret.trim();
     if (!alias) {
@@ -498,11 +504,12 @@ export default function ProviderFormModal({
           <button type="button" className="st-btn st-btn-sm" disabled={saving} onClick={onClose}>
             取消
           </button>
+          {/* 主按钮：厂商清单未加载时一并禁用（与 saveAndTest 的报错提示配套） */}
           <button
             type="button"
             className="st-btn st-btn-primary"
             data-primary="1"
-            disabled={saving}
+            disabled={saving || !fEntry}
             onClick={saveAndTest}
           >
             {saving ? "保存中…" : "保存并检测"}

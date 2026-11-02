@@ -1236,8 +1236,11 @@ select.st-input option {
 /* ===== 顶部 toast（2026-10-09 提炼 shared/Toast）：样式随组件走，此处仅留
    设置页定位变体——成功 2.5s 自动消失、失败常驻可关闭的语义不变 ===== */
 
-/* 让位顶部锚点条（阶段二）：失败 toast 常驻时不遮分区导航 */
-.st-toast-top {
+/* 让位顶部锚点条（阶段二）：失败 toast 常驻时不遮分区导航。
+   选择器带 div.toast 前缀压过 toast.css 的 div.toast 缺省 top:12px
+   （0-2-1 > 0-1-1）——纯单类（0-1-0）恒被反压，本变体此前从未生效
+   （第九轮审查实施期发现） */
+div.toast.st-toast-top {
   top: calc(var(--st-nav-h) + 12px);
 }
 

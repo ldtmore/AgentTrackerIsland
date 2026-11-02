@@ -14,11 +14,11 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { useTheme } from "../shared/theme";
 import {
   accountLabel,
-  fmtCountdownCN,
   fmtTokens,
   balanceWarnFor,
   DEFAULT_THRESHOLDS,
   quotaLevel,
+  resetPhrase,
   sanitizeThresholds,
   SESSION_META,
   tensestAccount,
@@ -300,6 +300,8 @@ export default function TrayMenu() {
               className="tm-head-line2 tm-head-quota tm-head-quota-link"
               role="button"
               tabIndex={0}
+              // 读屏播报明细开合状态（第九轮审查：键盘可展开却无状态播报）
+              aria-expanded={detailOpen}
               title={detailOpen ? "点击收起全部实例明细" : "点击展开全部实例明细"}
               onClick={() => setDetailOpen((v) => !v)}
               onKeyDown={(e) => {
@@ -330,8 +332,11 @@ export default function TrayMenu() {
                     <span className="tm-quota-sub">
                       （{windowLabel(pick.quota.window_kind)} ·{" "}
                       {accountLabel(pick.account.kind_name, pick.account.alias)}）
+                      {/* 重置时刻过期改说「等待供应商刷新」（resetPhrase 整句输出，
+                          与岛气泡/面板同源）——原先拼 fmtCountdownCN，其过期返回
+                          null，渲染成破句「· 后重置」（第九轮审查） */}
                       {pick.quota.reset_at != null && (
-                        <> · {fmtCountdownCN(pick.quota.reset_at)}后重置</>
+                        <> · {resetPhrase(pick.quota.reset_at)}</>
                       )}
                     </span>
                   </>

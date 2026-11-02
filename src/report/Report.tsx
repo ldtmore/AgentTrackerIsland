@@ -353,6 +353,9 @@ function YearHeatmap({ refreshTick }: { refreshTick: number }) {
       )}
       <div className="rp-yh-legend">
         少
+        {/* lv0＝无用量日（第九轮审查补色样）：灰色档不进图例时，其含义只能
+            悬停得知；GitHub 式「少」从空档起步更符合直觉 */}
+        <i className="rp-yh-cell lv0" />
         <i className="rp-yh-cell lv1" />
         <i className="rp-yh-cell lv2" />
         <i className="rp-yh-cell lv3" />
@@ -1309,7 +1312,13 @@ export default function Report() {
 
   const summary = snap?.summary;
   const prev = snap?.prev_summary ?? null;
-  const empty = loaded && (snap == null || (summary != null && summary.calls === 0));
+  // 空态判定须让位于失败（第九轮审查）：刷新失败但旧快照恰好零调用时，
+  // 原先 empty 为真吞掉错误横幅——用户看到「暂无数据」而不知刷新已失败，
+  // 违背「失败≠空态」纪律；首载失败（snap==null）仍由上方错误分支先行接管
+  const empty =
+    loaded &&
+    loadError == null &&
+    (snap == null || (summary != null && summary.calls === 0));
   // 趋势空态（2026-11-03 收口）：时长/成本模式在范围内无对应数据时，空白绘图区
   // 会被读作「坏了」——与汇总卡「—」同口径给一句解释。判定与图全零严格等价：
   // 时长 SUM 为 null ⇔ 范围内所有调用都无时长字段；est_cost null ⇔ 无一模型可计价
@@ -1767,8 +1776,10 @@ export default function Report() {
                   metric={dimMetric}
                 />
                 {/* 按模型首字延迟：条长=平均首字（降序），点击同样联动模型筛选；
-                    成本档下该段与错误分布无对应口径，随面板隐藏 */}
-                {dimMetric !== "cost" && snap.ttft_by_model.length > 0 && (
+                    仅 token 档展示（第九轮审查收口）——原先跟随面板指标切到
+                    「次数」后条长/值列悄然变成调用次数，与「平均首字」标题和
+                    延迟降序自相矛盾；成本/次数档随面板隐藏（与错误段口径同理） */}
+                {dimMetric === "token" && snap.ttft_by_model.length > 0 && (
                   <DimBars
                     title="按模型首字延迟"
                     items={snap.ttft_by_model}
@@ -1880,7 +1891,7 @@ export default function Report() {
                 响应强度」降序排列（2026-11-03 重排）：切换筛选时动卡聚前、静卡
                 殿后，扫视动线自上而下单调——原顺序年度图夹在趋势与额度之间，
                 切换筛选时「动、不动、动」交错跳线 */}
-            <section className="rp-card">
+            <section className="rp-card rp-live">
               <div className="rp-card-head">
                 <div className="rp-card-title">周 × 小时分布（本机时区）</div>
                 <MetricToggle
@@ -1898,7 +1909,7 @@ export default function Report() {
             {/* 额度消耗历史（quota_snapshots 采样曲线；未配置额度整卡隐藏）：
                 半响应——随范围档联动、不受维度筛选影响（ⓘ 注明），居静卡之前 */}
             {snap.quota_curve.length > 0 && (
-              <section className="rp-card">
+              <section className="rp-card rp-live">
                 <div className="rp-card-head">
                   <div className="rp-card-title">
                     额度消耗历史

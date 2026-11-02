@@ -147,6 +147,10 @@ pub struct Store {
     /// 或清理/回填改写历史分组后整体失效）
     quota_latest_cache:
         Mutex<Option<std::collections::HashMap<(String, String, Option<String>), QuotaRow>>>,
+    /// 今日用量单槽缓存（第九轮审查）：活跃档聚合器每 tick 一次 today_usage，
+    /// 重度库当日数万行逐秒 SUM 回表——同一天直接复用上轮值；insert_usage
+    /// 成功即失效，跨零点按 day_start 比对自然过期（与 quota_latest_cache 同款纪律）
+    today_cache: Mutex<Option<(i64, i64, i64)>>, // （day_start, tokens, calls）
 }
 
 /// pace 燃烧速度预测结果（2026-09-29 审查新增 #21，对标 QuotaBar/lazyagent）：
@@ -224,6 +228,7 @@ impl Store {
             conn: Mutex::new(conn),
             read_conn: Mutex::new(read_conn),
             quota_latest_cache: Mutex::new(None),
+            today_cache: Mutex::new(None),
         })
     }
 
@@ -927,6 +932,63 @@ mod tests {
         // 更小快照重复采到：不覆盖、不变更
         assert_eq!(store.insert_usage(&[sample_usage(1_000)]).unwrap(), 0);
         assert_eq!(store.session_usage_total("zcode:abc"), 5_200);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 报表 CSV 比率口径与页面汇总卡一致（第九轮审查修复锁）：思考占比分母含
+    /// 思考自身、缓存命中率分母含缓存读——原先沿用旧公式（分母漏加自身项），
+    /// 缓存命中率可导出 300% 这类超 100% 的错误数字
+    #[test]
+    fn test_report_csv_ratio_caliber() {
+        let path = tmp_db("csv-ratio");
+        let store = Store::open(&path).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        // sample_usage：input=1000 output=200 reasoning=50 cache_read=3000
+        store.insert_usage(&[sample_usage(now)]).unwrap();
+        let csv = store
+            .build_report_csv("today", None, None, None, None)
+            .unwrap();
+        // 思考占比 = 50 /（1000+200+50）= 4.0%（旧公式 50/1200 = 4.2%）
+        // 断言含尾逗号：汇总行恒为「指标,数值,环比」三列，比率列环比恒空
+        assert!(csv.contains("思考占比,4.0%,"), "思考占比口径错误：\n{csv}");
+        // 缓存命中率 = 3000 /（1000+3000）= 75.0%（旧公式 3000/1000 = 300.0%）
+        assert!(csv.contains("缓存命中率,75.0%,"), "缓存命中率口径错误：\n{csv}");
+        assert!(!csv.contains("300.0%"), "旧公式残留：\n{csv}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 报表 CSV 环比口径（第九轮审查修复锁）：本期指标为 null（如范围内全行
+    /// 无时长字段）时环比输出空串，不按 0 参与计算——原先 unwrap_or(0.0) 摊平，
+    /// 导出「--」旁边出现「-100.0%」，与页面 Delta「value==null 不显示」相悖
+    #[test]
+    fn test_report_csv_delta_null() {
+        let path = tmp_db("csv-delta");
+        let store = Store::open(&path).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        // 本期（近 7 天）：行无时长与首字字段——生成时长汇总为 null
+        let mut cur = sample_usage(now);
+        cur.duration_ms = None;
+        cur.ttft_ms = None;
+        cur.source_id = Some("test:csv-cur".into());
+        // 上期（7~14 天前）：有时长——旧代码在此组合下导出 -100.0%
+        let mut prev = sample_usage(now - 10 * 24 * 3600 * 1000);
+        prev.source_id = Some("test:csv-prev".into());
+        store.insert_usage(&[cur, prev]).unwrap();
+        let csv = store
+            .build_report_csv("7d", None, None, None, None)
+            .unwrap();
+        // 「--」经 csv_cell 防公式注入带 ' 前缀；尾逗号后环比列应恒为空串
+        assert!(
+            csv.contains("生成时长（毫秒）,'--,"),
+            "本期 null 的环比应输出空串：\n{csv}"
+        );
+        assert!(!csv.contains("-100.0%"), "旧口径残留：\n{csv}");
         let _ = std::fs::remove_file(&path);
     }
 
