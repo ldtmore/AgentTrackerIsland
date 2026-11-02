@@ -760,12 +760,14 @@ impl Store {
             f.provider_models = Some(union);
         }
         let overrides = self.list_price_overrides();
-        // 环比基准：上一等长周期 [start, end)。today→昨天零点起；
+        // 环比基准：上一等长周期 [start, end)。today→昨天同时段（终点=now-24h，
+        // 2026-11-03 同时段对齐：旧口径比昨天全天，早上打开时今天只积累了几小时，
+        // 环比必然大跌——属采样不均噪音，会被误读为用量暴跌）；
         // 7d/30d/90d→紧邻上一段；all→全部历史无上期，不比
         let prev_window: Option<(i64, i64)> = match range {
             "today" => {
                 let t = today_start_ms(&self.lock_read())?;
-                Some((t - 86_400_000, t))
+                Some((t - 86_400_000, now_ms() - 86_400_000))
             }
             "7d" | "30d" | "90d" => {
                 let span = range.trim_end_matches('d').parse::<i64>().ok()? * 86_400_000;

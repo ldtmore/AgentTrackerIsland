@@ -477,6 +477,17 @@
 
 /* 会话明细表样式已随功能迁往 sessions/sessions.css（M1-10） */
 
+/* 图表无数据空态（2026-11-03）：趋势卡时长/成本模式在范围内无对应数据时
+   替代空白绘图区，一句话交代原因——与汇总卡「—」同一降级语言 */
+.rp-chart-empty {
+  height: var(--rp-trend-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-4);
+  font-size: 12px;
+}
+
 .rp-empty {
   color: var(--text-4);
   text-align: center;
@@ -515,13 +526,15 @@
   color: var(--text-4);
 }
 
-/* 年度热力图（#24）：7 行×53 列 CSS grid；格子边长 = min(卡片宽按列数平分,
-   28px)——常规窗口平分铺满整卡，超宽窗口封顶 28px 居中，窄窗口等比缩小免滚动；
-   列数由组件经 --yh-cols 下发（53 或 54，随首列周日补位） */
+/* 年度热力图（#24）：7 行×N 列 CSS grid；格子边长 = min(卡片宽按列数平分,
+   34px)——常规窗口平分铺满整卡，超宽/短窗口封顶 34px 居中，窄窗口等比缩小
+   免滚动；列数由组件经 --yh-cols 下发。2026-11-03 封顶自 28px 放宽：窗口
+   自适应后短跨度列数少，放宽让图面更饱满；满窗口 53 列时格子约 19px 触不到
+   封顶，既有行为零变化 */
 .rp-yearheat {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: min(calc((100% - (var(--yh-cols, 53) - 1) * 3px) / var(--yh-cols, 53)), 28px);
+  grid-auto-columns: min(calc((100% - (var(--yh-cols, 53) - 1) * 3px) / var(--yh-cols, 53)), 34px);
   justify-content: center;
   gap: 3px;
   width: 100%;

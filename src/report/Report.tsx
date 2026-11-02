@@ -198,10 +198,11 @@ function bucketLabel(b: string, range: string): string {
   return b.slice(5);
 }
 
-/** 年度热力图（#24）：近 365 天逐日 token 格子（GitHub 风格）——
- *  7 行（周几）×53 列（周）；色阶按非零日的分位分 4 档（P25/P50/P75/P95），
- *  悬浮显示日期与用量。恒全量口径不随筛选联动（评审后暂缓，待口径重设计）。
- *  与周×小时热力图互补 */
+/** 年度热力图（#24）：逐日 token 格子（GitHub 风格）——7 行（周几）×N 列（周）；
+ *  色阶按非零日的分位分 4 档（P25/P50/P75/P95），悬浮显示日期与用量。
+ *  恒全量口径不随筛选联动（评审后暂缓，待口径重设计）。与周×小时热力图互补。
+ *  2026-11-03 窗口自适应：数据跨度不足一年时起点改取「首用日所在周周日」，
+ *  只画真实跨度（新用户不再见一整年灰墙），标题随窗口改写；满一年恒 365 天不变 */
 function YearHeatmap({ refreshTick }: { refreshTick: number }) {
   const [rows, setRows] = useState<[string, number, number][] | null>(null);
   // 加载失败显式呈现（2026-10-10 审查收口，对齐报表页「失败≠空态」纪律）：
@@ -260,15 +261,34 @@ function YearHeatmap({ refreshTick }: { refreshTick: number }) {
   const tokens = rows.map((r) => r[1]).filter((t) => t > 0).sort((a, b) => a - b);
   const q = (p: number) => tokens[Math.min(tokens.length - 1, Math.floor(tokens.length * p))] ?? 1;
   const levels = [q(0.25), q(0.5), q(0.75), q(0.95)];
-  // 近 365 天格子：从 364 天前到今天，列起点对齐周日（首列前补空位）
+  // 近一年格子：窗口起点自适应（2026-11-03）。默认恒 365 天（364 天前起）；
+  // 数据真实跨度不足一年时改取「首用日所在周的周日」——只画真实跨度，新用户
+  // 打开即是一小片饱满亮格而非一整年灰墙（GitHub 式固定窗口「全年灰＝历史长」
+  // 的语境在本地新装工具上不成立，灰墙只剩「还没用多久」的噪音）；满一年
+  // （首用日早于 364 天前）维持现状零变化。首用日取 rows 最小日期（ISO 串
+  // 字典序即时间序）；标题随窗口改写（spanDays<365 → 「自 X 以来 · N 天」）
   const p2 = (n: number) => String(n).padStart(2, "0");
   const dateKey = (d: Date) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const start = new Date(today.getTime() - 364 * 86_400_000);
-  const lead = start.getDay(); // 首列前的空位数（对齐周日为首行）
+  // 首用日与真实跨度天数（标题口径，含首尾）：new Date(y,m-1,d) 按本地时区
+  // 零点解析，防 Date 直解 ISO 串走 UTC 造成跨日偏移
+  const earliest = rows.reduce((min, r) => (r[0] < min ? r[0] : min), rows[0][0]);
+  const [ey, em, ed] = earliest.split("-").map(Number);
+  const firstDay = new Date(ey, em - 1, ed);
+  const spanDays = Math.round((today.getTime() - firstDay.getTime()) / 86_400_000) + 1;
+  const defaultStart = new Date(today.getTime() - 364 * 86_400_000);
+  let start = defaultStart;
+  if (firstDay > defaultStart) {
+    // 不足一年：起点缩到首用日所在周周日（回退对齐列首，首列无补位）
+    start = new Date(firstDay);
+    start.setDate(start.getDate() - start.getDay());
+  }
+  const lead = start.getDay(); // 首列前的空位数（对齐周日为首行；自适应起点恒为周日=0）
   const cells: { key: string; date: string; tokens: number; calls: number; i: number }[] = [];
-  for (let i = 0; i < 365; i++) {
+  // 窗口总天数（起点含内、今天含尾）；round 消除夏令时地区的 ±1 小时误差
+  const span = Math.round((today.getTime() - start.getTime()) / 86_400_000) + 1;
+  for (let i = 0; i < span; i++) {
     const d = new Date(start.getTime() + i * 86_400_000);
     const k = dateKey(d);
     const [t, c] = byDate.get(k) ?? [0, 0];
@@ -282,12 +302,27 @@ function YearHeatmap({ refreshTick }: { refreshTick: number }) {
     if (t <= levels[3]) return 4;
     return 5;
   };
-  // 实际列数（含首列周日补位，53 或 54）经 CSS 变量下发：格子平分卡片宽度铺满
-  const cols = Math.floor((364 + lead) / 7) + 1;
+  // 实际列数（含首列周日补位）经 CSS 变量下发：格子平分卡片宽度铺满；
+  // 自适应窗口下列数 = 真实跨度所需（最短 1 列，满一年最长 53）
+  const cols = Math.floor((span - 1 + lead) / 7) + 1;
   return (
     <section className="rp-card">
       <div className="rp-card-head">
-        <div className="rp-card-title">年度用量热力图（近 365 天）</div>
+        <div className="rp-card-title">
+          {spanDays < 365
+            ? `用量热力图（自 ${earliest.slice(5)} 以来 · ${spanDays} 天）`
+            : "年度用量热力图（近 365 天）"}
+          <Tip
+            content={twoTip(
+              "恒全量口径：近 365 天窗口，不随上方筛选联动",
+              "数据不足一年时窗口自适应缩短；与周×小时热力图互补（那个看一天内节奏，这个看全年坚持度）",
+            )}
+          >
+            <span className="rp-info">
+              <InfoIcon />
+            </span>
+          </Tip>
+        </div>
       </div>
       <div className="rp-yearheat" style={{ "--yh-cols": cols } as React.CSSProperties}>
         {cells.map((c) => (
@@ -363,9 +398,11 @@ function providerLabel(p: string): string {
 
 /** ⓘ 信息图标（与设置页同款）：标签尾「有更多说明」的功能性标记，悬停出 Tip 气泡 */
 
-/** 环比小字：当前值 vs 上一等长周期（今日 vs 昨天、近 7 天 vs 上一个 7 天…）。
- *  任一端为 null（无数据 / all 档无上期）不显示；上期为 0 显示「上期无数据」；
- *  warnUp=true 时上升标警示色（如出错次数——用量涨跌本身无好坏，保持中性灰） */
+/** 环比小字：当前值 vs 上一等长周期（今日 vs 昨天同时段、近 7 天 vs 上一个 7 天…；
+ *  今日档同时段对齐 2026-11-03：旧口径比昨天全天，早上打开必然大跌——
+ *  属采样不均噪音）。任一端为 null（无数据 / all 档无上期）不显示；
+ *  上期为 0 显示「上期无数据」；warnUp=true 时上升标警示色
+ *  （如出错次数——用量涨跌本身无好坏，保持中性灰） */
 function Delta({
   value,
   prev,
@@ -393,7 +430,7 @@ function Delta({
   return (
     <div
       className={`rp-delta${warnUp && up ? " bad" : ""}`}
-      title="较上一等长周期（如：今日 vs 昨天、近 7 天 vs 上一个 7 天）"
+      title="较上一等长周期（如：今日 vs 昨天同时段、近 7 天 vs 上一个 7 天）"
     >
       <>{up ? <ArrowIcon dir="up" /> : <ArrowIcon dir="down" />} {Math.abs(Math.round(pct))}%</>
     </div>
@@ -1228,7 +1265,12 @@ export default function Report() {
   const heatOption = useMemo<EChartsCoreOption>(() => {
     const heat = snap?.heatmap ?? [];
     const val = (c: HeatCell) => (heatMetric === "calls" ? c.calls : c.total);
-    const vals = heat.map(val).sort((a, b) => a - b);
+    // 分位与 series 均排除 0 值格（2026-11-03）：token 全 0 的调用（限流/出错
+    // 请求）格子会映射到色阶最深端、被读作「用量高峰」——从 series 剔除后与
+    // 「无记录格」同渲染（透明底）；分位同步改非零口径（与年度热力图「非零日
+    // 分位」同语义，旧全量分位会被大量 0 值拉偏）；错误痕迹由「按错误类型」
+    // 维度条承载
+    const vals = heat.map(val).filter((v) => v > 0).sort((a, b) => a - b);
     const p95 = vals.length > 0 ? vals[Math.min(vals.length - 1, Math.floor(vals.length * 0.95))] : 1;
     const max = Math.max(1, p95);
     return {
@@ -1259,7 +1301,7 @@ export default function Report() {
       series: [
         {
           type: "heatmap",
-          data: heat.map((c) => [c.hour, c.weekday, val(c)]),
+          data: heat.filter((c) => val(c) > 0).map((c) => [c.hour, c.weekday, val(c)]),
         },
       ],
     };
@@ -1268,6 +1310,17 @@ export default function Report() {
   const summary = snap?.summary;
   const prev = snap?.prev_summary ?? null;
   const empty = loaded && (snap == null || (summary != null && summary.calls === 0));
+  // 趋势空态（2026-11-03 收口）：时长/成本模式在范围内无对应数据时，空白绘图区
+  // 会被读作「坏了」——与汇总卡「—」同口径给一句解释。判定与图全零严格等价：
+  // 时长 SUM 为 null ⇔ 范围内所有调用都无时长字段；est_cost null ⇔ 无一模型可计价
+  const trendEmpty =
+    snap != null &&
+    ((trendMetric === "duration" && snap.summary.duration_ms == null) ||
+      (trendMetric === "cost" && snap.summary.est_cost == null));
+  const trendEmptyText =
+    trendMetric === "duration"
+      ? "该范围无生成时长数据（部分 Agent 的转录不含时长字段）"
+      : "该范围无可计价模型（可在设置页单价覆盖表补齐）";
   const hasFilter = agents != null || projects != null || models != null || providers != null;
   // 维度条点击＝toggle 进/出对应筛选集合（#9b 多选对比；清到空集合归 null=全部）
   const toggleOf =
@@ -1805,46 +1858,28 @@ export default function Report() {
                     />
                   </div>
                 </div>
-                <Chart
-                  option={trendOption}
-                  /* 双维自适应（五轮审查）＋高度同源（2026-10-03 布局修复）：
-                     clamp 公式移至 .rp-main 的 --rp-trend-h 变量，维度卡
-                     max-height 按同一变量 calc 钳制——两卡随视口同涨同落，
-                     stretch 下底缘恒齐，矮视口不再出现图表下方大空白；
-                     ResizeObserver 对容器两向变化都会触发 resize，行为不变 */
-                  height="var(--rp-trend-h)"
-                />
+                {trendEmpty ? (
+                  // 空态替代图体（2026-11-03）：切换时 Chart 卸载、切回重建，
+                  // 毫秒级且空态期无图例交互状态可丢失
+                  <div className="rp-chart-empty">{trendEmptyText}</div>
+                ) : (
+                  <Chart
+                    option={trendOption}
+                    /* 双维自适应（五轮审查）＋高度同源（2026-10-03 布局修复）：
+                       clamp 公式移至 .rp-main 的 --rp-trend-h 变量，维度卡
+                       max-height 按同一变量 calc 钳制——两卡随视口同涨同落，
+                       矮视口不再出现图表下方大空白；
+                       ResizeObserver 对容器两向变化都会触发 resize，行为不变 */
+                    height="var(--rp-trend-h)"
+                  />
+                )}
               </section>
             </div>
 
-            {/* 年度热力图（2026-09-29 审查新增 #24）：GitHub 风格逐日用量格——
-                周×小时看"一天内节奏"，这个看"全年坚持度/爆发日"；恒近 365 天
-                全量（不随筛选联动，评审后暂缓），空数据整卡隐藏 */}
-            <YearHeatmap refreshTick={refreshTick} />
-
-            {/* 额度消耗历史（quota_snapshots 采样曲线；未配置额度整卡隐藏） */}
-            {snap.quota_curve.length > 0 && (
-              <section className="rp-card">
-                <div className="rp-card-head">
-                  <div className="rp-card-title">
-                    额度消耗历史
-                    <Tip
-                      content={twoTip(
-                        "按采集周期（约 5 分钟）采样的供应商额度用量百分比",
-                        "5h 窗口呈锯齿（用满→重置），周窗口缓慢爬升；未配置额度的供应商不显示",
-                      )}
-                    >
-                      <span className="rp-info">
-                        <InfoIcon />
-                      </span>
-                    </Tip>
-                  </div>
-                </div>
-                <Chart option={quotaOption} height="clamp(150px, min(20vh, 24vw), 260px)" />
-              </section>
-            )}
-
-            {/* 热力图（本机时区） */}
+            {/* 热力图（本机时区）：随范围档与维度筛选全响应。卡片按「对筛选的
+                响应强度」降序排列（2026-11-03 重排）：切换筛选时动卡聚前、静卡
+                殿后，扫视动线自上而下单调——原顺序年度图夹在趋势与额度之间，
+                切换筛选时「动、不动、动」交错跳线 */}
             <section className="rp-card">
               <div className="rp-card-head">
                 <div className="rp-card-title">周 × 小时分布（本机时区）</div>
@@ -1859,6 +1894,35 @@ export default function Report() {
               </div>
               <Chart option={heatOption} height="clamp(200px, min(30vh, 34vw), 380px)" />
             </section>
+
+            {/* 额度消耗历史（quota_snapshots 采样曲线；未配置额度整卡隐藏）：
+                半响应——随范围档联动、不受维度筛选影响（ⓘ 注明），居静卡之前 */}
+            {snap.quota_curve.length > 0 && (
+              <section className="rp-card">
+                <div className="rp-card-head">
+                  <div className="rp-card-title">
+                    额度消耗历史
+                    <Tip
+                      content={twoTip(
+                        "按采集周期（约 5 分钟）采样的供应商额度用量百分比",
+                        "随时间范围档联动、不受维度筛选影响；5h 窗口呈锯齿（用满→重置），周窗口缓慢爬升",
+                      )}
+                    >
+                      <span className="rp-info">
+                        <InfoIcon />
+                      </span>
+                    </Tip>
+                  </div>
+                </div>
+                <Chart option={quotaOption} height="clamp(150px, min(20vh, 24vw), 260px)" />
+              </section>
+            )}
+
+            {/* 年度热力图（2026-09-29 审查新增 #24）：GitHub 风格逐日用量格，与
+                周×小时热力图互补（那个看「一天内节奏」，这个看「全年坚持度/爆发日」）；
+                恒全量口径、不随筛选联动（评审后暂缓，卡头 ⓘ 注明）——响应强度
+                排序在末位，空数据整卡隐藏 */}
+            <YearHeatmap refreshTick={refreshTick} />
 
             {/* 会话明细已迁往独立会话窗口（M1-10）：本页收敛为纯聚合分析 */}
 
